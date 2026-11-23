@@ -76,7 +76,7 @@ def _one_at_a_time(pose,known=None):
             S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(0.08)      # already there: no wait
             continue
         print('   moving',NAMES[i],flush=True)
-        S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(0.7)
+        S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(0.35)
     relax(0,3)
 def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0],_load())
 def rest(): say('rest, one joint at a time'); _one_at_a_time(REST,_load())
@@ -91,12 +91,12 @@ def wakeup():
         for i in range(4):                                  # ease back from past the normal range
             if abs(cur[i])>1:
                 u0=1500+500*cur[i]; u1=1500+500*(1 if cur[i]>0 else -1)
-                for k in range(1,61): S[i].us(u0+(u1-u0)*k/60); sleep(0.03)
+                for k in range(1,41): S[i].us(u0+(u1-u0)*k/40); sleep(0.03)
                 cur[i]=1.0 if cur[i]>0 else -1.0; S[i].value=cur[i]
-        go(REST,3.0)                                        # then ooze smoothly into rest
+        go(REST,1.8)                                        # then ooze smoothly into rest
         relax(0,3)
     else:
-        center(); say('oozing into rest'); go(REST,3)       # unknown pose: safe slow route
+        center(); say('oozing into rest'); go(REST,2)       # unknown pose: safe route
     chatter(True)
 def chatter(on=True):
     if not VOICE: return
