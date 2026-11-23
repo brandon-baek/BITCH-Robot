@@ -5,19 +5,34 @@ import time as _time
 kit=ServoKit(channels=16)
 class _Servo:
     def __init__(s,ch,lo,hi):
-        s.c=kit.servo[ch]; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
+        s.c=kit.servo[ch]; s.lo,s.hi=lo,hi; s.wide=False; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
+    def us(s,u):
+        """set an exact pulse in microseconds (500-2500), beyond the normal range"""
+        if not s.wide: s.c.set_pulse_width_range(500,2500); s.wide=True
+        s.c.angle=max(0,min(180,(u-500)/2000*180))
     @property
     def value(s):
         a=s.c.angle
         return None if a is None else a/90-1
     @value.setter
     def value(s,v):
+        if s.wide: s.c.set_pulse_width_range(s.lo,s.hi); s.wide=False
         s.c.angle=(max(-1,min(1,v))+1)*90
     def detach(s): s.c.angle=None
 REST=[0.0,-0.8,-0.8,0.0]
 S=[_Servo(0,500,2500)]+[_Servo(i,1000,2000) for i in (1,2,3)]
 cur=REST[:]; on=[False]*4
 NAMES=['base','arm','neck','head']
+import json as _json, os as _os, atexit as _atexit
+_PF=_os.path.expanduser('~/.desk_pose.json')
+def _save():
+    try: _json.dump([round(v,3) for v in cur],open(_PF,'w'))
+    except Exception: pass
+def _load():
+    try:
+        p=_json.load(open(_PF)); return p if len(p)==4 else None
+    except Exception: return None
+_atexit.register(_save)
 SPEED=0.65
 def _ease(f,e):
     if e=='snappy': return 1-(1-f)**3
@@ -36,6 +51,7 @@ def go(t,d,e='smooth'):
         nxt+=0.02; sleep(max(0,nxt-_time.monotonic()))
 def relax(*js):
     for i in (js or range(4)): S[i].detach(); on[i]=False
+    if not any(on): _save()
 def P(b=None,a=None,n=None,h=None):
     return [cur[0] if b is None else b, cur[1] if a is None else a, cur[2] if n is None else n, cur[3] if h is None else h]
 def say(x):
@@ -54,15 +70,34 @@ def drift(secs,fn):
         t=k*0.02; fade=min(1,k/75,(n-k)/75); off=fn(t)
         for i in range(4): cur[i]=max(-1,min(1,b[i]+off[i]*fade)); S[i].value=cur[i]
         sleep(0.02)
-def _one_at_a_time(pose):
+def _one_at_a_time(pose,known=None):
     for i in (1,2,3,0):
+        if known and abs(known[i]-pose[i])<0.06:
+            S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(0.08)      # already there: no wait
+            continue
         print('   moving',NAMES[i],flush=True)
-        S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(1.2)
+        S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(0.7)
     relax(0,3)
-def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0])
-def rest(): say('rest, one joint at a time'); _one_at_a_time(REST)
+def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0],_load())
+def rest(): say('rest, one joint at a time'); _one_at_a_time(REST,_load())
 def wakeup():
-    center(); say('oozing into rest'); go(REST,3); chatter(True)
+    known=_load()
+    if known:
+        say('waking up')
+        for i in (1,2,3,0):                                 # power each joint exactly where it was left
+            if abs(known[i])>1: S[i].us(1500+500*known[i])
+            else: S[i].value=known[i]
+            on[i]=True; cur[i]=known[i]; sleep(0.08)
+        for i in range(4):                                  # ease back from past the normal range
+            if abs(cur[i])>1:
+                u0=1500+500*cur[i]; u1=1500+500*(1 if cur[i]>0 else -1)
+                for k in range(1,61): S[i].us(u0+(u1-u0)*k/60); sleep(0.03)
+                cur[i]=1.0 if cur[i]>0 else -1.0; S[i].value=cur[i]
+        go(REST,3.0)                                        # then ooze smoothly into rest
+        relax(0,3)
+    else:
+        center(); say('oozing into rest'); go(REST,3)       # unknown pose: safe slow route
+    chatter(True)
 def chatter(on=True):
     if not VOICE: return
     try:
@@ -83,12 +118,19 @@ def music_stop():
     try:
         import music as _m; _m.stop()
     except Exception: pass
-def bedtime(side=0.95, arm=0.9, neck=0.95):
+def bedtime(side=0.95, arm=1.0, tuck=-0.9, deep=2350):
+    """turn to the side and lie all the way down, chin tucked so the face can't snag.
+    deep: how far past the normal range the arm keeps lowering (microseconds, 2000 = normal max).
+    tuck: neck while lying; if the face sticks OUT instead of tucking in, use tuck=0.9"""
     say('lying down')
-    go(P(b=side),3.5); relax(0)
-    go(P(a=-0.5,n=-0.3,h=0.4),3.5); relax(3)
-    go(P(a=-0.1,n=0.1),4.0)
-    go(P(a=arm,n=neck),7.0)
+    go(P(n=tuck),1.5); go(P(b=side),3.5); relax(0)
+    go(P(a=-0.5,n=tuck,h=0),3.5); relax(3)
+    go(P(a=0.3,n=tuck),4.0)
+    go(P(a=arm,n=tuck),5.0)
+    if deep>2000:
+        u0=1500+500*arm
+        for k in range(1,121):
+            u=u0+(deep-u0)*k/120; S[1].us(u); cur[1]=(u-1500)/500; sleep(0.035)
     chatter(False); sleep(1.0); say('Zzz'); relax(); sleep(1.5); music_stop(); print('\n*** zzz ***')
 
 class Actor:
