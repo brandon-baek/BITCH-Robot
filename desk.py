@@ -150,8 +150,11 @@ class Actor:
     def shake(s,joint,amp,hz,dur):
         s.fx.append(('banh'.index(joint),amp,hz,s.T,s.T+dur)); return s
     def wait(s,secs):
-        dt=0.02; nxt=_time.monotonic()
-        for _ in range(int(secs/dt)):
+        dt=0.02
+        s._goal=getattr(s,'_goal',s.T)+secs                 # absolute schedule: no rounding drift
+        if getattr(s,'_nxt',None) is None or _time.monotonic()-s._nxt>0.25: s._nxt=_time.monotonic()
+        nxt=s._nxt
+        for _ in range(max(0,round((s._goal-s.T)/dt))):
             T=s.T; m=s.idle_amt
             idle=[m*(0.05*sin(T*0.37)+0.03*sin(T*1.13)),m*0.07*sin(T*1.05),
                   m*(0.06*sin(T*1.05+0.7)+0.03*sin(T*0.29)),m*(0.06*sin(T*0.43+1)+0.03*sin(T*1.7))]
@@ -173,6 +176,7 @@ class Actor:
                     import sounds; sounds.play('servo',vol=0.3)
                 except Exception: pass
             nxt+=dt; sleep(max(0,nxt-_time.monotonic())); s.T+=dt
+        s._nxt=nxt
         return s
     def sfx(s,name):
         sfx(name); return s

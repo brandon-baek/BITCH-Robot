@@ -255,3 +255,72 @@ def emotions():
 def showtime():
     say('*** SHOWTIME: THE FULL SHOW ***')
     hello(); disco(); peekaboo(); spooked(); emotions(); sleepy()
+
+def disco_pro():
+    """~70 s, beat-locked to an original 120 BPM disco track:
+    intro, groove, build, drop, slow-mo breakdown, finale and a final pose on the last chord."""
+    from math import sin
+    say('*** DISCO INFERNO ***'); A=Actor(); beat=0.5
+    def B(n): A.wait(beat*n)
+    music('disco'); A.wait(0.15)                       # let the speaker catch up
+    say('intro: finding the beat'); A.idle_amt=0.2
+    for k in range(8): A.to(n=-0.6 if k%2==0 else -0.82,stiff=2.2); B(1)
+    for k in range(4):
+        s=1 if k%2==0 else -1
+        A.to(b=0.25*s,h=-0.2*s,n=-0.6,stiff=1.6); B(1); A.to(n=-0.82); B(1)
+    say('groove: sway and bounce')
+    for k in range(8):
+        s=1 if (k//2)%2==0 else -1
+        A.to(b=0.35*s,h=-0.3*s,n=-0.55 if k%2 else -0.85,a=-0.6 if k%2==0 else -0.75,stiff=1.8); B(1)
+    say('the ripple')
+    for k in range(4):
+        s=1 if k%2==0 else -1
+        A.to(b=0.4*s,stiff=2.6); B(0.25); A.to(a=-0.55,stiff=2.6); B(0.25)
+        A.to(n=-0.5,stiff=2.6); B(0.25); A.to(h=0.45*s,stiff=2.6); B(0.25)
+        A.to(a=-0.8,n=-0.8,stiff=1.6); B(1)
+    say('the point!')
+    for s in (1,-1):
+        A.to(b=0.55*s,a=-0.35,n=-0.4,h=0.5*s,stiff=3).sfx('blip'); B(2)
+        A.to(b=0,a=-0.8,n=-0.85,h=0,stiff=2); B(2)
+    say('pop and lock')
+    poses=[(0.4,-0.5,-0.5,0.45),(-0.4,-0.5,-0.5,-0.45),(0.45,-0.85,-0.95,-0.3),(-0.45,-0.85,-0.95,0.3),
+           (0,-0.4,-0.35,0),(0,-0.9,-0.95,0),(0.3,-0.6,-0.7,0.6),(-0.3,-0.6,-0.7,-0.6)]
+    for b_,a_,n_,h_ in poses: A.to(b_,a_,n_,h_,stiff=5).sfx('blip'); B(1)
+    say('the build... here it comes')
+    for k in range(4): A.to(b=0.15*k,n=-0.55 if k%2==0 else -0.8,a=-0.75,stiff=2.5); B(1)
+    for k in range(8): A.to(n=-0.6 if k%2==0 else -0.8,stiff=3); B(0.5)
+    for k in range(16): A.to(n=-0.68 if k%2==0 else -0.8,stiff=4); B(0.25)
+    A.to(b=0.7,a=-0.95,n=-1.0,h=0.3,stiff=0.6).shake('h',0.06,10,3.4); B(3.5)
+    A.idle_amt=0; A.to(stiff=4); B(0.5)
+    say('DROP!'); A.idle_amt=0.2; A.sfx('excited')
+    for k in range(8):
+        s=1 if k%2==0 else -1
+        A.to(b=0.45*s,n=-0.3,a=-0.55,stiff=4); B(0.5); A.to(n=-0.95,stiff=4); B(0.5)
+    say('spin!')
+    for k in range(4):
+        A.to(b=0.85 if k%2==0 else -0.85,h=0.3*(-1 if k%2==0 else 1),a=-0.7,n=-0.7,stiff=1.7).sfx('whirr'); B(2)
+    say('robot mode')
+    for b_,a_,n_,h_ in poses[::-1]: A.to(b_,a_,n_,h_,stiff=5).sfx('blip'); B(1)
+    say('the wave')
+    for k in range(16):
+        p=k*0.8
+        A.to(b=0.5*sin(p),a=-0.6+0.2*sin(p-1),n=-0.6+0.3*sin(p-2),h=0.5*sin(p-3),stiff=2.6); B(0.5)
+    say('breakdown: slow motion'); A.idle_amt=0.5
+    A.to(b=-0.6,a=-0.4,n=-0.5,h=-0.4,stiff=0.35); B(4)
+    A.to(b=0.6,a=-0.85,n=-0.9,h=0.4); B(4)
+    A.to(b=0,a=-0.6,n=-0.6,h=0); B(4)
+    A.to(a=-0.95,n=-1.0,h=0.2,stiff=0.5); B(3); A.sfx('powerup'); B(1)
+    say('FINALE!'); A.idle_amt=0.2; A.sfx('happy')
+    for k in range(16):
+        s=1 if (k//2)%2==0 else -1
+        A.to(b=0.45*s,n=-0.4 if k%2 else -0.85,h=0.35*s*(1 if k%2 else -1),a=-0.6,stiff=3.5); B(0.5)
+    for s in (1,-1):
+        A.to(b=0.85*s,a=-0.7,n=-0.7,h=0,stiff=1.8); B(1.5)
+        A.to(a=-0.35,n=-0.4,h=0.55*s,stiff=4).sfx('blip'); B(2.5)
+    for k in range(16):
+        b_,a_,n_,h_=poses[k%8]; A.to(b_,a_,n_,h_,stiff=5)
+        if k%2==0: A.sfx('blip')
+        B(0.5)
+    say('...and POSE!'); A.idle_amt=0
+    A.to(b=0.3,a=-0.35,n=-0.35,h=0.55,stiff=5).sfx('tada'); B(5)
+    A.idle_amt=1; A.end()

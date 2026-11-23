@@ -116,7 +116,73 @@ def t_ambient(secs=30):
     for i in range(int(secs/1.5)):
         if random.random()<0.6: _mix(out,bell(random.choice([76,79,81,83,84,88]),1.5),_n(i*1.5+random.uniform(0,0.3)),0.07)
     return out[:_n(secs)]
-TRACKS={'dance':t_dance,'spooky':t_spooky,'lullaby':t_lullaby,'playful':t_playful,'fanfare':t_fanfare,'ambient':t_ambient}
+def clap(d=0.15):
+    o=[]
+    for k in range(_n(d)):
+        t=k/SR; e=sum(math.exp(-(t-o2)*80) if t>=o2 else 0 for o2 in (0,0.008,0.016))
+        o.append(random.uniform(-1,1)*min(1,e)*math.exp(-t*12))
+    return o
+def strings(ms,d):
+    o=[0.0]*_n(d)
+    for m in ms:
+        for det in (0.995,1.0,1.005):
+            f=mtof(m)*det; ph=random.random()
+            for k in range(len(o)):
+                ph+=f/SR; ph-=int(ph); o[k]+=(2*ph-1)*0.33/len(ms)
+    lp=0.0; n=len(o)
+    for k in range(n): lp+=0.06*(o[k]-lp); o[k]=lp*min(1,k/(SR*0.05),(n-k)/(SR*0.1))
+    return o
+def lead(m,d):
+    f=mtof(m); o=[]; ph=0.0; lp=0.0; n=_n(d)
+    for k in range(n):
+        ph+=f*(1+0.006*math.sin(2*math.pi*5.5*k/SR))/SR; ph-=int(ph)
+        x=(2*ph-1)*0.6+(1 if ph<0.5 else -1)*0.4; lp+=0.22*(x-lp)
+        o.append(lp*min(1,k/150)*min(1,(n-k)/400))
+    return o
+def riser(d):
+    o=[]; lp=0.0; n=_n(d)
+    for k in range(n):
+        t=k/n; c=0.02+0.5*t*t; lp+=c*(random.uniform(-1,1)-lp); o.append(lp*t*1.4)
+    return o
+def t_disco(bpm=120):
+    """original 120 BPM disco: intro, groove, build, drop, breakdown, finale"""
+    b=60/bpm/4; bar=_n(b*16); K,S,C,H,HO=kick(),snare(),clap(),hat(),hat(open_=True)
+    prog=[(41,[57,60,64,67]),(43,[59,62,65,67]),(40,[55,59,62,64]),(45,[57,60,64,67])]   # Fmaj7 G7 Em7 Am7
+    hook=[(0,69),(3,72),(6,74),(8,76),(10,74),(12,72),(14,69)]
+    def make(i,parts):
+        o=[0.0]*(bar+_n(0.5)); root,ch=prog[i%4]
+        for s in range(16):
+            at=_n(b*s)
+            if 'k' in parts and s%4==0: _mix(o,K,at,0.95)
+            if 'c' in parts and s in (4,12): _mix(o,C,at,0.4); _mix(o,S,at,0.18)
+            if 'h' in parts: _mix(o,HO if s%4==2 else H,at,0.24 if s%4==2 else 0.08)
+            if 'b' in parts and s%2==0: _mix(o,bass(root+(12 if s%4==2 else 0)-12,b*1.7),at,0.55)
+            if 'r' in parts and s in (0,): _mix(o,strings([m+12 for m in ch],b*15),at,0.22)
+            if 'x' in parts and s in (2,7,10,15): _mix(o,stab([m+12 for m in ch],b*1.2,0.9),at,0.3)
+            if 'l' in parts:
+                for st,mm in hook:
+                    if st==s: _mix(o,lead(mm+(0 if i%2==0 else -2),b*2.2),at,0.22)
+            if 'f' in parts and s>=12: _mix(o,S,at,0.25+0.05*(s-12))
+        return o
+    plan=(['kh','kh','khb','khb']+                         # intro 4
+          ['khbcr','khbcr','khbcrx','khbcrx']*2+           # groove 8
+          ['hbr','hbr','hbcr','hbcrf']+                    # build 4
+          ['khbcrxl']*8+                                   # drop 8
+          ['r','r','br','br']+                             # breakdown 4
+          ['khbcrxl']*5+['khbcrxlf'])                      # finale 6
+    out=[]; cache={}
+    for i,p in enumerate(plan):
+        key=(i%4,p)
+        if key not in cache: cache[key]=make(i,p)
+        seg=cache[key]; at=len(out) if i==0 else len(out)
+        start=i*bar
+        if len(out)<start: out.extend([0.0]*(start-len(out)))
+        _mix(out,seg,start)
+        if i==15: _mix(out,riser(b*16*4),start-bar*3,0.35)   # riser across the build
+    end=len(plan)*bar
+    _mix(out,stab([45,57,60,64,69,72],2.5,0.9),end,0.6); _mix(out,K,end,1.0); _mix(out,C,end,0.5)
+    return out
+TRACKS={'disco':t_disco,'dance':t_dance,'spooky':t_spooky,'lullaby':t_lullaby,'playful':t_playful,'fanfare':t_fanfare,'ambient':t_ambient}
 def _path(n): return os.path.join(DIR,n+'.wav')
 def render(name):
     os.makedirs(DIR,exist_ok=True); p=_path(name)
