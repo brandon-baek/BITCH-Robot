@@ -61,8 +61,15 @@ def _one_at_a_time(pose):
     relax(0,3)
 def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0])
 def rest(): say('rest, one joint at a time'); _one_at_a_time(REST)
-def wakeup(): center(); say('oozing into rest'); go(REST,3)
-def finish(): go(REST,2); sleep(0.5); relax(); music_stop(); print('\n*** done ***')
+def wakeup():
+    center(); say('oozing into rest'); go(REST,3); chatter(True)
+def chatter(on=True):
+    if not VOICE: return
+    try:
+        import sounds
+        sounds.ambient_start() if on else sounds.ambient_stop()
+    except Exception: pass
+def finish(): go(REST,2); sleep(0.5); relax(); chatter(False); music_stop(); print('\n*** done ***')
 def sfx(name):
     if VOICE:
         try:
@@ -82,7 +89,7 @@ def bedtime(side=0.95, arm=0.9, neck=0.95):
     go(P(a=-0.5,n=-0.3,h=0.4),3.5); relax(3)
     go(P(a=-0.1,n=0.1),4.0)
     go(P(a=arm,n=neck),7.0)
-    sleep(1.0); say('Zzz'); relax(); sleep(1.5); music_stop(); print('\n*** zzz ***')
+    chatter(False); sleep(1.0); say('Zzz'); relax(); sleep(1.5); music_stop(); print('\n*** zzz ***')
 
 class Actor:
     """Spring-driven puppet: set targets, then wait() while springs carry the motion."""
@@ -91,7 +98,7 @@ class Actor:
     def __init__(s,wake=True):
         if wake: wakeup()
         power_all()
-        s.x=cur[:]; s.v=[0.0]*4; s.tgt=REST[:]; s.T=0.0; s.stiff=1.0; s.idle_amt=1.0; s.fx=[]
+        s.x=cur[:]; s.v=[0.0]*4; s.tgt=REST[:]; s.T=0.0; s.stiff=1.0; s.idle_amt=1.0; s.fx=[]; s._whine=-9
     def to(s,b=None,a=None,n=None,h=None,stiff=None):
         for i,val in enumerate((b,a,n,h)):
             if val is not None: s.tgt[i]=val
@@ -118,6 +125,11 @@ class Actor:
                 s.x[i]=max(s.LO[i],min(s.HI[i],s.x[i]))
                 val=max(s.LO[i],min(s.HI[i],s.x[i]+add[i]))
                 cur[i]=val; S[i].value=val
+            if VOICE and max(abs(x) for x in s.v)>1.6 and s.T-s._whine>0.7:
+                s._whine=s.T
+                try:
+                    import sounds; sounds.play('servo',vol=0.3)
+                except Exception: pass
             nxt+=dt; sleep(max(0,nxt-_time.monotonic())); s.T+=dt
         return s
     def sfx(s,name):

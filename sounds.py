@@ -6,9 +6,11 @@ SR=22050
 PITCH=1.0    # overall pitch
 SPEED=1.0    # >1 = faster, chattier
 BRIGHT=0.12  # 0 = pure whistle, 0.6 = buzzy/electronic
-VARIANTS=3   # different takes kept per sound
+VARIANTS=3
+CHATTER=0.35  # background 'busy robot' sounds: 0 = off   # different takes kept per sound
 try:
     _c=json.load(open(os.path.expanduser('~/voice.json')))
+    if 'CHATTER' in _c: CHATTER=float(_c['CHATTER'])
     for _k in ('PITCH','SPEED','BRIGHT'):
         if _k in _c: globals()[_k]=float(_c[_k])
 except Exception: pass
@@ -192,6 +194,13 @@ def s_think():  return click()+hop(14,600,2600,0.025,0.32)+whir(260,380,0.25)+fm
 def s_scan():   return whir(300,520,0.2)+hop(8,900,2400,0.03,0.33)+click()+zipp(2200,500,0.15,0.35)
 def s_powerup():return whir(120,600,0.45,0.18)+zipp(200,3000,0.5,0.45)+vox([(0.3,[300,500,450],'ae',0.02)])
 def s_powerdown():return vox([(0.5,[500,300,180],'aou',0.02)],vol=0.45)+fm(1500,80,1.5,3,0,0.6,0.35)+whir(300,80,0.4,0.15)
+# quiet background 'machine doing stuff' sounds (used by the chatter loop, not by captions)
+def s_tick():    return click(0.25)+gap(0.03)+zipp(random.choice([1800,2400,3000]),random.choice([2200,2800,3400]),0.025,0.3)
+def s_process(): return hop(random.randint(4,9),900,2600,0.022,0.3)
+def s_whirr():   return whir(random.uniform(180,260),random.uniform(280,420),random.uniform(0.15,0.35),0.25)
+def s_idle():    return vox([(0.18,[random.uniform(380,520),random.uniform(450,650)],random.choice(['u','o','i']),0.02)],vol=0.4,breath=0.2)
+def s_servo():   return whir(random.uniform(300,380),random.uniform(420,560),random.uniform(0.12,0.22),0.2)
+def s_doubleblip():return zipp(1400,2000,0.03,0.3)+gap(0.05)+zipp(1700,2300,0.03,0.3)
 V={n[2:]:f for n,f in list(globals().items()) if n.startswith('s_') and callable(f)}
 
 def _path(name,i): return os.path.join(DIR,f'{name}_{i}.wav')
@@ -209,17 +218,39 @@ def _render(name,i):
         os.replace(p+'.tmp',p)
     return p
 _PLAYER=shutil.which('pw-play') or shutil.which('paplay') or shutil.which('aplay')
-def play(name,wait=False):
+import time as _t
+_last=[0.0]
+def play(name,wait=False,vol=1.0):
     if name not in V: return
+    _last[0]=_t.time()
     def go():
         p=_render(name,random.randrange(VARIANTS))
         if _PLAYER:
+            args=[_PLAYER,p]
+            if vol<0.999:
+                if _PLAYER.endswith('pw-play'): args=[_PLAYER,'--volume',f'{vol:.2f}',p]
+                elif _PLAYER.endswith('paplay'): args=[_PLAYER,'--volume',str(int(65536*vol)),p]
             try:
-                pr=subprocess.Popen([_PLAYER,p],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                pr=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 if wait: pr.wait()
             except Exception: pass
     if wait: go()
     else: threading.Thread(target=go,daemon=True).start()
+# ---- background chatter: the robot is never fully silent ----
+_amb={'on':False}
+AMB=[('tick',4),('process',3),('whirr',2),('idle',2),('doubleblip',2),('blip',1)]
+def ambient_start():
+    if _amb['on'] or CHATTER<=0: return
+    _amb['on']=True
+    pool=[n for n,w in AMB for _ in range(w)]
+    def loop():
+        while _amb['on']:
+            _t.sleep(random.uniform(0.9,3.2))
+            if _amb['on'] and _t.time()-_last[0]>0.9:
+                n=random.choice(pool); v=CHATTER*random.uniform(0.55,1.0)
+                play(n,vol=v); _last[0]=_t.time()-0.5   # don't block real cues
+    threading.Thread(target=loop,daemon=True).start()
+def ambient_stop(): _amb['on']=False
 def build():
     '''pre-build every sound now (about a minute on the Pi)'''
     import time; t=time.time()
