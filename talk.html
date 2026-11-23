@@ -1,0 +1,31 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Talk to Desk Creature</title>
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#e9d6b4,#241b12);--card:light-dark(#f7ecd8,#33271a);--ink:light-dark(#2a1d10,#f3e6cf);--mute:light-dark(#6e5636,#c4ad8a);--acc:#e8741e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;padding:20px}
+main{width:min(560px,100%);display:flex;flex-direction:column;gap:14px}h1{font:800 36px/1.05 system-ui;margin:0}
+.card{background:var(--card);border-radius:16px;padding:16px}button,input{font:inherit;border-radius:12px;min-height:48px}
+#mic{width:100%;font-weight:700;font-size:20px;border:0;background:var(--acc);color:#1c0f04;cursor:pointer}#mic.on{background:#c0392b;color:#fff}
+.row{display:flex;gap:8px}input{flex:1;padding:0 12px;border:1px solid #b99a6a;background:var(--bg);color:var(--ink)}
+.row button{padding:0 16px;border:0;background:var(--ink);color:var(--bg);font-weight:600}#log{max-height:40vh;overflow:auto;color:var(--mute);font-size:15px}
+#log p{margin:4px 0}#st{font-size:14px;color:var(--mute)}
+</style></head><body><main>
+<h1>Talk to Desk Creature</h1>
+<div class="card"><label>Robot address</label><div class="row"><input id="pi" value="raspberrypi.local"><button id="test">Test</button></div><div id="st">Start listen mode on the Pi first.</div></div>
+<button id="mic">🎤 Start listening</button>
+<div class="card"><div class="row"><input id="txt" placeholder="…or type something to say"><button id="send">Send</button></div></div>
+<div class="card" id="log"><p>Try: “hi!”, “how are you?”, “what's your name?”, “you're so cute”, “boo!”, “can you dance?”, “sing for me”, “good night”.</p></div>
+</main><script>{
+const g=id=>document.getElementById(id),log=m=>{const p=document.createElement('p');p.textContent=m;g('log').prepend(p)};
+try{const s=localStorage.getItem('pi');if(s)g('pi').value=s}catch(_){}
+g('pi').addEventListener('change',()=>{try{localStorage.setItem('pi',g('pi').value)}catch(_){}});
+async function send(t){if(!t.trim())return;log('you: '+t);try{await fetch('http://'+g('pi').value+':8765/hear?text='+encodeURIComponent(t));}catch(e){log('⚠ could not reach the robot. Is listen mode running?')}}
+g('send').onclick=()=>{send(g('txt').value);g('txt').value=''};g('txt').addEventListener('keydown',e=>{if(e.key==='Enter')g('send').click()});
+g('test').onclick=async()=>{try{await fetch('http://'+g('pi').value+':8765/ping');g('st').textContent='✅ Connected to the robot'}catch(e){g('st').textContent='❌ Not reachable. Check listen mode is running and both are on the same Wi-Fi.'}};
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null,on=false;
+if(!SR){g('mic').textContent='Voice needs Chrome (typing still works)';g('mic').disabled=true}
+g('mic').onclick=()=>{if(on){on=false;rec&&rec.stop();g('mic').textContent='🎤 Start listening';g('mic').classList.remove('on');return}
+rec=new SR();rec.lang='en-US';rec.continuous=true;rec.interimResults=false;
+rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)send(e.results[i][0].transcript)};
+rec.onend=()=>{if(on)try{rec.start()}catch(_){}};rec.onerror=e=>log('mic: '+e.error);
+on=true;rec.start();g('mic').textContent='🔴 Listening… tap to stop';g('mic').classList.add('on')};
+}</script></body></html>

@@ -324,3 +324,34 @@ def disco_pro():
     say('...and POSE!'); A.idle_amt=0
     A.to(b=0.3,a=-0.35,n=-0.35,h=0.55,stiff=5).sfx('tada'); B(5)
     A.idle_amt=1; A.end()
+
+def opera():
+    """the robot sings an original aria in its own voice: gestures follow every note"""
+    import music as _m
+    say('*** AN EVENING AT THE OPERA ***'); A=Actor(); chatter(False)
+    music('opera'); t0=A.T+0.15; A.wait(0.15)
+    def until(t): A.wait(max(0,t0+t-A.T))
+    say('the orchestra begins...'); A.idle_amt=0.3
+    A.to(n=-0.95,h=0,stiff=0.6); until(1.6)
+    say('*ahem*'); A.sfx('process'); A.to(n=-0.7,stiff=2).shake('n',0.05,6,0.4); until(2.6)
+    A.to(a=-0.75,n=-0.6,h=0,stiff=0.8); until(3.8)
+    lo,hi=380,672; side=1
+    for i,(t,d,pts,vw,vib) in enumerate(_m.OPERA):
+        until(t-0.1)
+        if i in (0,5,10,13): say(['first verse','second verse','building...','THE HIGH NOTE!'][[0,5,10,13].index(i)])
+        f=max(pts); r=(f-lo)/(hi-lo)
+        side=-side if d>1.5 else side
+        A.to(b=0.25*side*(0.5+r),a=-0.9+0.55*r,n=-0.85+0.35*r,h=0.25*side*r,stiff=0.9 if d>1.5 else 1.4)
+        if d>=1.5: A.shake('h',0.04+0.06*r,5.5,d)
+        if i==13: A.to(b=0,a=-0.3,n=-0.45,h=0.2,stiff=0.5).shake('n',0.05,6,d)
+        if i==14:
+            say('...the dramatic finish'); A.to(b=-0.2,a=-0.95,n=-1.0,h=0.45,stiff=0.35)
+    until(_m.OPERA_END)
+    say('*holds the pose*'); A.idle_amt=0; until(31.4)
+    say('applause! bows'); A.idle_amt=0.4; A.sfx('love')
+    A.to(b=0,a=-0.3,n=-0.2,h=0,stiff=0.8); until(33.0)
+    A.to(a=-0.8,n=-0.8,stiff=0.8); until(34.2)
+    A.to(b=0.4,a=-0.35,n=-0.25,stiff=0.9); until(35.4)
+    A.to(b=-0.4); until(36.4)
+    A.to(b=0,a=-0.8,n=-0.8,stiff=0.8); until(37.5)
+    A.end()

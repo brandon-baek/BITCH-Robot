@@ -182,7 +182,32 @@ def t_disco(bpm=120):
     end=len(plan)*bar
     _mix(out,stab([45,57,60,64,69,72],2.5,0.9),end,0.6); _mix(out,K,end,1.0); _mix(out,C,end,0.5)
     return out
-TRACKS={'disco':t_disco,'dance':t_dance,'spooky':t_spooky,'lullaby':t_lullaby,'playful':t_playful,'fanfare':t_fanfare,'ambient':t_ambient}
+# ---- opera: the robot's own voice sings an original aria over strings ----
+OPERA=[ # (start s, length s, pitch points Hz, vowels, vibrato)
+ (4.0,1.6,[392,392],'aa',0.03),(5.7,0.8,[440,440],'aa',0.02),(6.6,1.6,[494,494],'oo',0.03),(8.4,0.8,[440,440],'aa',0.02),(9.3,2.4,[392,380],'aa',0.05),
+ (12.0,1.2,[523,523],'oo',0.03),(13.3,0.8,[494,494],'aa',0.02),(14.2,1.2,[440,440],'oo',0.03),(15.5,0.8,[392,392],'aa',0.02),(16.4,2.6,[440,430],'aa',0.05),
+ (19.3,1.0,[494,494],'oo',0.03),(20.4,1.0,[523,523],'aa',0.03),(21.5,1.0,[587,587],'oo',0.04),(22.6,4.5,[659,659,672],'aaa',0.07),
+ (27.4,3.0,[587,500,392,300],'oau',0.05)]
+OPERA_END=30.5
+def t_opera():
+    import sounds
+    oldJ,oldS=sounds.J,sounds.SPEED; sounds.J=lambda x,p=0.1: x; sounds.SPEED=1.0
+    try:
+        out=[0.0]*_n(38)
+        chords=[(0,[43,55,59,62]),(9.3,[48,52,55,60]),(12,[45,52,57,60]),(16.4,[50,54,57,62]),(19.3,[52,55,59,64]),(22.6,[48,55,60,64]),(27.4,[50,54,57,62]),(30.5,[43,55,59,62,67])]
+        for i,(t,ch) in enumerate(chords):
+            d=(chords[i+1][0] if i+1<len(chords) else 33.5)-t+0.6
+            _mix(out,strings(ch,d),_n(t),0.5)
+        for (t,d,pts,vw,vib) in OPERA:
+            _mix(out,sounds.vox([(d,[p/sounds.PITCH for p in pts],vw,vib)],vol=0.6,breath=0.08),_n(t),0.9)
+        for k in range(28): _mix(out,kick(0.2),_n(22.6+k*0.14),0.15+0.012*k)     # timpani roll into the high note
+        _mix(out,kick(0.5),_n(27.3),0.9)
+        for k in range(160):                                                     # applause
+            _mix(out,clap(0.12),_n(31.6+random.uniform(0,4.5)*(1 if k<140 else 1.2)),random.uniform(0.15,0.4))
+        return out
+    finally:
+        sounds.J,sounds.SPEED=oldJ,oldS
+TRACKS={'opera':t_opera,'disco':t_disco,'dance':t_dance,'spooky':t_spooky,'lullaby':t_lullaby,'playful':t_playful,'fanfare':t_fanfare,'ambient':t_ambient}
 def _path(n): return os.path.join(DIR,n+'.wav')
 def render(name):
     os.makedirs(DIR,exist_ok=True); p=_path(name)
