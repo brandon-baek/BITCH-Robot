@@ -128,13 +128,14 @@ def render(name):
             w.writeframes(b''.join(struct.pack('<h',int(math.tanh(x*g*1.2)*29000)) for x in s))
         os.replace(p+'.tmp',p)
     return p
-_PLAYER=shutil.which('paplay') or shutil.which('aplay'); _cur=[None]
+_PLAYER=shutil.which('pw-play') or shutil.which('paplay') or shutil.which('aplay'); _cur=[None]
 def play(name):
     stop()
     if not ON or name not in TRACKS or not _PLAYER: return
     p=render(name)
     args=[_PLAYER,p]
-    if _PLAYER.endswith('paplay'): args=[_PLAYER,'--volume',str(int(65536*VOL)),p]
+    if _PLAYER.endswith('pw-play'): args=[_PLAYER,'--volume',str(VOL),p]
+    elif _PLAYER.endswith('paplay'): args=[_PLAYER,'--volume',str(int(65536*VOL)),p]
     try: _cur[0]=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except Exception: pass
 def stop():

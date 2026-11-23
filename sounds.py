@@ -208,7 +208,7 @@ def _render(name,i):
             w.writeframes(b''.join(struct.pack('<h',int(x*g*32000)) for x in s))
         os.replace(p+'.tmp',p)
     return p
-_PLAYER=shutil.which('paplay') or shutil.which('aplay')
+_PLAYER=shutil.which('pw-play') or shutil.which('paplay') or shutil.which('aplay')
 def play(name,wait=False):
     if name not in V: return
     def go():
