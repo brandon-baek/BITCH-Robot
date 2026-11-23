@@ -227,6 +227,9 @@ def build():
         print('  building',n,flush=True)
         for i in range(VARIANTS): _render(n,i)
     print(f'voice ready in {time.time()-t:.0f}s')
+    try:
+        import music; music.build(); print('music ready')
+    except Exception as e: print('music skipped:',e)
 def warm():
     """pre-build every sound so shows never wait (runs in the background)"""
     def go():

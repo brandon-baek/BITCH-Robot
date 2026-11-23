@@ -1,6 +1,7 @@
 from adafruit_servokit import ServoKit
 from time import sleep
 from math import sin
+import time as _time
 kit=ServoKit(channels=16)
 class _Servo:
     def __init__(s,ch,lo,hi):
@@ -27,12 +28,12 @@ def go(t,d,e='smooth'):
     mv=[abs(t[i]-cur[i])>0.001 for i in range(4)]
     for i in range(4):
         if mv[i] and not on[i]: S[i].value=cur[i]; on[i]=True
-    st=cur[:]; n=max(1,int(d*SPEED/0.02))
+    st=cur[:]; n=max(1,int(d*SPEED/0.02)); nxt=_time.monotonic()
     for k in range(1,n+1):
         f=_ease(k/n,e)
         for i in range(4):
             if mv[i]: cur[i]=max(-1,min(1,st[i]+(t[i]-st[i])*f)); S[i].value=cur[i]
-        sleep(0.02)
+        nxt+=0.02; sleep(max(0,nxt-_time.monotonic()))
 def relax(*js):
     for i in (js or range(4)): S[i].detach(); on[i]=False
 def P(b=None,a=None,n=None,h=None):
@@ -61,14 +62,27 @@ def _one_at_a_time(pose):
 def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0])
 def rest(): say('rest, one joint at a time'); _one_at_a_time(REST)
 def wakeup(): center(); say('oozing into rest'); go(REST,3)
-def finish(): go(REST,2); sleep(0.5); relax(); print('\n*** done ***')
+def finish(): go(REST,2); sleep(0.5); relax(); music_stop(); print('\n*** done ***')
+def sfx(name):
+    if VOICE:
+        try:
+            import sounds; sounds.play(name)
+        except Exception: pass
+def music(name):
+    try:
+        import music as _m; _m.play(name)
+    except Exception: pass
+def music_stop():
+    try:
+        import music as _m; _m.stop()
+    except Exception: pass
 def bedtime(side=0.95, arm=0.9, neck=0.95):
     say('lying down')
     go(P(b=side),3.5); relax(0)
     go(P(a=-0.5,n=-0.3,h=0.4),3.5); relax(3)
     go(P(a=-0.1,n=0.1),4.0)
     go(P(a=arm,n=neck),7.0)
-    sleep(1.0); say('Zzz'); relax(); print('\n*** zzz ***')
+    sleep(1.0); say('Zzz'); relax(); sleep(1.5); music_stop(); print('\n*** zzz ***')
 
 class Actor:
     """Spring-driven puppet: set targets, then wait() while springs carry the motion."""
@@ -87,7 +101,7 @@ class Actor:
     def shake(s,joint,amp,hz,dur):
         s.fx.append(('banh'.index(joint),amp,hz,s.T,s.T+dur)); return s
     def wait(s,secs):
-        dt=0.02
+        dt=0.02; nxt=_time.monotonic()
         for _ in range(int(secs/dt)):
             T=s.T; m=s.idle_amt
             idle=[m*(0.05*sin(T*0.37)+0.03*sin(T*1.13)),m*0.07*sin(T*1.05),
@@ -104,8 +118,10 @@ class Actor:
                 s.x[i]=max(s.LO[i],min(s.HI[i],s.x[i]))
                 val=max(s.LO[i],min(s.HI[i],s.x[i]+add[i]))
                 cur[i]=val; S[i].value=val
-            sleep(dt); s.T+=dt
+            nxt+=dt; sleep(max(0,nxt-_time.monotonic())); s.T+=dt
         return s
+    def sfx(s,name):
+        sfx(name); return s
     def end(s,bed=False,side=0.95):
         s.rest(stiff=0.6).wait(1.5)
         if bed: bedtime(side)

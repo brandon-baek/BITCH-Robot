@@ -9,6 +9,7 @@ a 2.42" OLED face (in progress), and a synthesized creature voice.
 | `shows.py` | Performances: `showtime()`, `life()`, `hello()`, `disco()`, `peekaboo()`, `spooked()`, `sleepy()`, `catch_fly()`, `emotions()` and more |
 | `tests.py` | Joint tests, hold test, nudge tool |
 | `sounds.py` | The voice: vowel-shaped creature sounds plus R2-style machine chirps, randomized every time |
+| `music.py` | Original background music made on the Pi: dance, spooky, lullaby, playful, fanfare, ambient |
 | `update.sh` | Pulls the latest code and links it into `~` |
 
 ## First time on the Pi

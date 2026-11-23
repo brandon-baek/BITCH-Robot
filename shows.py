@@ -173,7 +173,7 @@ def life(secs=75, seed=None):
 
 # ================= CROWD PLEASERS =================
 def hello():
-    say('MEET DESK CREATURE'); A=Actor()
+    say('MEET DESK CREATURE'); A=Actor(); music('fanfare'); A.wait(0.6)
     say('...is someone there?'); A.to(n=-0.65).wait(0.6).to(b=0.35,h=0.2).wait(1.2).to(b=-0.35,h=-0.2).wait(1.4)
     say('Oh! Hi!!'); A.to(b=0,h=0,a=-0.55,n=-0.5,stiff=1.6).wait(0.6)
     say('waves hello'); A.shake('h',0.45,2.2,1.6).wait(1.8)
@@ -185,22 +185,23 @@ def hello():
 
 def disco(bpm=112):
     say('DANCE PARTY'); A=Actor(); beat=60/bpm
+    music('dance')
     say('getting into the groove'); A.idle_amt=0.3
     for k in range(8): A.to(n=-0.55 if k%2 else -0.85,stiff=2).wait(beat)
     say('side to side')
     for k in range(8): s=1 if k%2 else -1; A.to(b=0.3*s,h=-0.3*s,stiff=1.8).wait(beat)
     say('the robot (snap!)')
     poses=[(0.4,-0.5,-0.5,0.4),(-0.4,-0.5,-0.5,-0.4),(0.4,-0.85,-0.9,-0.3),(-0.4,-0.85,-0.9,0.3)]
-    for k in range(8): b,a,n,h=poses[k%4]; A.to(b,a,n,h,stiff=3.5).wait(beat)
+    for k in range(8): b,a,n,h=poses[k%4]; A.to(b,a,n,h,stiff=3.5).sfx('blip').wait(beat)
     say('head bang!')
     A.to(b=0,a=-0.6,h=0,stiff=2).wait(beat)
     for k in range(8): A.to(n=-0.3 if k%2 else -0.9,stiff=3).wait(beat/2)
-    say('spin!'); A.to(b=0.85,stiff=1.2).wait(beat*2).to(b=-0.85).wait(beat*3).to(b=0).wait(beat*2)
+    say('spin!'); A.sfx('excited'); A.to(b=0.85,stiff=1.2).wait(beat*2).to(b=-0.85).wait(beat*3).to(b=0).wait(beat*2)
     say('...and FREEZE!'); A.to(b=0.25,a=-0.4,n=-0.3,h=0.55,stiff=4).wait(0.2); A.idle_amt=0; A.wait(2.2); A.idle_amt=1
     A.end()
 
 def peekaboo():
-    say('PEEKABOO'); A=Actor()
+    say('PEEKABOO'); A=Actor(); music('playful')
     say('hides!'); A.to(b=0.85,a=-0.95,n=-1.0,h=0.3,stiff=1.3).wait(1.8)
     for k in range(2):
         say('...slowly peeks'); A.to(b=0.5,n=-0.8,h=0.15,stiff=0.5).wait(1.6)
@@ -211,18 +212,18 @@ def peekaboo():
     A.end()
 
 def spooked():
-    say('SOMETHING IS BEHIND YOU...'); A=Actor()
+    say('SOMETHING IS BEHIND YOU...'); A=Actor(); music('spooky')
     say('hears a noise...'); A.idle_amt=0.4; A.to(h=0.2,n=-0.7,stiff=0.6).wait(1.5)
     say('...slowly turns to look'); A.to(b=0.75,h=0.1,stiff=0.35).wait(3.0)
     say('AAAH!'); A.to(b=0.2,a=-0.95,n=-1.0,h=-0.3,stiff=4).wait(0.4)
     say('trembling'); A.shake('h',0.12,9,2.2).shake('n',0.06,8,2.2).wait(2.4)
     say('hides'); A.to(b=-0.7,n=-1.0,h=-0.3,stiff=1).wait(1.6)
     say('...peeks back very carefully'); A.to(b=-0.2,n=-0.8,h=0.1,stiff=0.3).wait(2.4)
-    say('phew... nothing there'); A.idle_amt=1; A.to(b=0,a=-0.6,n=-0.5,h=0,stiff=0.7).wait(1.2).to(a=-0.85,n=-0.85).wait(1.5)
+    music_stop(); say('phew... nothing there'); A.idle_amt=1; A.to(b=0,a=-0.6,n=-0.5,h=0,stiff=0.7).wait(1.2).to(a=-0.85,n=-0.85).wait(1.5)
     A.end()
 
 def sleepy():
-    say('SO... SLEEPY...'); A=Actor()
+    say('SO... SLEEPY...'); A=Actor(); music('lullaby')
     say('big yawn'); A.to(a=-0.95,n=-1.0,h=0.25,stiff=0.35).wait(2.5).rest(stiff=0.6).wait(1.5)
     for k,depth in enumerate((-0.45,-0.3,-0.15)):
         say('nodding off...'); A.to(a=-0.6,n=depth,h=0.25,stiff=0.25).wait(2.6)
@@ -231,18 +232,18 @@ def sleepy():
     say('gives up...'); A.end(bed=True)
 
 def catch_fly():
-    say('THERE IS A FLY'); A=Actor(); import random; R=random.Random()
+    say('THERE IS A FLY'); A=Actor(); import random; R=random.Random(); music('playful')
     say('tracking it...'); A.idle_amt=0.3
     for _ in range(7):
         A.to(b=R.uniform(-0.6,0.6),n=R.uniform(-0.8,-0.4),h=R.uniform(-0.3,0.3),stiff=R.choice([1.2,2.5])).wait(R.uniform(0.3,0.7))
     say('...it landed. waiting.'); A.to(b=0.35,n=-0.6,h=0.1,stiff=0.6).wait(2.0)
-    say('POUNCE!'); A.to(a=-0.25,n=-0.25,stiff=4).wait(0.6)
+    music_stop(); say('POUNCE!'); A.to(a=-0.25,n=-0.25,stiff=4).wait(0.6)
     say('missed it...'); A.idle_amt=1; A.to(a=-0.7,n=-0.95,h=-0.3,stiff=0.4).wait(2)
     say('*grumble*'); A.shake('b',0.1,3,1).wait(1.2)
     A.end()
 
 def emotions():
-    say('A RANGE OF FEELINGS'); A=Actor()
+    say('A RANGE OF FEELINGS'); A=Actor(); music('ambient')
     say('happy!'); A.to(a=-0.5,n=-0.45,stiff=1.5).wait(0.5).shake('h',0.3,2.5,1.4).wait(1.6)
     say('sad...'); A.to(b=-0.15,a=-0.9,n=-1.0,h=0.35,stiff=0.3).wait(3)
     say('curious?'); A.to(b=0.2,a=-0.4,n=-0.55,h=-0.5,stiff=0.8).wait(2)
