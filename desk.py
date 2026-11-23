@@ -1,0 +1,112 @@
+from adafruit_servokit import ServoKit
+from time import sleep
+from math import sin
+kit=ServoKit(channels=16)
+class _Servo:
+    def __init__(s,ch,lo,hi):
+        s.c=kit.servo[ch]; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
+    @property
+    def value(s):
+        a=s.c.angle
+        return None if a is None else a/90-1
+    @value.setter
+    def value(s,v):
+        s.c.angle=(max(-1,min(1,v))+1)*90
+    def detach(s): s.c.angle=None
+REST=[0.0,-0.8,-0.8,0.0]
+S=[_Servo(0,500,2500)]+[_Servo(i,1000,2000) for i in (1,2,3)]
+cur=REST[:]; on=[False]*4
+NAMES=['base','arm','neck','head']
+SPEED=0.65
+def _ease(f,e):
+    if e=='snappy': return 1-(1-f)**3
+    if e=='bouncy':
+        c1=1.9; c3=c1+1; return 1+c3*(f-1)**3+c1*(f-1)**2
+    return f*f*(3-2*f)
+def go(t,d,e='smooth'):
+    mv=[abs(t[i]-cur[i])>0.001 for i in range(4)]
+    for i in range(4):
+        if mv[i] and not on[i]: S[i].value=cur[i]; on[i]=True
+    st=cur[:]; n=max(1,int(d*SPEED/0.02))
+    for k in range(1,n+1):
+        f=_ease(k/n,e)
+        for i in range(4):
+            if mv[i]: cur[i]=max(-1,min(1,st[i]+(t[i]-st[i])*f)); S[i].value=cur[i]
+        sleep(0.02)
+def relax(*js):
+    for i in (js or range(4)): S[i].detach(); on[i]=False
+def P(b=None,a=None,n=None,h=None):
+    return [cur[0] if b is None else b, cur[1] if a is None else a, cur[2] if n is None else n, cur[3] if h is None else h]
+def say(x):
+    print('\n>> '+x, flush=True)
+    if VOICE:
+        try:
+            import sounds; sounds.cue(x)
+        except Exception: pass
+VOICE=True
+def power_all():
+    for i in range(4):
+        if not on[i]: S[i].value=cur[i]; on[i]=True
+def drift(secs,fn):
+    power_all(); b=cur[:]; n=int(secs/0.02)
+    for k in range(n):
+        t=k*0.02; fade=min(1,k/75,(n-k)/75); off=fn(t)
+        for i in range(4): cur[i]=max(-1,min(1,b[i]+off[i]*fade)); S[i].value=cur[i]
+        sleep(0.02)
+def _one_at_a_time(pose):
+    for i in (1,2,3,0):
+        print('   moving',NAMES[i],flush=True)
+        S[i].value=pose[i]; on[i]=True; cur[i]=pose[i]; sleep(1.2)
+    relax(0,3)
+def center(): say('center, one joint at a time'); _one_at_a_time([0,0,0,0])
+def rest(): say('rest, one joint at a time'); _one_at_a_time(REST)
+def wakeup(): center(); say('oozing into rest'); go(REST,3)
+def finish(): go(REST,2); sleep(0.5); relax(); print('\n*** done ***')
+def bedtime(side=0.95, arm=0.9, neck=0.95):
+    say('lying down')
+    go(P(b=side),3.5); relax(0)
+    go(P(a=-0.5,n=-0.3,h=0.4),3.5); relax(3)
+    go(P(a=-0.1,n=0.1),4.0)
+    go(P(a=arm,n=neck),7.0)
+    sleep(1.0); say('Zzz'); relax(); print('\n*** zzz ***')
+
+class Actor:
+    """Spring-driven puppet: set targets, then wait() while springs carry the motion."""
+    K=[55.0,30.0,65.0,95.0]; C=[11.0,10.0,11.5,10.0]
+    LO=[-0.9,-0.95,-1.0,-0.85]; HI=[0.9,-0.15,-0.1,0.85]
+    def __init__(s,wake=True):
+        if wake: wakeup()
+        power_all()
+        s.x=cur[:]; s.v=[0.0]*4; s.tgt=REST[:]; s.T=0.0; s.stiff=1.0; s.idle_amt=1.0; s.fx=[]
+    def to(s,b=None,a=None,n=None,h=None,stiff=None):
+        for i,val in enumerate((b,a,n,h)):
+            if val is not None: s.tgt[i]=val
+        if stiff is not None: s.stiff=stiff
+        return s
+    def rest(s,stiff=None): return s.to(*REST,stiff=stiff)
+    def shake(s,joint,amp,hz,dur):
+        s.fx.append(('banh'.index(joint),amp,hz,s.T,s.T+dur)); return s
+    def wait(s,secs):
+        dt=0.02
+        for _ in range(int(secs/dt)):
+            T=s.T; m=s.idle_amt
+            idle=[m*(0.05*sin(T*0.37)+0.03*sin(T*1.13)),m*0.07*sin(T*1.05),
+                  m*(0.06*sin(T*1.05+0.7)+0.03*sin(T*0.29)),m*(0.06*sin(T*0.43+1)+0.03*sin(T*1.7))]
+            add=[0.0]*4
+            for (j,amp,hz,t0,t1) in s.fx:
+                if t0<=T<t1:
+                    env=min(1,(T-t0)/0.1,(t1-T)/0.1); add[j]+=amp*env*sin(6.2832*hz*(T-t0))
+            s.fx=[f for f in s.fx if f[4]>T]
+            for i in range(4):
+                k=s.K[i]*s.stiff; c=s.C[i]*s.stiff**0.5
+                acc=k*(s.tgt[i]+idle[i]-s.x[i])-c*s.v[i]
+                s.v[i]=max(-5,min(5,s.v[i]+acc*dt)); s.x[i]+=s.v[i]*dt
+                s.x[i]=max(s.LO[i],min(s.HI[i],s.x[i]))
+                val=max(s.LO[i],min(s.HI[i],s.x[i]+add[i]))
+                cur[i]=val; S[i].value=val
+            sleep(dt); s.T+=dt
+        return s
+    def end(s,bed=False,side=0.95):
+        s.rest(stiff=0.6).wait(1.5)
+        if bed: bedtime(side)
+        else: finish()
