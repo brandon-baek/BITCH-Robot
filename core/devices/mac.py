@@ -114,24 +114,40 @@ class MacCamera(Device):
             if p == 'ask':                                   # opening it now would only give black frames
                 if time.time() - asked > 120: ask_permission('camera'); asked = time.time()
                 s.detail = 'Waiting for you to click Allow (camera) on the Mac'; s._changed(); time.sleep(2); continue
-            cam = cv2.VideoCapture(s.source if video else int(s.source))
+            idx = int(s.source) if not video else None
+            cam = cv2.VideoCapture(s.source if video else idx)
             if not cam.isOpened():
                 s.detail = 'Waiting for the camera (click Allow if the Mac asks)'; s._changed(); time.sleep(5); continue
             cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280); cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720); cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            s.detail = 'Watching' if not video else f'Playing test video {os.path.basename(str(s.source))}'; s._changed()
-            fps = cam.get(cv2.CAP_PROP_FPS) or 30; bad = 0
-            while True:
-                ok, fr = cam.read()
-                if not ok:
-                    if video: cam.set(cv2.CAP_PROP_POS_FRAMES, 0); continue      # test videos loop
-                    bad += 1
-                    if bad > 50: break
-                    time.sleep(0.05); continue
-                if not config.get('camera_on'): break          # paused: let go of the camera right away
-                bad = 0; s.latest = fr
-                if s.active('eyes') and s.hub and s.hub.sight: s.hub.sight.frame(s.id, fr)
-                if video: time.sleep(1 / min(30, fps))                          # play at real speed
-            cam.release(); s.detail = 'Camera stopped, retrying'; s._changed(); time.sleep(3)
+            fps = cam.get(cv2.CAP_PROP_FPS) or 30
+            got = [time.time(), 0]; stop = [False]
+
+            def read():                                    # reading can hang on some cameras, so it gets its own thread
+                bad = 0
+                while not stop[0]:
+                    ok, fr = cam.read()
+                    if not ok:
+                        if video: cam.set(cv2.CAP_PROP_POS_FRAMES, 0); continue      # test videos loop
+                        bad += 1; time.sleep(0.05)
+                        if bad > 60: break
+                        continue
+                    if not config.get('camera_on'): break
+                    bad = 0; s.latest = fr; got[0] = time.time(); got[1] += 1
+                    if s.active('eyes') and s.hub and s.hub.sight: s.hub.sight.frame(s.id, fr)
+                    if video: time.sleep(1 / min(30, fps))
+                stop[0] = True
+            threading.Thread(target=read, daemon=True).start()
+            s.detail = f'Opening camera {idx}' if not video else f'Playing test video {os.path.basename(str(s.source))}'; s._changed()
+            while not stop[0]:
+                time.sleep(1)
+                if got[1] and s.detail.startswith('Opening'): s.detail = 'Watching'; s._changed()
+                if time.time() - got[0] > 6 and config.get('camera_on'):     # no picture: this isn't the right camera
+                    s.detail = f'No picture from camera {idx}; trying another'; s._changed(); break
+            stop[0] = True
+            try: cam.release()
+            except Exception: pass
+            if not video and not got[1]: s.source = str((idx + 1) % 3)      # try cameras 0, 1, 2 in turn
+            time.sleep(2)
 
     def _changed(s):
         if s.hub: s.hub.devices_changed()
