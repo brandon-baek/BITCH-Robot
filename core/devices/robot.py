@@ -21,6 +21,7 @@ class Robot(Device):
         s.busy = False
         s._look = None; s._looked = None
         s._fallback = None
+        s._ears_on = False
 
     # ----- connection -----
     def _get(s, path, timeout=3, **q):
@@ -41,7 +42,13 @@ class Robot(Device):
     def _alive(s, ok, r=None):
         if r:
             s.busy = bool(r.get('busy'))
-            s.can_move = 'move' in (r.get('caps') or [])
+            hw = r.get('caps') or []
+            s.can_move = 'move' in hw
+            caps = {'body', 'voice'} | ({'face'} if 'face' in hw else set()) | ({'ears'} if 'ears' in hw else set())
+            if caps != s.caps:                        # new hardware on the robot shows up as a new sense or output
+                s.caps = caps
+                if 'ears' in caps and not s._ears_on: s._ears_on = True; threading.Thread(target=s._ears, daemon=True).start()
+                if s.hub: s.hub.devices_changed()
         if ok != s.online:
             s.online = ok
             s.detail = (f'Connected at {s.host}' + ('' if s.can_move else ' (update the Pi for invented moves)')) if ok else \
@@ -63,6 +70,23 @@ class Robot(Device):
                 time.sleep(0.08)
         threading.Thread(target=ping, daemon=True).start()
         threading.Thread(target=tell, daemon=True).start()
+
+    def _ears(s):
+        """The robot has its own microphone: pull its sound from /mic and hear through it."""
+        import numpy as np
+        while True:
+            if not (s.online and s.active('ears')): time.sleep(2); continue
+            try:
+                r = urllib.request.urlopen(s.base + '/mic', timeout=10); left = b''
+                while s.online and s.active('ears'):
+                    b = r.read(2048)
+                    if not b: break
+                    b = left + b; n = len(b) // 2 * 2; left = b[n:]
+                    if s.hub and s.hub.hearing: s.hub.hearing.feed(s.id, np.frombuffer(b[:n], '<i2').astype(np.float32) / 32768)
+                r.close()
+            except Exception:
+                pass
+            time.sleep(3)
 
     # ----- outputs -----
     def speak(s, wav, seconds, text='', emotion='neutral', move='none'):

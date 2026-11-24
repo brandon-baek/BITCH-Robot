@@ -23,7 +23,7 @@ personality, memory and habits, and it should notice things on its own instead o
   - Positions run from -1 to 1. REST = [0, -0.8, -0.8, 0]. A higher neck value means looking up; a higher arm value
     means lower (bedtime uses arm 1.0 or more, past the normal range).
 - Sound plays on a JBL Flip 3 over Bluetooth using `pw-play` (PipeWire).
-- An SSD1306 OLED is wired but not detected yet (its RES pin needs to go to Pi pin 7). A 4" lazy Susan bearing for
+- An SSD1306 OLED is wired but not detected yet (its RES pin needs to go to Pi pin 7). face.py is ready for it. A 4" lazy Susan bearing for
   the base is waiting to be installed.
 - Brandon's Mac is an M1 Pro (user `brandon.baek`). Ollama is installed. BITCH's Python environment is `~/dc-venv`,
   which must be Python 3.12 because Kokoro needs it.
@@ -34,7 +34,8 @@ personality, memory and habits, and it should notice things on its own instead o
 | `desk.py` | Pi | Servo drivers, `go()` easing, `Actor` spring-motion engine, remembered pose, bedtime and wake-up |
 | `shows.py` | Pi | Performances (disco_pro and opera are synced to the music) |
 | `sounds.py`, `music.py` | Pi (sounds.py also on the Mac) | Synthesized creature voice, original music tracks, cached files |
-| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop /move /ping; lip-sync, emotion poses, plays move steps |
+| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop /move /ping /mic; lip-sync, emotion poses, plays move steps |
+| `face.py`, `hardware.py` | Pi | OLED googly-eye face (SSD1306 on I2C, RES on GPIO4/pin 7; pure-Python drawing, `--png` to test on a Mac); detects screen/mic/camera and reports them as caps in /ping |
 | `control.py` | Pi | Keyboard driving mode |
 | `core/` | Mac | BITCH's mind: `python -m core` (the BITCH app runs `python -m core --app`). App on :8780 (http) and :8781 (https) |
 | `core/hub.py` | Mac | Device registry, events, routing (which device speaks a reply), app updates |
@@ -47,7 +48,7 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
-| `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` |
+| `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH) |
 
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.
 

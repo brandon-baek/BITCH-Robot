@@ -36,7 +36,26 @@ class _H(BaseHTTPRequestHandler):
             if eye!=LOOK.get('eye',False): LOOK['eye']=eye; LOOK['eye_t']=time.time()
             LOOK.update(x=float(q.get('x',0.5)),y=float(q.get('y',0.5)),seen=seen,t=time.time(),
                         b=float(q['b']) if 'b' in q else None,n=float(q['n']) if 'n' in q else None)
+        if u.path=='/mic' and HW.get('mic'): return s._mic()
         s._ok({'ok':True,'busy':BUSY[0],'caps':CAPS})
+    def _mic(s):
+        """Stream the robot's own microphone (16 kHz mono 16-bit) to the Mac until it hangs up."""
+        import hardware
+        s.send_response(200); s._cors(); s.send_header('Content-Type','application/octet-stream'); s.end_headers()
+        old=MIC[0]
+        if old:
+            try: old.kill()
+            except Exception: pass
+        p=MIC[0]=hardware.mic_process()
+        try:
+            while True:
+                b=p.stdout.read(1024)
+                if not b: break
+                s.wfile.write(b)
+        except Exception: pass
+        finally:
+            try: p.kill()
+            except Exception: pass
     def do_POST(s):
         u=urlparse(s.path); q={k:v[0] for k,v in parse_qs(u.query).items()}
         n=int(s.headers.get('Content-Length',0)); data=s.rfile.read(n)
@@ -52,6 +71,22 @@ class _H(BaseHTTPRequestHandler):
 BUSY=[False]
 STOP=threading.Event()
 CAPS=['move','speak','look','emote']                         # what this robot can do; the Mac reads it from /ping
+HW={}; MIC=[None]
+class _NoFace:
+    ok=False
+    def __getattr__(s,name): return lambda *a,**k: None
+FACE=_NoFace()                                               # the OLED face, if the screen is found (face.py)
+def find_hardware():
+    """Look for the OLED, a mic and a camera; add what's there to CAPS so the Mac can use it."""
+    global FACE
+    try:
+        import hardware, face
+        HW.update(hardware.detect())
+        f=face.Face(face.open_screen())
+        if f.ok: FACE=f; f.start(); CAPS.append('face')
+        if HW.get('mic'): CAPS.append('ears')
+        print(f"  hardware: face {'yes' if f.ok else 'no'}, mic {HW.get('mic') or 'no'}, camera {HW.get('camera') or 'no'}",flush=True)
+    except Exception as e: print(f'  hardware check failed: {e}',flush=True)
 JOINT={'base':'b','arm':'a','neck':'n','head':'h'}
 SPEEDS={'slow':0.6,'normal':1.2,'snappy':2.6}
 def run_steps(A,steps,name=''):
@@ -67,7 +102,7 @@ def run_steps(A,steps,name=''):
             for j in (st.get('joints') or ['head'])[:3]:
                 if j in JOINT: A.shake(JOINT[j],max(0.0,min(0.5,float(st.get('size',0.3)))),max(0.3,min(6.0,float(st.get('hz',3)))),secs)
             A.wait(secs)
-        elif d=='sound': A.sfx(str(st.get('sound','blip')))
+        elif d=='sound': A.sfx(str(st.get('sound','blip'))); FACE.poke(0.8)
         elif d=='wait': A.wait(secs)
         elif d=='rest': A.rest(stiff=0.9).wait(secs or 0.8)
     A.rest(stiff=0.9).wait(0.3)
@@ -114,7 +149,7 @@ EMO={ # emotion -> (pose targets, chirp)
  'curious':(dict(a=-0.55,n=-0.55,h=-0.35),'curious'),'sleepy':(dict(a=-0.85,n=-0.95,h=0.3),'yawn'),'proud':(dict(a=-0.95,n=-0.45,h=0),'proud'),
  'confused':(dict(a=-0.75,n=-0.7,h=0.45),'question'),'neutral':(dict(a=-0.8,n=-0.8,h=0),None)}
 def pose(A,emotion,stiff=1.2):
-    t,_=EMO.get(emotion,EMO['neutral']); A.to(stiff=stiff,**t)
+    t,_=EMO.get(emotion,EMO['neutral']); A.to(stiff=stiff,**t); FACE.feel(emotion)
 def act(A,action):
     """returns 'show'/'sleep' when it ran something that ends this Actor"""
     a=(action or 'none').lower()
@@ -155,7 +190,7 @@ def talk(A,path,emotion='neutral',text=''):
                 try: pr.terminate()
                 except Exception: pass
             A.to(n=-0.6,h=0.25,stiff=2); A.wait(0.3); return False
-        A.to(n=n0+0.22*e,h=h0+0.08*(1 if (i//6)%2 else -1)*e,stiff=2.4); A.wait(0.05)
+        A.to(n=n0+0.22*e,h=h0+0.08*(1 if (i//6)%2 else -1)*e,stiff=2.4); FACE.talk(e); A.wait(0.05)
     if pr:
         try: pr.wait(timeout=2)
         except Exception: pass
@@ -166,6 +201,7 @@ def listen():
     except Exception: ip='?'
     print(f'\n  LISTEN MODE on port {PORT}. Robot address: raspberrypi.local (or {ip})')
     print('  Open the BITCH app on your Mac. Ctrl+C to stop.\n',flush=True)
+    find_hardware()
     A=Actor(); last=time.time(); A.idle_amt=0.8
     try:
         while True:
@@ -174,16 +210,19 @@ def listen():
                 if LOOK['seen'] and time.time()-LOOK['t']<1.5:     # someone is in view: look at them
                     if LOOK.get('b') is not None:                       # Mac already worked out the angle
                         A.to(b=max(-0.9,min(0.9,LOOK['b'])),n=max(-1,min(0.3,LOOK['n'] if LOOK.get('n') is not None else REST[2])),stiff=1.4)
+                        FACE.look(0,LOOK.get('n'))                     # the body turns to you, so the eyes look straight out
                     else:
                         A.to(b=max(-0.85,min(0.85,(LOOK['x']-0.5)*GAZE['span']*GAZE['flip'])),
                              n=max(-1,min(-0.3,REST[2]+(0.5-LOOK['y'])*0.5)),stiff=1.1)
                     last=time.time()
                 elif time.time()-last>random.uniform(5,9):
                     last=time.time(); A.to(b=random.uniform(-0.4,0.4),h=random.uniform(-0.2,0.2),stiff=1.2)
+                    FACE.look(random.uniform(-0.8,0.8),random.uniform(-0.9,-0.5))   # nobody around: eyes wander too
                 A.wait(0.05); continue
             BUSY[0]=True; kind=item[0]; res=None
             if kind=='hear': res=react(A,item[1])
             elif kind=='eye':                                   # you looked at it: a small happy perk
+                FACE.feel('happy'); FACE.poke()
                 A.sfx(random.choice(['doubleblip','curious','happy'])); A.to(h=0.18,stiff=2.2).wait(0.25); A.to(h=-0.12).wait(0.25); A.to(h=0).wait(0.2)
             elif kind=='arrived': A.sfx('hello'); pose(A,'happy'); act(A,'wave'); A.rest().wait(0.4)
             elif kind=='move': run_steps(A,item[1],item[2])
@@ -201,11 +240,12 @@ def listen():
                 try: os.remove(p)
                 except Exception: pass
             if res=='sleep':
-                print('  (asleep; say "Hey BITCH" or "wake up" to wake it)',flush=True); BUSY[0]=False
+                print('  (asleep; say "Hey BITCH" or "wake up" to wake it)',flush=True); BUSY[0]=False; FACE.sleep(True)
                 while True:
                     it=Q.get()
                     if it[0] in ('hear','say','speak') and has(str(it[-1] if it[0]=='speak' else it[1]).lower(),'wake','morning','bitch'): break
                     if it[0]=='emote' and it[2]=='wake': break
+                FACE.sleep(False); FACE.feel('happy')
                 A=Actor(); A.idle_amt=0.8
             elif res=='show': A=Actor(); A.idle_amt=0.8
             last=time.time(); BUSY[0]=False

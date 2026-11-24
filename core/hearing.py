@@ -41,7 +41,7 @@ class Stream:
 
     def step(s, x):
         r = float(np.sqrt(np.mean(x * x)))
-        if s.dev == 'mac-mic': s.ears.level(min(1.0, r * 12))
+        if s.dev in ('mac-mic', 'robot'): s.ears.level(min(1.0, r * 12))
         if s.ptt is not None:
             s.ptt.append(x); return
         if (s.dev == 'mac-mic' and not config.get('mic_on')) or hub.status in ('thinking', 'understanding'):
@@ -118,6 +118,9 @@ class Hearing:
 
     def feed(s, dev_id, pcm):
         """Called by ears devices with float32 audio at 16 kHz. Cheap: it only queues the audio."""
+        if dev_id == 'mac-mic':
+            r = hub.get('robot')
+            if r and r.active('ears'): return               # the robot's own ears win at the desk (no double hearing)
         s.inq.put(('pcm', dev_id, pcm))
 
     def hold(s, dev_id, on):

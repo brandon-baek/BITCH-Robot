@@ -15,7 +15,7 @@ from .devices.base import CAP_LABELS
 from .devices.web import WebDevice, saved, save, forget
 from .hub import hub
 
-HTTP, HTTPS = 8780, 8781
+HTTP = int(os.environ.get('BITCH_PORT', 8780)); HTTPS = HTTP + 1      # BITCH_PORT lets tests run next to the real BITCH
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 PAIR = {'code': None, 'until': 0}
 TRIES = {}

@@ -30,7 +30,8 @@ def main():
     from .devices.robot import Robot
     from .devices.mac import MacSpeaker, MacMic, MacCamera, ask_permission
 
-    print('\n  BITCH\n  on this Mac:  http://localhost:8780\n  on your phone: http://' + __import__('core.tls', fromlist=['x']).host() + ':8780\n', flush=True)
+    port = server.HTTP
+    print(f'\n  BITCH\n  on this Mac:  http://localhost:{port}\n  on your phone: http://' + __import__('core.tls', fromlist=['x']).host() + f':{port}\n', flush=True)
     if not llm.available():
         subprocess.run(['open', '-a', 'Ollama'], capture_output=True)
         hub.note('starting Ollama (the brain)...', problem=False)
@@ -56,13 +57,13 @@ def main():
         ask_permission('camera'); ask_permission('mic')       # macOS asks once: "BITCH would like to access..."
         try:
             import webview
-            webview.create_window('BITCH', 'http://127.0.0.1:8780', width=1320, height=900, min_size=(380, 600), background_color='#DFE4E8')
+            webview.create_window('BITCH', f'http://127.0.0.1:{port}', width=1320, height=900, min_size=(380, 600), background_color='#DFE4E8')
             webview.start()
             os._exit(0)
         except ImportError:
             hub.note('the app window needs pywebview; opening the browser instead')
     if not args.no_browser and not args.app:
-        threading.Timer(1.5, lambda: subprocess.run(['open', 'http://localhost:8780'])).start()
+        threading.Timer(1.5, lambda: subprocess.run(['open', f'http://localhost:{port}'])).start()
     try:
         while True: time.sleep(3600)
     except KeyboardInterrupt:

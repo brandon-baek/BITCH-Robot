@@ -88,17 +88,41 @@ class Brain(unittest.TestCase):
         self.assertEqual(tools.run('set_home', {'city': 'unknown'}, {'text': 'Bringo.', 'mode': 'ambient'})[1], 'Not set: ask the person which city they live in.')
 
 
+class Hardware(unittest.TestCase):
+    def test_face_draws_without_a_screen(self):
+        import face
+        f = face.Face()
+        self.assertFalse(f.ok)
+        for feel in ('happy', 'sad', 'sleepy'):
+            f.feel(feel); f.draw(1000.0)
+        self.assertTrue(any(f.c.buf))                                    # something was drawn
+        f.sleep(True); [f.draw(1000.0 + k * 0.05) for k in range(30)]
+        path = os.path.join(SCRATCH, 'face.png'); f.c.png(path)
+        self.assertTrue(open(path, 'rb').read().startswith(b'\x89PNG'))
+
+    def test_robot_driver_adopts_new_hardware(self):
+        from core.devices.robot import Robot
+        r = Robot('127.0.0.1'); r._ears = lambda: None
+        r._alive(True, {'caps': ['move', 'speak', 'face', 'ears']})
+        self.assertEqual(r.caps, {'body', 'voice', 'face', 'ears'}); self.assertTrue(r.can_move)
+        r._alive(True, {'caps': ['speak']})
+        self.assertEqual(r.caps, {'body', 'voice'}); self.assertFalse(r.can_move)
+
+
 def free(port):
     with socket.socket() as s: return s.connect_ex(('127.0.0.1', port)) != 0
 
 
-@unittest.skipUnless(free(8780) and free(8765) and free(11500), 'BITCH, the robot or the fake brain is already running on this Mac')
+PORT = 8790                                                          # next to the real BITCH (8780), never on top of it
+
+
+@unittest.skipUnless(free(PORT) and free(8765) and free(11500), 'a test BITCH, the robot or the fake brain is already running on this Mac')
 class EndToEnd(unittest.TestCase):
     """Fake brain + fake robot + BITCH, then a pretend phone chats with it."""
 
     @classmethod
     def setUpClass(cls):
-        py = sys.executable; env = dict(os.environ, OLLAMA_URL='http://127.0.0.1:11500', HOME=os.path.join(SCRATCH, 'pi'))
+        py = sys.executable; env = dict(os.environ, OLLAMA_URL='http://127.0.0.1:11500', HOME=os.path.join(SCRATCH, 'pi'), BITCH_PORT=str(PORT))
         os.makedirs(env['HOME'], exist_ok=True)
         cls.procs = [subprocess.Popen([py, 'testing/fake_ollama.py', '11500'], cwd=ROOT, stdout=subprocess.DEVNULL),
                      subprocess.Popen([py, '-c', 'from brain import *; listen()'], cwd=ROOT, env=dict(env, PYTHONPATH='testing/fakes:.'),
@@ -106,25 +130,25 @@ class EndToEnd(unittest.TestCase):
                      subprocess.Popen([py, '-m', 'core', '--quiet', '--no-mic', '--no-camera', '--no-browser', '--pi', '127.0.0.1'], cwd=ROOT,
                                       env=dict(env, HOME=os.path.expanduser('~')), stdout=open(os.path.join(SCRATCH, 'core.log'), 'w'), stderr=subprocess.STDOUT)]
         for _ in range(60):
-            try: urllib.request.urlopen('http://127.0.0.1:8780/api/hello', timeout=1); break
+            try: urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/hello', timeout=1); break
             except Exception: time.sleep(0.5)
         time.sleep(4)
 
     @classmethod
     def tearDownClass(cls):
-        for p in cls.procs: p.terminate(); p.wait(5)
+        for p in cls.procs: p.terminate(); p.wait(5)      # only the test's own processes
 
     def chat(self, *lines, wait=6):
-        out = subprocess.run([sys.executable, 'testing/phone.py', 'say', *lines, '--wait', str(wait)], cwd=ROOT, capture_output=True, text=True, timeout=120)
+        out = subprocess.run([sys.executable, 'testing/phone.py', 'say', *lines, '--wait', str(wait), '--url', f'ws://127.0.0.1:{PORT}/link'], cwd=ROOT, capture_output=True, text=True, timeout=120)
         return out.stdout
 
     def test_conversation_tools_and_robot(self):
         self.assertIn("You're home!", self.chat('hey bitch', wait=32))         # the one-time welcome after the upgrade (spoken by the robot)
         log = self.chat('set a 1 minute timer', 'remember that my sister is Chloe', 'do a robot sneeze', wait=4)
         self.assertIn('Timer started', log)
-        life = json.loads(urllib.request.urlopen('http://127.0.0.1:8780/api/life').read())
+        life = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/life').read())
         self.assertTrue(any(t['kind'] == 'timer' for t in life['tasks']))
-        mem = json.loads(urllib.request.urlopen('http://127.0.0.1:8780/api/memories').read())
+        mem = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/memories').read())
         self.assertTrue(any('Chloe' in m['text'] for m in mem))
         time.sleep(4)
         self.assertIn('move: test', open(os.path.join(SCRATCH, 'pi.log')).read())       # the robot played the invented move
@@ -132,7 +156,7 @@ class EndToEnd(unittest.TestCase):
     def test_pairing_is_required_off_the_mac(self):
         ip = subprocess.run(['ipconfig', 'getifaddr', 'en0'], capture_output=True, text=True).stdout.strip()
         if not ip: self.skipTest('no Wi-Fi address')
-        with self.assertRaises(urllib.error.HTTPError) as e: urllib.request.urlopen(f'http://{ip}:8780/api/memories')
+        with self.assertRaises(urllib.error.HTTPError) as e: urllib.request.urlopen(f'http://{ip}:{PORT}/api/memories')
         self.assertEqual(e.exception.code, 401)
 
 

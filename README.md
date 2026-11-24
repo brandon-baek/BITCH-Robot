@@ -53,11 +53,19 @@ Every sense and output is a **device** with capabilities: `ears`, `eyes`, `keys`
 | `core/memory.py` | Everything it remembers, in `~/.bitch/bitch.db` |
 | `app/` | The app for your phone and the Mac window |
 | `brain.py` | On the Pi: listens to the Mac and moves the servos (also plays invented moves) |
+| `face.py`, `hardware.py` | On the Pi: the OLED googly-eye face, and finding hardware plugged into the robot (screen, USB mic, camera) |
 | `desk.py`, `shows.py`, `sounds.py`, `music.py` | On the Pi: servos, performances, voice and music |
 | `control.py`, `tests.py` | On the Pi: keyboard driving, joint tests |
 | `testing/` | Tests that need no hardware: `~/dc-venv/bin/python -m unittest testing.test_bitch` |
 
 Servo channels on the PCA9685: 0 base, 1 arm, 2 neck, 3 head.
+
+## Hardware on the robot itself
+Plug it in and restart listen mode; the Mac picks it up by itself (see **More › Devices**).
+- **OLED face** (I2C: SDA pin 3, SCL pin 5, RES pin 7): `pip install adafruit-circuitpython-ssd1306 --break-system-packages`,
+  then `python3 face.py` to see every feeling. BITCH's eyes then blink, look around, talk and sleep on the screen.
+- **USB microphone**: BITCH hears through the robot instead of the Mac (no setup).
+- Check what the robot finds: `python3 hardware.py`
 
 ## On the Pi without the Mac
 Run a show: `python3 -c "from shows import *; showtime()"` · Drive with the keyboard: `python3 -c "from control import *; drive()"`
