@@ -1,0 +1,123 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Desk Creature</title>
+<style>
+/* Desk Creature control room. Desk grey, ink navy, kraft robot, signal-blue camera, sun-yellow people.
+   One big Helvetica status word is the loud thing; everything else stays quiet. */
+:root{--desk:#dfe4e8;--panel:#d3d9de;--ink:#1f2a44;--soft:#5d6b84;--kraft:#b98b54;--kraft2:#8a6235;--cam:#2d6cdf;--you:#f4c430;--line:#c3cbd3;--bad:#c8402f}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;background:var(--desk);color:var(--ink);font:15px/1.45 "Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.app{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,1fr);gap:20px;padding:20px;min-height:100vh}
+.col{display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--panel);border-radius:20px;padding:16px;position:relative}
+h2{font-size:15px;font-weight:700;margin:0 0 10px}
+.cam{aspect-ratio:16/9;border-radius:14px;overflow:hidden;background:#1f2a44;display:grid;place-items:center}
+.cam img{width:100%;height:100%;object-fit:cover;display:block}
+.cam .off{color:#c9d2de;padding:20px;text-align:center}
+canvas{display:block;width:100%;height:min(46vh,440px);border-radius:14px;background:var(--desk);touch-action:none;cursor:crosshair}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;color:var(--soft);font-size:13px}.legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.status{font-weight:700;font-size:clamp(40px,5.2vw,64px);line-height:.92;letter-spacing:-.04em;margin:0}
+.conn{font-size:13px;color:var(--soft);display:flex;align-items:center;gap:6px;white-space:nowrap}.dot{width:9px;height:9px;border-radius:50%;background:var(--bad)}.dot.on{background:#2e9e5b}
+.meter{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:12px}.meter b{display:block;height:100%;width:0;background:var(--ink);transition:width .08s linear}
+.chat{display:flex;flex-direction:column;gap:8px;max-height:38vh;min-height:180px;overflow:auto;padding-right:4px}
+.msg{max-width:86%;padding:9px 13px;border-radius:16px;font-size:15px}
+.msg.you{align-self:flex-end;background:var(--ink);color:#eef2f7;border-bottom-right-radius:5px}
+.msg.robot{align-self:flex-start;background:#fff;border-bottom-left-radius:5px}
+.msg.note{align-self:center;background:transparent;color:var(--soft);font-size:13px;padding:2px}
+.msg small{display:block;color:var(--soft);font-size:12px;margin-top:3px}
+.empty{color:var(--soft)}
+form{display:flex;gap:8px;margin-top:12px}
+input[type=text]{flex:1;font:inherit;font-size:16px;padding:0 14px;min-height:46px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--ink)}
+button{font:600 14px "Helvetica Neue",Helvetica,Arial,sans-serif;min-height:44px;padding:0 16px;border-radius:12px;border:0;background:var(--ink);color:#eef2f7;cursor:pointer}
+.acts{display:flex;flex-wrap:wrap;gap:8px}.acts button{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.seg{display:inline-flex;background:var(--desk);border-radius:12px;padding:3px}.seg button{background:transparent;color:var(--ink);min-height:38px}.seg button.on{background:var(--ink);color:#eef2f7}
+.row{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center}
+.ctl{display:grid;gap:2px;flex:1 1 180px}.ctl label{display:flex;justify-content:space-between;font-weight:600;font-size:14px}.ctl span{color:var(--soft);font-weight:400}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:32px;background:transparent}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--ink)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--cam);border:3px solid var(--panel);margin-top:-8px;box-shadow:0 0 0 1px var(--ink)}
+.sw{display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:14px;min-height:40px}
+.sw input{appearance:none;width:42px;height:24px;border-radius:12px;background:var(--line);position:relative;margin:0;flex:none;transition:background .2s}
+.sw input::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s}.sw input:checked{background:var(--cam)}.sw input:checked::after{left:21px}
+.notes{font-size:13px;color:var(--bad);margin:0;display:grid;gap:2px}
+:focus-visible{outline:3px solid var(--cam);outline-offset:2px}
+@media(max-width:900px){.app{grid-template-columns:1fr}.app>.col:last-child{order:-1}canvas{height:62vw}.chat{max-height:none}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body><div class="app">
+<div class="col">
+  <div class="panel"><h2>What it sees</h2><div class="cam" id="camwrap"><img id="cam" alt="Camera preview with detected faces"></div>
+    <div class="legend"><span><i style="background:var(--you)"></i>The person it is looking at (closest)</span><span><i style="background:var(--cam)"></i>Other people</span></div></div>
+  <div class="panel"><h2>Where everyone is</h2><canvas id="map" aria-label="Top-down desk map"></canvas>
+    <div class="legend"><span>Drag the blue camera to where it sits, drag its handle to aim it. Click the desk to make the robot look there.</span></div>
+    <div class="row" style="margin-top:8px"><div class="ctl"><label for="fov">Camera view width <span id="fv"></span></label><input type="range" id="fov" min="40" max="110" step="1"></div>
+    <label class="sw"><input type="checkbox" id="flip"> Robot turns the wrong way</label></div></div>
+</div>
+<div class="col">
+  <div class="panel"><div class="top"><p class="status" id="status">Starting</p><span class="conn"><span class="dot" id="dot"></span><span id="conn">Robot offline</span></span></div>
+    <div class="meter" aria-hidden="true"><b id="lvl"></b></div>
+    <div class="row" style="margin-top:12px"><button type="button" id="stop">Stop talking</button><span class="conn">You can also just start talking over it.</span></div><div class="notes" id="notes"></div></div>
+  <div class="panel"><h2>Conversation</h2><div class="chat" id="chat"><p class="empty">Say hi. It listens all the time, or type below.</p></div>
+    <form id="f"><input type="text" id="t" placeholder="Type something to say to it" autocomplete="off"><button>Send</button></form></div>
+  <div class="panel"><h2>Quick actions</h2><div class="acts" id="acts"></div></div>
+  <div class="panel"><h2>Voice</h2><div class="row">
+    <div class="seg" role="group" aria-label="Voice style"><button type="button" data-v="words">Words</button><button type="button" data-v="babble">Creature babble</button></div>
+    <label class="sw"><input type="checkbox" id="mic"> Microphone</label></div>
+    <div class="ctl" style="margin-top:6px"><label for="rob">Robot effect <span id="rv"></span></label><input type="range" id="rob" min="0" max="1" step="0.05"></div></div>
+</div></div>
+<script>{
+const $=id=>document.getElementById(id);let st=null,drag=null,aim=null;
+const ACTS=[['Wave','happy','wave'],['Nod','happy','nod'],['Shake no','confused','shake'],['Wiggle','excited','wiggle'],['Look around','curious','look_around'],['Bow','proud','bow'],['Spin','excited','spin'],['Dance','excited','dance'],['Sing','happy','sing'],['Sleep','sleepy','sleep'],['Wake up','happy','wake']];
+$('acts').innerHTML=ACTS.map(([l,e,a])=>`<button type="button" data-e="${e}" data-a="${a}">${l}</button>`).join('');
+$('acts').onclick=e=>{const b=e.target.closest('button');if(b)fetch(`/emote?emotion=${b.dataset.e}&action=${b.dataset.a}`)};
+$('stop').onclick=()=>fetch('/stop');
+$('f').onsubmit=e=>{e.preventDefault();const v=$('t').value.trim();if(v)fetch('/type?text='+encodeURIComponent(v));$('t').value=''};
+const set=o=>fetch('/set?'+new URLSearchParams(o));
+document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{set({voice:b.dataset.v});st&&(st.voice=b.dataset.v);paint()});
+$('rob').oninput=()=>{$('rv').textContent=Math.round($('rob').value*100)+'%';set({robotness:$('rob').value})};
+$('mic').onchange=()=>set({mic:$('mic').checked?1:0});
+$('fov').oninput=()=>{st.cam.fov=+$('fov').value;$('fv').textContent=st.cam.fov+'°';saveCam()};$('flip').onchange=()=>{st.cam.flip=$('flip').checked;saveCam()};
+const saveCam=()=>set({x:st.cam.x,y:st.cam.y,yaw:st.cam.yaw,fov:st.cam.fov,flip:st.cam.flip?1:0});
+const img=$('cam');img.src='/video';
+const WORD={starting:'Starting','loading ears':'Waking up',listening:'Listening',hearing:'Hearing you',understanding:'Understanding',thinking:'Thinking',speaking:'Speaking',asleep:'Asleep'};
+let lastLog=-1,first=true,camMsg=0;
+function paint(){if(!st)return;if(!st.cam_ok&&!camMsg){camMsg=1;$('camwrap').innerHTML='<p class="off">Camera is off or not allowed. Allow Terminal in System Settings → Privacy → Camera, then restart.</p>'}$('status').textContent=st.mic_on||st.status!=='listening'?(WORD[st.status]||st.status):'Mic off';
+$('dot').classList.toggle('on',st.robot);$('conn').textContent=st.robot?'Robot connected':'Robot offline';$('lvl').style.width=Math.round(st.level*100)+'%';
+document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('on',b.dataset.v===st.voice));
+$('notes').innerHTML=(st.notes||[]).filter(n=>/fail|not|off|problem|unavailable|stopped/i.test(n)).slice(-3).map(n=>`<span>${n.replace(/</g,'&lt;')}</span>`).join('');
+if(first){$('rob').value=st.robotness;$('rv').textContent=Math.round(st.robotness*100)+'%';$('mic').checked=st.mic_on;$('fov').value=st.cam.fov;$('fv').textContent=st.cam.fov+'°';$('flip').checked=st.cam.flip;first=false}
+if(st.log.length!==lastLog){lastLog=st.log.length;const c=$('chat');if(st.log.length){c.innerHTML=st.log.map(m=>`<div class="msg ${m.role}">${m.text.replace(/</g,'&lt;')}${m.emotion?`<small>${m.emotion}${m.action&&m.action!=='none'?', '+m.action.replace('_',' '):''}</small>`:''}</div>`).join('');c.scrollTop=c.scrollHeight}}}
+async function pull(){try{const s=await(await fetch('/state')).json();if(drag&&st)s.cam=st.cam;st=s;paint()}catch(e){$('status').textContent='Companion stopped'}}
+setInterval(pull,150);pull();
+// ---- desk map ----
+const c=$('map'),x=c.getContext('2d');const K={ink:'#1f2a44',soft:'#5d6b84',kraft:'#b98b54',kraft2:'#8a6235',cam:'#2d6cdf',you:'#f4c430',line:'#c3cbd3'};
+let W=0,H=0,S=2,OX=0,OY=0;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches,t0=performance.now();
+function fit(){const r=c.getBoundingClientRect(),d=devicePixelRatio||1;W=r.width;H=r.height;c.width=W*d;c.height=H*d;x.setTransform(d,0,0,d,0,0);S=Math.min(W/340,H/250);OX=W/2;OY=H-40*S}
+const w2s=(a,b)=>[OX+a*S,OY-b*S],s2w=(a,b)=>[(a-OX)/S,(OY-b)/S];
+function rr(a,b,w,h,r){x.beginPath();x.roundRect(a-w/2,b-h/2,w,h,r)}
+function handle(){const th=st.cam.yaw*Math.PI/180,[cx,cy]=w2s(st.cam.x,st.cam.y);return[cx+16.5*S*Math.sin(th),cy-16.5*S*Math.cos(th)]}
+function draw(now){requestAnimationFrame(draw);if(!st)return;x.clearRect(0,0,W,H);
+x.fillStyle=K.line;{const[x0,y1]=s2w(0,0),[x1,y0]=s2w(W,H);for(let gx=Math.ceil(x0/10)*10;gx<=x1;gx+=10)for(let gy=Math.ceil(y0/10)*10;gy<=y1;gy+=10){const[a,b]=w2s(gx,gy);x.beginPath();x.arc(a,b,1,0,7);x.fill()}}
+const[rx,ry]=w2s(0,0);x.strokeStyle=K.soft;x.lineWidth=1;x.setLineDash([3,6]);x.font='12px "Helvetica Neue",Helvetica,Arial';x.fillStyle=K.soft;
+for(const[r,l]of[[50,'50 cm'],[100,'1 m'],[150,'1.5 m'],[200,'2 m']]){x.beginPath();x.arc(rx,ry,r*S,Math.PI*1.08,Math.PI*1.92);x.stroke();x.fillText(l,rx+4,ry-r*S-5)}x.setLineDash([]);
+const cm=st.cam,[cx,cy]=w2s(cm.x,cm.y),th=cm.yaw*Math.PI/180,f=cm.fov*Math.PI/360,L=Math.max(W,H)*1.5;
+const g=x.createRadialGradient(cx,cy,0,cx,cy,L*0.5);g.addColorStop(0,'rgba(45,108,223,.26)');g.addColorStop(1,'rgba(45,108,223,0)');x.fillStyle=g;x.beginPath();x.moveTo(cx,cy);x.lineTo(cx+L*Math.sin(th-f),cy-L*Math.cos(th-f));x.lineTo(cx+L*Math.sin(th+f),cy-L*Math.cos(th+f));x.closePath();x.fill();
+const ppl=st.people||[],tg=aim||(ppl.find(p=>p.target)?[ppl.find(p=>p.target).x,ppl.find(p=>p.target).y]:null);
+if(tg){const[px,py]=w2s(tg[0],tg[1]);const gb=x.createLinearGradient(rx,ry,px,py);gb.addColorStop(0,'rgba(185,139,84,.9)');gb.addColorStop(1,'rgba(244,196,48,.9)');x.strokeStyle=gb;x.lineWidth=4;x.lineCap='round';x.beginPath();x.moveTo(rx,ry);x.lineTo(px,py);x.stroke()}
+const ang=tg?Math.atan2(tg[0],Math.max(1,tg[1])):0;x.fillStyle='#fff';x.strokeStyle=K.ink;x.lineWidth=2;rr(rx,ry+6*S,34*S,22*S,4*S);x.fill();x.stroke();
+x.save();x.translate(rx,ry);x.rotate(ang);x.fillStyle=K.kraft;x.beginPath();x.arc(0,0,7.5*S,0,7);x.fill();x.fillStyle=K.kraft2;x.fillRect(-1.2*S,-15*S,2.4*S,15*S);x.fillStyle=K.kraft;rr(0,-17*S,13*S,3*S,S);x.fill();
+for(const e of[-3,3]){x.fillStyle='#fff';x.beginPath();x.arc(e*S,-19.6*S,2*S,0,7);x.fill();x.strokeStyle=K.ink;x.lineWidth=1;x.stroke();x.fillStyle=K.ink;x.beginPath();x.arc(e*S,-20.4*S,.9*S,0,7);x.fill()}x.restore();
+x.save();x.translate(cx,cy);x.rotate(th);x.fillStyle=K.cam;rr(0,0,12*S,8*S,2*S);x.fill();x.fillStyle='#fff';x.beginPath();x.arc(0,-4*S,2.2*S,0,7);x.fill();x.fillStyle=K.cam;x.beginPath();x.arc(0,-4*S,1.1*S,0,7);x.fill();
+x.strokeStyle=K.cam;x.lineWidth=2;x.beginPath();x.moveTo(0,-6.5*S);x.lineTo(0,-15*S);x.stroke();x.fillStyle='#fff';x.beginPath();x.arc(0,-16.5*S,3*S,0,7);x.fill();x.stroke();x.restore();
+const p=reduce?0:((now-t0)/1400)%1;x.textAlign='center';
+for(const q of ppl){const[px,py]=w2s(q.x,q.y),R=4.5*S,col=q.target?K.you:K.cam;
+if(q.target){x.strokeStyle=`rgba(244,196,48,${.7*(1-p)})`;x.lineWidth=2;x.beginPath();x.arc(px,py,R+7*S*p,0,7);x.stroke()}
+x.fillStyle=col;x.beginPath();x.arc(px,py,R,0,7);x.fill();x.strokeStyle=K.ink;x.lineWidth=2;x.stroke();
+x.fillStyle=K.ink;x.font='600 12px "Helvetica Neue",Helvetica,Arial';x.fillText((Math.hypot(q.x,q.y)/100).toFixed(1)+' m',px,py+R+15)}x.textAlign='start';
+if(aim){const[a,b]=w2s(aim[0],aim[1]);x.strokeStyle=K.ink;x.lineWidth=2;x.beginPath();x.arc(a,b,8,0,7);x.moveTo(a-14,b);x.lineTo(a+14,b);x.moveTo(a,b-14);x.lineTo(a,b+14);x.stroke()}}
+const pos=e=>{const r=c.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
+c.onpointerdown=e=>{if(!st)return;const[sx,sy]=pos(e),[hx,hy]=handle(),[cx,cy]=w2s(st.cam.x,st.cam.y);
+if(Math.hypot(sx-hx,sy-hy)<14)drag='aim';else if(Math.hypot(sx-cx,sy-cy)<9*S)drag='move';
+else{const[wx,wy]=s2w(sx,sy);aim=[wx,wy];fetch(`/aim?x=${wx}&y=${wy}`);setTimeout(()=>aim=null,2500);return}c.setPointerCapture(e.pointerId)};
+c.onpointermove=e=>{if(!st)return;const[sx,sy]=pos(e);if(!drag){const[hx,hy]=handle(),[cx,cy]=w2s(st.cam.x,st.cam.y);c.style.cursor=Math.hypot(sx-hx,sy-hy)<14?'grab':Math.hypot(sx-cx,sy-cy)<9*S?'move':'crosshair';return}
+if(drag==='move'){const[wx,wy]=s2w(sx,sy);st.cam.x=Math.round(wx);st.cam.y=Math.round(wy)}else{const[cx,cy]=w2s(st.cam.x,st.cam.y);st.cam.yaw=Math.round(Math.atan2(sx-cx,cy-sy)*180/Math.PI)}};
+c.onpointerup=()=>{if(drag){drag=null;saveCam()}};addEventListener('resize',fit);fit();requestAnimationFrame(draw);
+}</script></body></html>

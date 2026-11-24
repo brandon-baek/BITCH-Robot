@@ -12,7 +12,8 @@ a 2.42" OLED face (in progress), and a synthesized creature voice.
 | `music.py` | Original background music made on the Pi: disco (70 s, sectioned), dance, spooky, lullaby, playful, fanfare, ambient |
 | `control.py` | Keyboard control mode: drive every joint live, trigger sounds and emotes |
 | `brain.py` | Listen mode: reacts to what you say (heard by your Mac) with moves and chirps |
-| `mac/companion.py` | Runs on the Mac: ears (Whisper), brain (LLM), voice, eyes (camera) |
+| `mac/companion.py` | Runs on the Mac: ears (Whisper + speech detector), brain (LLM), voice, eyes (camera) |
+| `mac/dashboard.html` | The control room page the companion serves |
 | `update.sh` | Pulls the latest code and links it into `~` |
 
 ## First time on the Pi
@@ -46,7 +47,7 @@ the robot moves, looks at you and talks back through its speaker.
 
 **On the Mac, each time:** `cd ~/BITCH-Robot && git pull -q && ~/dc-venv/bin/python mac/companion.py`
 
-Camera map: http://localhost:8770 while it runs. Drag the camera to where it really is around the robot.
+The control room opens by itself at http://localhost:8770: live camera with face boxes, a desk map of everyone it sees, the conversation, quick actions and voice settings. Drag the camera on the map to where it really sits. Talk over the robot any time to interrupt it.
 
 Options: `--words` (real words, needs `brew install espeak-ng` and `~/dc-venv/bin/pip install kokoro soundfile`),
 `--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--calibrate` (open the camera map),

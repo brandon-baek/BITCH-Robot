@@ -2,3 +2,4 @@ mlx-whisper
 sounddevice
 numpy
 opencv-python
+silero-vad

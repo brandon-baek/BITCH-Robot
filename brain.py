@@ -19,6 +19,7 @@ class _H(BaseHTTPRequestHandler):
     def do_GET(s):
         u=urlparse(s.path); q={k:v[0] for k,v in parse_qs(u.query).items()}
         if u.path=='/hear' and q.get('text','').strip(): Q.put(('hear',q['text'].strip()))
+        elif u.path=='/stop': STOP.set()
         elif u.path=='/emote': Q.put(('emote',q.get('emotion','neutral'),q.get('action','none')))
         elif u.path=='/say': Q.put(('say',q.get('text',''),q.get('emotion','neutral'),q.get('action','none')))
         elif u.path=='/look':
@@ -37,6 +38,7 @@ class _H(BaseHTTPRequestHandler):
         s._ok({'ok':True,'busy':BUSY[0]})
     def log_message(s,*a): pass
 BUSY=[False]
+STOP=threading.Event()
 def has(t,*ws): return any(re.search(r'\b'+w+r'\b',t) for w in ws)
 def react(A,text):
     t=text.lower(); print(f'\n  heard: "{text}"',flush=True)
@@ -114,12 +116,18 @@ def talk(A,path,emotion='neutral',text=''):
     try: pr=_sp.Popen([pl,path],stdout=_sp.DEVNULL,stderr=_sp.DEVNULL) if pl else None
     except Exception: pr=None
     t0,_=EMO.get(emotion,EMO['neutral']); n0=t0.get('n',-0.8); h0=t0.get('h',0)
+    STOP.clear()
     for i,e in enumerate(env):                        # 'lip sync': the head bobs with the loudness
+        if STOP.is_set():                             # interrupted: hush and look attentive
+            if pr:
+                try: pr.terminate()
+                except Exception: pass
+            A.to(n=-0.6,h=0.25,stiff=2); A.wait(0.3); return False
         A.to(n=n0+0.22*e,h=h0+0.08*(1 if (i//6)%2 else -1)*e,stiff=2.4); A.wait(0.05)
     if pr:
         try: pr.wait(timeout=2)
         except Exception: pass
-    pose(A,emotion,1.2); A.wait(0.2)
+    pose(A,emotion,1.2); A.wait(0.2); return True
 def listen():
     srv=ThreadingHTTPServer(('0.0.0.0',PORT),_H); threading.Thread(target=srv.serve_forever,daemon=True).start()
     try: ip=socket.gethostbyname(socket.gethostname()+'.local')
@@ -150,9 +158,11 @@ def listen():
                 pose(A,emo); A.wait(0.6); res=act(A,action)
             elif kind=='say':
                 _,text,emo,action=item
-                import sounds; p,_on=sounds.speak_wav(text,emo); talk(A,p,emo,text); res=act(A,action)
+                import sounds; p,_on=sounds.speak_wav(text,emo)
+                if talk(A,p,emo,text) is not False: res=act(A,action)
             elif kind=='speak':
-                _,p,emo,action,text=item; talk(A,p,emo,text); res=act(A,action)
+                _,p,emo,action,text=item
+                if talk(A,p,emo,text) is not False: res=act(A,action)
                 try: os.remove(p)
                 except Exception: pass
             if res=='sleep':
