@@ -41,7 +41,7 @@ the robot moves, looks at you and talks back through its speaker.
 **On the Pi:** `python3 -c "from brain import *; listen()"`
 
 **On the Mac, once** (Ollama app installed and opened):
-`git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh`
+`git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh`
 (add `--words` at the end to also install the real-words voice)
 
 **On the Mac, each time:** `cd ~/BITCH-Robot && git pull -q && ~/dc-venv/bin/python mac/companion.py`

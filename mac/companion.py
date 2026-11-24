@@ -171,39 +171,106 @@ def eyes():
             cv2.imshow('Desk Creature eyes',g); cv2.waitKey(1)
         time.sleep(0.12)
 
-MAP_HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Camera map</title>
-<style>:root{color-scheme:light dark;--bg:light-dark(#e9d6b4,#241b12);--card:light-dark(#f7ecd8,#33271a);--ink:light-dark(#2a1d10,#f3e6cf);--mute:light-dark(#6e5636,#c4ad8a)}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;padding:16px}
-main{width:min(720px,100%);display:grid;gap:12px}h1{margin:0;font:800 30px/1.1 system-ui}canvas{width:100%;aspect-ratio:1;background:var(--card);border-radius:16px;touch-action:none;cursor:crosshair}
-.row{display:flex;flex-wrap:wrap;gap:16px;align-items:center}label{display:flex;gap:8px;align-items:center}input[type=range]{width:180px;accent-color:#e8741e}p{margin:0;color:var(--mute)}b{color:#e8741e}</style></head>
-<body><main><h1>Where is the camera?</h1>
-<p>Top-down view. The robot is the brown circle facing up (toward you). <b>Drag the blue camera</b> to where it really sits, and turn it with the slider (or the scroll wheel) until its cone faces where the camera points. The orange dot is where it thinks you are. Click anywhere else to make the robot look there.</p>
-<canvas id="c" width="720" height="720"></canvas>
-<div class="row"><label>Camera turn <input type="range" id="yaw" min="-180" max="180" step="1"><span id="yv"></span>°</label>
-<label>Camera view width <input type="range" id="fov" min="40" max="110" step="1"><span id="fv"></span>°</label>
-<label><input type="checkbox" id="flip"> Robot turns the wrong way</label></div>
-<p id="st"></p></main>
-<script>{const c=document.getElementById('c'),x=c.getContext('2d'),S=2.2,OX=360,OY=600;let cfg=null,person=null,drag=false,aim=null;
-const W2S=(px,py)=>[OX+px*S,OY-py*S],S2W=(sx,sy)=>[(sx-OX)/S,(OY-sy)/S];
-function draw(){if(!cfg)return;x.clearRect(0,0,720,720);x.strokeStyle='rgba(128,100,60,.25)';x.lineWidth=1;
-for(let i=-160;i<=160;i+=20){let[a,b]=W2S(i,-40),[a2,b2]=W2S(i,260);x.beginPath();x.moveTo(a,b);x.lineTo(a2,b2);x.stroke();[a,b]=W2S(-160,i+100);[a2,b2]=W2S(160,i+100);x.beginPath();x.moveTo(a,b);x.lineTo(a2,b2);x.stroke()}
-x.fillStyle='#8a6a40';x.font='13px system-ui';x.fillText('20 cm grid',12,710);
-const[cx,cy]=W2S(cfg.x,cfg.y),th=cfg.yaw*Math.PI/180,f=cfg.fov*Math.PI/360;x.fillStyle='rgba(60,130,230,.15)';x.beginPath();x.moveTo(cx,cy);
-for(const s of[-f,f]){}x.lineTo(cx+600*Math.sin(th-f),cy-600*Math.cos(th-f));x.lineTo(cx+600*Math.sin(th+f),cy-600*Math.cos(th+f));x.closePath();x.fill();
-x.save();x.translate(cx,cy);x.rotate(th);x.fillStyle='#2f6fd6';x.fillRect(-16,-10,32,20);x.fillStyle='#fff';x.beginPath();x.arc(0,-10,5,0,7);x.fill();x.restore();
-const[rx,ry]=W2S(0,0);x.fillStyle='#8a5a2b';x.beginPath();x.arc(rx,ry,22,0,7);x.fill();x.strokeStyle='#8a5a2b';x.lineWidth=5;x.beginPath();x.moveTo(rx,ry);x.lineTo(rx,ry-42);x.stroke();
-const tgt=aim||person;if(tgt){const[px,py]=W2S(tgt[0],tgt[1]);x.strokeStyle='#e8741e';x.lineWidth=3;x.setLineDash([6,6]);x.beginPath();x.moveTo(rx,ry);x.lineTo(px,py);x.stroke();x.setLineDash([]);
-x.fillStyle='#e8741e';x.beginPath();x.arc(px,py,12,0,7);x.fill()}}
-async function pull(){try{const r=await(await fetch('/state')).json();if(!cfg||!drag)cfg=r.cam;person=r.person;
-document.getElementById('st').textContent=r.person?`You: ${Math.round(r.person[0])} cm right, ${Math.round(r.person[1])} cm in front of the robot`:'No face seen right now.';
-if(!drag){yaw.value=cfg.yaw;fov.value=cfg.fov;flip.checked=cfg.flip}yv.textContent=cfg.yaw;fv.textContent=cfg.fov;draw()}catch(e){}}
-const set=()=>fetch('/set?'+new URLSearchParams({x:cfg.x,y:cfg.y,yaw:cfg.yaw,fov:cfg.fov,flip:cfg.flip?1:0}));
-const ev=e=>{const r=c.getBoundingClientRect();return S2W((e.clientX-r.left)*720/r.width,(e.clientY-r.top)*720/r.height)};
-c.onpointerdown=e=>{const[wx,wy]=ev(e);if(Math.hypot(wx-cfg.x,wy-cfg.y)<14){drag=true;c.setPointerCapture(e.pointerId)}else{aim=[wx,wy];fetch('/aim?x='+wx+'&y='+wy);setTimeout(()=>{aim=null},2500);draw()}};
-c.onpointermove=e=>{if(!drag)return;[cfg.x,cfg.y]=ev(e).map(v=>Math.round(v));draw()};c.onpointerup=()=>{if(drag){drag=false;set()}};
-c.onwheel=e=>{e.preventDefault();cfg.yaw=((cfg.yaw+Math.sign(e.deltaY)*5+540)%360)-180;set();draw()};
-yaw.oninput=()=>{cfg.yaw=+yaw.value;set();draw()};fov.oninput=()=>{cfg.fov=+fov.value;set();draw()};flip.onchange=()=>{cfg.flip=flip.checked;set()};
-setInterval(pull,200);pull()}</script></body></html>"""
+MAP_HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Camera placement</title>
+<style>
+/* Desk Creature camera placement: a top-down desk diagram.
+   Ink navy on cool desk grey, kraft-brown robot, signal-blue camera, sun-yellow you.
+   Helvetica, set big for the live readout; everything else quiet. */
+:root{--desk:#dfe4e8;--desk2:#d3d9de;--ink:#1f2a44;--soft:#5d6b84;--kraft:#b98b54;--kraft2:#8a6235;--cam:#2d6cdf;--you:#f4c430;--line:#c3cbd3}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--desk);color:var(--ink);font:16px/1.45 "Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:100vh}
+.stage{position:relative;padding:20px}
+canvas{display:block;width:100%;height:calc(100vh - 40px);min-height:420px;border-radius:22px;background:var(--desk2);touch-action:none;cursor:crosshair}
+aside{padding:36px 32px;display:flex;flex-direction:column;gap:26px;border-left:1px solid var(--line)}
+h1{font-weight:700;font-size:44px;line-height:.98;letter-spacing:-.03em;margin:0}
+.lede{margin:0;color:var(--soft);max-width:30ch}
+.read{font-weight:700;font-size:54px;line-height:.95;letter-spacing:-.04em}
+.read small{display:block;font-size:15px;font-weight:400;letter-spacing:0;color:var(--soft);margin-top:8px}
+.ctl{display:grid;gap:8px}.ctl label{display:flex;justify-content:space-between;font-weight:600}.ctl label span{color:var(--soft);font-weight:400}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:36px;background:transparent}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--ink)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--cam);border:3px solid var(--desk);margin-top:-9px;box-shadow:0 0 0 1px var(--ink)}
+input[type=range]::-moz-range-track{height:4px;background:var(--ink)}input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--cam);border:3px solid var(--desk)}
+.sw{display:flex;align-items:center;gap:12px;cursor:pointer;font-weight:600;min-height:44px}
+.sw input{appearance:none;width:46px;height:26px;border-radius:13px;background:var(--line);position:relative;transition:background .2s;margin:0;flex:none}
+.sw input::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s}
+.sw input:checked{background:var(--cam)}.sw input:checked::after{left:23px}
+:focus-visible{outline:3px solid var(--cam);outline-offset:3px}
+.hint{color:var(--soft);font-size:14px;margin:0;margin-top:auto}
+@media(max-width:820px){.wrap{grid-template-columns:1fr}canvas{height:auto;aspect-ratio:1}aside{border-left:0;padding:8px 20px 32px}h1{font-size:36px}.read{font-size:40px}}
+@media(prefers-reduced-motion:reduce){.sw input,.sw input::after{transition:none}}
+</style></head><body><div class="wrap">
+<div class="stage"><canvas id="c" aria-label="Top-down map of the robot and camera"></canvas></div>
+<aside>
+<div><h1>Camera placement</h1><p class="lede" style="margin-top:12px">Drag the camera to where it sits on your desk. Drag its blue handle to aim it.</p></div>
+<div class="read" id="read">Looking…<small>Step in front of the camera</small></div>
+<div class="ctl"><label for="yaw">Camera aim <span id="yv"></span></label><input type="range" id="yaw" min="-180" max="180" step="1"></div>
+<div class="ctl"><label for="fov">Camera view width <span id="fv"></span></label><input type="range" id="fov" min="40" max="110" step="1"></div>
+<label class="sw"><input type="checkbox" id="flip"> Robot turns the wrong way</label>
+<p class="hint">Click anywhere on the desk to make the robot look there. Changes save as you go.</p>
+</aside></div>
+<script>{
+const c=document.getElementById('c'),x=c.getContext('2d'),$=id=>document.getElementById(id);
+const C={desk:'#d3d9de',ink:'#1f2a44',soft:'#5d6b84',kraft:'#b98b54',kraft2:'#8a6235',cam:'#2d6cdf',you:'#f4c430',line:'#c3cbd3'};
+let cfg=null,person=null,aim=null,drag=null,W=0,H=0,S=2,OX=0,OY=0,t0=performance.now();
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function fit(){const r=c.getBoundingClientRect(),d=devicePixelRatio||1;W=r.width;H=r.height;c.width=W*d;c.height=H*d;x.setTransform(d,0,0,d,0,0);
+S=Math.min(W/340,H/290);OX=W/2;OY=H-54*S}
+const w2s=(px,py)=>[OX+px*S,OY-py*S],s2w=(sx,sy)=>[(sx-OX)/S,(OY-sy)/S];
+function rr(px,py,w,h,r){x.beginPath();x.roundRect(px-w/2,py-h/2,w,h,r)}
+function draw(now){if(!cfg){requestAnimationFrame(draw);return}x.clearRect(0,0,W,H);
+// dot grid, 10 cm
+x.fillStyle=C.line;{const[x0,y1]=s2w(0,0),[x1,y0]=s2w(W,H);for(let gx=Math.ceil(x0/10)*10;gx<=x1;gx+=10)for(let gy=Math.ceil(y0/10)*10;gy<=y1;gy+=10){const[a,b]=w2s(gx,gy);if(a>8&&a<W-8&&b>8&&b<H-8){x.beginPath();x.arc(a,b,1.1,0,7);x.fill()}}}
+// distance rings
+const[rx,ry]=w2s(0,0);x.strokeStyle=C.soft;x.lineWidth=1;x.setLineDash([3,6]);x.font='13px "Helvetica Neue",Helvetica,Arial';x.fillStyle=C.soft;
+for(const [r,l] of [[50,'50 cm'],[100,'1 m'],[150,'1.5 m'],[200,'2 m']]){x.beginPath();x.arc(rx,ry,r*S,Math.PI*1.08,Math.PI*1.92);x.stroke();x.fillText(l,rx+4,ry-r*S-6)}x.setLineDash([]);
+// camera cone
+const[cx,cy]=w2s(cfg.x,cfg.y),th=cfg.yaw*Math.PI/180,f=cfg.fov*Math.PI/360,L=Math.max(W,H)*1.4;
+const g=x.createRadialGradient(cx,cy,0,cx,cy,L*0.55);g.addColorStop(0,'rgba(45,108,223,.28)');g.addColorStop(1,'rgba(45,108,223,0)');
+x.fillStyle=g;x.beginPath();x.moveTo(cx,cy);x.lineTo(cx+L*Math.sin(th-f),cy-L*Math.cos(th-f));x.lineTo(cx+L*Math.sin(th+f),cy-L*Math.cos(th+f));x.closePath();x.fill();
+// gaze beam
+const tgt=aim||person;
+if(tgt){const[px,py]=w2s(tgt[0],tgt[1]);const gb=x.createLinearGradient(rx,ry,px,py);gb.addColorStop(0,'rgba(185,139,84,.9)');gb.addColorStop(1,'rgba(244,196,48,.9)');
+x.strokeStyle=gb;x.lineWidth=4;x.lineCap='round';x.beginPath();x.moveTo(rx,ry);x.lineTo(px,py);x.stroke()}
+// robot, top-down: shoebox, turntable, arm, face with googly eyes
+const ang=tgt?Math.atan2(tgt[0],Math.max(1,tgt[1])):0;
+x.fillStyle='#fff';x.strokeStyle=C.ink;x.lineWidth=2;rr(rx,ry+6*S,34*S,22*S,4*S);x.fill();x.stroke();
+x.save();x.translate(rx,ry);x.rotate(ang);x.fillStyle=C.kraft;x.beginPath();x.arc(0,0,7.5*S,0,7);x.fill();
+x.fillStyle=C.kraft2;x.fillRect(-1.2*S,-15*S,2.4*S,15*S);x.fillStyle=C.kraft;rr(0,-17*S,13*S,3*S,1*S);x.fill();
+for(const e of[-3,3]){x.fillStyle='#fff';x.beginPath();x.arc(e*S,-19.6*S,2*S,0,7);x.fill();x.strokeStyle=C.ink;x.lineWidth=1;x.stroke();x.fillStyle=C.ink;x.beginPath();x.arc(e*S,-20.4*S,0.9*S,0,7);x.fill()}
+x.restore();
+// camera body + aim handle
+x.save();x.translate(cx,cy);x.rotate(th);x.fillStyle=C.cam;rr(0,0,12*S,8*S,2*S);x.fill();x.fillStyle='#fff';x.beginPath();x.arc(0,-4*S,2.2*S,0,7);x.fill();
+x.fillStyle=C.cam;x.beginPath();x.arc(0,-4*S,1.1*S,0,7);x.fill();
+x.strokeStyle=C.cam;x.lineWidth=2;x.beginPath();x.moveTo(0,-6.5*S);x.lineTo(0,-15*S);x.stroke();x.fillStyle='#fff';x.beginPath();x.arc(0,-16.5*S,3*S,0,7);x.fill();x.stroke();x.restore();
+// you
+if(person){const[px,py]=w2s(person[0],person[1]);const p=reduce?0:(((now-t0)/1400)%1);
+x.strokeStyle='rgba(244,196,48,'+(0.7*(1-p))+')';x.lineWidth=2;x.beginPath();x.arc(px,py,(9+14*p)*S/2,0,7);x.stroke();
+x.fillStyle=C.you;x.beginPath();x.arc(px,py,9*S/2,0,7);x.fill();x.strokeStyle=C.ink;x.lineWidth=2;x.stroke();
+x.fillStyle=C.ink;x.font='600 14px "Helvetica Neue",Helvetica,Arial';x.textAlign='center';x.fillText('You',px,py+9*S/2+18);x.textAlign='start'}
+if(aim){const[ax,ay]=w2s(aim[0],aim[1]);x.strokeStyle=C.ink;x.lineWidth=2;x.beginPath();x.arc(ax,ay,8,0,7);x.moveTo(ax-14,ay);x.lineTo(ax+14,ay);x.moveTo(ax,ay-14);x.lineTo(ax,ay+14);x.stroke()}
+requestAnimationFrame(draw)}
+function handle(){const th=cfg.yaw*Math.PI/180,[cx,cy]=w2s(cfg.x,cfg.y);return[cx+16.5*S*Math.sin(th),cy-16.5*S*Math.cos(th)]}
+const pos=e=>{const r=c.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
+c.onpointerdown=e=>{const[sx,sy]=pos(e),[hx,hy]=handle(),[cx,cy]=w2s(cfg.x,cfg.y);
+if(Math.hypot(sx-hx,sy-hy)<14){drag='aim'}else if(Math.hypot(sx-cx,sy-cy)<9*S){drag='move'}
+else{const[wx,wy]=s2w(sx,sy);aim=[wx,wy];fetch('/aim?x='+wx+'&y='+wy);clearTimeout(aim.t);setTimeout(()=>{aim=null},2500);return}
+c.setPointerCapture(e.pointerId)};
+c.onpointermove=e=>{const[sx,sy]=pos(e);
+if(!drag){const[hx,hy]=cfg?handle():[0,0],[cx,cy]=cfg?w2s(cfg.x,cfg.y):[0,0];c.style.cursor=Math.hypot(sx-hx,sy-hy)<14?'grab':Math.hypot(sx-cx,sy-cy)<9*S?'move':'crosshair';return}
+if(drag==='move'){const[wx,wy]=s2w(sx,sy);cfg.x=Math.round(wx);cfg.y=Math.round(wy)}
+else{const[cx,cy]=w2s(cfg.x,cfg.y);cfg.yaw=Math.round(Math.atan2(sx-cx,cy-sy)*180/Math.PI);sync()}};
+c.onpointerup=()=>{if(drag){drag=null;save()}};
+const save=()=>fetch('/set?'+new URLSearchParams({x:cfg.x,y:cfg.y,yaw:cfg.yaw,fov:cfg.fov,flip:cfg.flip?1:0}));
+function sync(){$('yaw').value=cfg.yaw;$('fov').value=cfg.fov;$('flip').checked=cfg.flip;$('yv').textContent=cfg.yaw+'°';$('fv').textContent=cfg.fov+'°'}
+$('yaw').oninput=()=>{cfg.yaw=+$('yaw').value;sync();save()};$('fov').oninput=()=>{cfg.fov=+$('fov').value;sync();save()};$('flip').onchange=()=>{cfg.flip=$('flip').checked;save()};
+async function pull(){try{const r=await(await fetch('/state')).json();if(!drag){const first=!cfg;cfg=r.cam;if(first)sync()}person=r.person;
+if(person){const lr=Math.round(person[0]),fw=Math.round(person[1]);$('read').innerHTML=`${Math.abs(lr)} cm ${lr>=0?'right':'left'}<br>${fw} cm ahead<small>Where it thinks you are, from the robot</small>`}
+else $('read').innerHTML='Looking…<small>Step in front of the camera</small>'}catch(e){}}
+addEventListener('resize',fit);fit();setInterval(pull,200);pull();requestAnimationFrame(draw);
+}</script></body></html>
+"""
 def map_server():
     from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
     class H(BaseHTTPRequestHandler):
