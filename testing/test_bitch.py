@@ -80,6 +80,7 @@ class Brain(unittest.TestCase):
         self.assertFalse(b.engaged('Ryan, do you want to see my companion app?'))
         self.assertFalse(b.engaged('Now go join.'))
         self.assertTrue(b.engaged('hey bitch, what time is it'))
+        self.assertTrue(b.engaged("yes it's me", {'name': 'Brandon'})); self.assertFalse(b.engaged("Actually, what's it called?", {'name': 'Brandon'}))
         b.last_spoke = __import__('time').time(); self.assertTrue(b.engaged('yeah, tell me more'))
 
     def test_home_city_must_be_said(self):

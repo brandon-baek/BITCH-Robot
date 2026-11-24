@@ -142,6 +142,8 @@ class Brain:
             for m in memory.recall(it['text'], k=6): mem.setdefault(m['id'], m['text'])
         if mem: bits.append('you remember: ' + '; '.join(mem.values()))
         if it.get('extra'): bits.append(it['extra'])
+        if s.pending_identity and time.time() < s.pending_identity['until']:
+            bits.append(f"you asked whether this is {s.pending_identity['name']} and are waiting for a yes; don't ask again, just reply to what they said")
         return '[' + ' | '.join(bits) + ']'
 
     def history(s, n=12):
@@ -221,7 +223,8 @@ class Brain:
     def engaged(s, text, pend=None):
         """Is overheard speech meant for BITCH? Only if it says the name, BITCH is mid-conversation (it spoke in the last
         25 seconds or just asked something), or the speaker is looking right at it."""
-        if named(text) or pend: return True
+        if named(text): return True
+        if pend and (YES.search(text) or re.search(r"\b(no|nope|nah|my name|i'?m|it'?s me|this is|call me)\b", text, re.I)): return True
         if re.match(r"^\W*([A-Z][a-z]+),", text) and not named(text.split(',')[0]): return False     # "Ryan, look at this"
         if time.time() - s.last_spoke < 25: return True
         watching = [p for p in hub.people if p.get('target')]
@@ -266,7 +269,7 @@ class Brain:
             hub.chat('bitch', say, dev, emotion=feeling, move=move, actions=list(acts), proactive=proactive, why=it.get('why', ''))
         speak = it.get('speak', True)
         voice.say(say, feeling, move, origin=dev, speak=speak)
-        if say: s.last_spoke = time.time()
+        if say: s.last_spoke = time.time() - (15 if proactive else 0)     # after speaking up on its own, only a 10 s reply window
 
     # ----- the body -----
     def perform(s, what, ctx):
