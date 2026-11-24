@@ -532,7 +532,7 @@ function renderDevices() {
   const L = S.labels || {};
   $('devices').innerHTML = S.devices.map(d => `<div class="item"><div class="txt"><b>${esc(d.name)}</b>${d.id === S.id ? ' <span class="hint">(this one)</span>' : ''}
     <span class="meta"><span class="dot ${d.online ? 'on' : ''}" style="display:inline-block;margin-right:6px"></span>${esc(d.detail || (d.online ? 'Connected' : 'Offline'))}</span>
-    <div class="chips" style="margin-top:8px">${d.caps.map(c => `<button class="chip ${d.off.includes(c) ? '' : 'on'}" data-dev="${esc(d.id)}" data-cap="${c}" aria-pressed="${!d.off.includes(c)}">${esc(L[c] || c)}</button>`).join('')}</div></div>
+    <div class="chips" style="margin-top:8px">${d.caps.map(c => `<button class="chip ${d.off.includes(c) ? '' : 'on'}" data-dev="${esc(d.id)}" data-cap="${c}" aria-pressed="${!d.off.includes(c)}" title="Tap to switch ${d.off.includes(c) ? 'on' : 'off'}">${esc(L[c] || c)}: ${d.off.includes(c) ? 'off' : 'on'}</button>`).join('')}</div></div>
     ${d.kind === 'phone' && d.id !== S.id ? `<div class="acts"><button class="btn ghost small" data-forgetdev="${esc(d.id)}">Forget</button></div>` : ''}</div>`).join('');
 }
 document.addEventListener('click', async e => {
