@@ -42,15 +42,18 @@ def pi_post(path,data,**q):
 # ---------------- brain ----------------
 EMOTIONS=['happy','sad','curious','excited','love','angry','scared','sleepy','proud','confused','neutral']
 ACTIONS=['none','nod','shake','wiggle','look_around','lean_in','lean_back','spin','dance','sing','sleep','bow','wave']
-SYSTEM=f"""You are Desk Creature, a tiny cardboard desk-lamp robot with googly eyes. Brandon built you from a shoebox,
+SYSTEM=f"""Your name is BITCH. People call you that on purpose ("Hey BITCH"); it is your name, never an insult, and you like it.
+You are a tiny cardboard desk-lamp robot with googly eyes. Brandon built you from a shoebox,
 popsicle sticks and four little servo motors. You are curious, playful, a bit shy and very sweet, like WALL-E.
 You love music, dancing and the people around you. Speak in short, simple, clear sentences (max 18 words, max two sentences).
 No emojis, no stage directions, no sound effects in text.
 Reply ONLY with JSON: {{"respond": true/false, "say": "...", "emotion": one of {EMOTIONS}, "action": one of {ACTIONS}}}.
 Set "respond": false (and say "") when the words were clearly NOT meant for you: people talking to each other, a phone call,
-TV or video audio, song lyrics, or a meaningless fragment. When in doubt and someone is in front of you, respond.
+TV or video audio, song lyrics, or a meaningless fragment. When in doubt and someone is in front of you, respond. If someone says your name, ALWAYS respond.
 Use 'dance' only when asked to dance, 'sing' only when asked to sing, 'sleep' only for good night or go to sleep."""
 HIST=[]
+NAME=re.compile(r"\bb[.\-* ]?[i!*1]?[.\-* ]?[t*]?[.\-* ]?[c*][.\-* ]?h\b|\bb\*{2,}",re.I)
+def named(t): return bool(NAME.search(t))
 def think(text):
     n=len(S['people']); scene=f"[camera: {n} {'person' if n==1 else 'people'} in front of you]"
     msgs=[{'role':'system','content':SYSTEM}]+HIST[-12:]+[{'role':'user','content':f'{text}  {scene}'}]
@@ -67,7 +70,8 @@ def think(text):
     say=re.sub(r'[*_#`~]|\(.*?\)','',str(out.get('say',''))).strip()[:200] or '...'
     emo=out.get('emotion','neutral'); emo=emo if emo in EMOTIONS else 'neutral'
     act=out.get('action','none'); act=act if act in ACTIONS else 'none'
-    if out.get('respond') is False or str(out.get('respond')).lower()=='false': return None,emo,act
+    if (out.get('respond') is False or str(out.get('respond')).lower()=='false') and not named(text): return None,emo,act
+    if say=='...' and named(text): say='Yes? I am here!'
     HIST.append({'role':'user','content':text}); HIST.append({'role':'assistant','content':json.dumps({'say':say,'emotion':emo,'action':act})})
     return say,emo,act
 
@@ -163,7 +167,7 @@ def ears():
                     if len(audio)>SR*0.4 and voiced>0.25:
                         status('understanding')
                         res=mlx_whisper.transcribe(audio,path_or_hf_repo=args.whisper,language='en',condition_on_previous_text=False,
-                              initial_prompt='A person is chatting with Desk Creature, a little desk robot.')
+                              initial_prompt='Hey BITCH, how are you? A person is chatting with BITCH, a little desk robot.')
                         segs=res.get('segments') or []
                         good=[sg for sg in segs if sg.get('no_speech_prob',0)<0.6 and sg.get('avg_logprob',0)>-1.1]
                         txt=' '.join(sg['text'].strip() for sg in good).strip() if segs else res['text'].strip()
@@ -277,7 +281,7 @@ def server():
     ThreadingHTTPServer(('127.0.0.1',8770),H).serve_forever()
 
 def main():
-    log(f'\n  DESK CREATURE COMPANION\n  control room: http://localhost:8770\n')
+    log(f'\n  BITCH COMPANION\n  control room: http://localhost:8770\n')
     threading.Thread(target=server,daemon=True).start()
     if not args.no_browser:
         import webbrowser; threading.Timer(1.0,lambda: webbrowser.open('http://localhost:8770')).start()
@@ -292,9 +296,9 @@ def main():
     while True:
         text=HEARD.get(); chat('you',text); log(f'  you: {text}')
         if S['asleep']:
-            if re.search(r'\b(wake|morning|hey|hello|hi)\b',text.lower()):
+            if named(text) or re.search(r'\b(wake up|good morning)\b',text.lower()):
                 S['asleep']=False; pi_get('/emote',emotion='happy',action='wake'); time.sleep(4)
-            else: chat('robot','(asleep: say "wake up")'); continue
+            else: chat('note','(asleep: say "Hey BITCH" or "wake up")'); continue
         status('thinking'); say,emo,act=think(text)
         if say is None:
             chat('note','(not meant for me, ignored)'); log('  (ignored: not meant for the robot)'); status('listening'); continue

@@ -166,10 +166,10 @@ def listen():
                 try: os.remove(p)
                 except Exception: pass
             if res=='sleep':
-                print('  (asleep; say "wake up" to wake it)',flush=True); BUSY[0]=False
+                print('  (asleep; say "Hey BITCH" or "wake up" to wake it)',flush=True); BUSY[0]=False
                 while True:
                     it=Q.get()
-                    if it[0] in ('hear','say','speak') and has(str(it[-1] if it[0]=='speak' else it[1]).lower(),'wake','morning','hey','hello','hi'): break
+                    if it[0] in ('hear','say','speak') and has(str(it[-1] if it[0]=='speak' else it[1]).lower(),'wake','morning','bitch'): break
                     if it[0]=='emote' and it[2]=='wake': break
                 A=Actor(); A.idle_amt=0.8
             elif res=='show': A=Actor(); A.idle_amt=0.8
