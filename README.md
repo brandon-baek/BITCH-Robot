@@ -14,7 +14,7 @@ speaks up on its own now and then, and when you ask for a move it has never done
 git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh
 ```
 **Mac, every time:** open **BITCH** from Applications (or Spotlight). Allow the camera and microphone the first time.
-Keep its window open (minimise it if you like): closing it puts BITCH to sleep.
+Closing its window only hides it; BITCH keeps living. Use the BITCH item in the menu bar to open the window again or quit.
 
 **Pi, every time:** `python3 -c "from brain import *; listen()"`
 **Pi, after an update:** `bash ~/BITCH-Robot/update.sh`

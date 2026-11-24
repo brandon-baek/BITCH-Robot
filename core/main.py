@@ -56,9 +56,8 @@ def main():
     if args.app:
         ask_permission('camera'); ask_permission('mic')       # macOS asks once: "BITCH would like to access..."
         try:
-            import webview
-            webview.create_window('BITCH', f'http://127.0.0.1:{port}', width=1320, height=900, min_size=(380, 600), background_color='#DFE4E8')
-            webview.start()
+            from . import mac_app
+            mac_app.run(f'http://127.0.0.1:{port}')     # closing the window only hides it; quit from the menu bar item
             os._exit(0)
         except ImportError:
             hub.note('the app window needs pywebview; opening the browser instead')
