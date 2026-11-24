@@ -186,6 +186,9 @@ def weather(ctx, day='today', **_):
 
 @tool('set_home', '{"city": city name}', 'remember which city the person lives in (for the weather)')
 def set_home(ctx, city='', **_):
+    said = ctx.get('text', '')
+    if not str(city).strip() or (said and str(city).split(',')[0].strip().lower() not in said.lower()):
+        return 'Not set: ask the person which city they live in.'
     r = _get('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&name=' + urllib.parse.quote(str(city)))
     if not r.get('results'): return f'I could not find a place called {city}.'
     p = r['results'][0]

@@ -90,6 +90,7 @@ class Brain:
         s.pending_identity = None       # {'name','until'} after asking "is that you, Brandon?"
         s.later = []                    # performances to play after speaking
         s._sys = None; s._sys_key = None
+        s.last_spoke = 0.0               # when BITCH last finished saying something (opens a short follow-up window)
 
     def start(s):
         hub.on('heard', lambda text, device, mode: s.q.put({'kind': 'user', 'text': text, 'device': device, 'mode': mode, 'speak': True}))
@@ -183,6 +184,8 @@ class Brain:
             if m and m.group(1).lower() not in NOT_NAMES and hub.sight:
                 who = m.group(1).capitalize(); tp = next((p for p in hub.people if p.get('target')), None)
                 if tp and (not tp['name'] or tp['name'].lower() == who.lower()): hub.sight.learn(who)
+            if mode == 'ambient' and not s.engaged(text, pend):        # overheard: people talking to each other, TV, a call
+                hub.chat('note', '(heard, but it was not for me)'); return
             if hub.asleep:
                 if mode in ('typed', 'ptt') or named(text) or WAKE.search(text): s.wake()
                 else: hub.chat('note', '(asleep: say "Hey BITCH" or "wake up")'); return
@@ -214,6 +217,15 @@ class Brain:
             try: fn()
             except Exception as e: hub.note(f'performance failed: {e}')
         hub.emit('conversation', text=text, reply=say, feeling=feeling, kind=it['kind'], mode=mode)
+
+    def engaged(s, text, pend=None):
+        """Is overheard speech meant for BITCH? Only if it says the name, BITCH is mid-conversation (it spoke in the last
+        25 seconds or just asked something), or the speaker is looking right at it."""
+        if named(text) or pend: return True
+        if re.match(r"^\W*([A-Z][a-z]+),", text) and not named(text.split(',')[0]): return False     # "Ryan, look at this"
+        if time.time() - s.last_spoke < 25: return True
+        watching = [p for p in hub.people if p.get('target')]
+        return bool(watching and watching[0].get('looking') and len(hub.people) == 1)
 
     def act(s, actions, it):
         """Run the chosen tools. Returns (results for the brain, whether it should answer again)."""
@@ -254,6 +266,7 @@ class Brain:
             hub.chat('bitch', say, dev, emotion=feeling, move=move, actions=list(acts), proactive=proactive, why=it.get('why', ''))
         speak = it.get('speak', True)
         voice.say(say, feeling, move, origin=dev, speak=speak)
+        if say: s.last_spoke = time.time()
 
     # ----- the body -----
     def perform(s, what, ctx):

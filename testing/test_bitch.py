@@ -74,6 +74,18 @@ class Brain(unittest.TestCase):
         self.assertTrue(GREETING.match('Hey BITCH!')); self.assertFalse(GREETING.match('hey, set a timer'))
         self.assertEqual(Brain().tidy('*waves* Hi! [happy] 🎉 there'), 'Hi! there')
 
+    def test_overheard_talk_is_ignored(self):
+        from core.brain import Brain
+        b = Brain()
+        self.assertFalse(b.engaged('Ryan, do you want to see my companion app?'))
+        self.assertFalse(b.engaged('Now go join.'))
+        self.assertTrue(b.engaged('hey bitch, what time is it'))
+        b.last_spoke = __import__('time').time(); self.assertTrue(b.engaged('yeah, tell me more'))
+
+    def test_home_city_must_be_said(self):
+        from core import tools
+        self.assertEqual(tools.run('set_home', {'city': 'unknown'}, {'text': 'Bringo.', 'mode': 'ambient'})[1], 'Not set: ask the person which city they live in.')
+
 
 def free(port):
     with socket.socket() as s: return s.connect_ex(('127.0.0.1', port)) != 0
