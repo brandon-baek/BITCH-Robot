@@ -99,7 +99,7 @@ def say(text, emotion='neutral', move='none', origin=None, speak=True):
     """Say something: voice on the right device, body language on the robot, BITCH's face in the app.
     Blocks until it has finished talking (or was interrupted)."""
     text = (text or '').strip()
-    targets = hub.voices_for(origin, speak) if text else []
+    targets = hub.voices_for(origin, speak) if text and not config.get('muted') else []
     bodies = [b for b in hub.bodies() if b not in targets]
     hub.ui({'type': 'express', 'emotion': emotion, 'move': move, 'text': text})
     for b in bodies: b.gesture(emotion, move)

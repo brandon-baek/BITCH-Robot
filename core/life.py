@@ -221,7 +221,7 @@ class Life:
 
     def consider(s):
         c = config.get('chattiness'); now = time.time()
-        if c <= 0 or hub.asleep or quiet_now() or hub.status not in ('listening',): return
+        if c <= 0 or config.get('muted') or hub.asleep or quiet_now() or hub.status not in ('listening',): return
         gap = 60 * (90 - 80 * c)                                   # minutes between unprompted things: about 70 (quiet) .. 50 (normal) .. 10 (chatty)
         if now - s.last_proactive < gap or now - s.started < 900: return       # and never in its first 15 minutes awake
         if now - max(hub.last_talk, hub.brain.last_spoke if hub.brain else 0) < 600: return     # someone talked lately: let it be

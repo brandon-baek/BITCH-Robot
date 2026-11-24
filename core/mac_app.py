@@ -39,6 +39,10 @@ def menubar(win, on_quit=None):
             try: NSApp.activateIgnoringOtherApps_(True)
             except Exception: pass
 
+        def muteBitch_(self, sender):
+            from .hub import hub
+            config.set('muted', not config.get('muted')); hub.interrupt(); hub.ui({'type': 'settings', 'settings': config.all()})
+
         def quitBitch_(self, sender):
             if on_quit: on_quit()
             os._exit(0)
@@ -53,7 +57,7 @@ def menubar(win, on_quit=None):
                 item.button().setTitle_('BITCH')
             item.button().setToolTip_('BITCH')
             menu = NSMenu.alloc().init(); t = BitchMenuTarget.alloc().init()
-            for title, sel in (('Open BITCH', 'openBitch:'), (None, None), ('Quit BITCH', 'quitBitch:')):
+            for title, sel in (('Open BITCH', 'openBitch:'), ('Mute / unmute', 'muteBitch:'), (None, None), ('Quit BITCH', 'quitBitch:')):
                 if title is None: menu.addItem_(NSMenuItem.separatorItem()); continue
                 mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, '')
                 mi.setTarget_(t); menu.addItem_(mi)

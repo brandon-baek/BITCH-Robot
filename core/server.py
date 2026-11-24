@@ -289,7 +289,7 @@ def get_settings(req: Request):
     need(req); return config.all()
 
 
-SETTABLE = {'owner', 'voice', 'kokoro_voice', 'mac_voice', 'robotness', 'mic_on', 'greet', 'chattiness', 'quiet_start', 'quiet_end',
+SETTABLE = {'muted', 'owner', 'voice', 'kokoro_voice', 'mac_voice', 'robotness', 'mic_on', 'greet', 'chattiness', 'quiet_start', 'quiet_end',
             'morning_brief', 'chat_model', 'deep_model', 'camera', 'follow'}
 
 

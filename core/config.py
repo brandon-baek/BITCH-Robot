@@ -24,6 +24,7 @@ DEFAULTS = {
     'mac_voice': 'Samantha',
     'robotness': 0.5,                # robot effect on the voice, 0..1
     'mic_on': True,
+    'muted': False,                  # muted: BITCH never speaks out loud (it still answers in the app)
     'greet': True,                   # greet people by name when they arrive
     'chattiness': 0.5,               # how often it speaks up on its own, 0 (never) .. 1 (a lot)
     'quiet_start': 22, 'quiet_end': 8,   # quiet hours: no unprompted chatter (reminders still ring)
