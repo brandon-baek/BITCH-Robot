@@ -13,14 +13,14 @@ ap.add_argument('--pi',default='raspberrypi.local'); ap.add_argument('--model',d
 ap.add_argument('--babble',action='store_true',help='start in creature-babble voice instead of words')
 ap.add_argument('--voice',default='af_heart',help='Kokoro voice'); ap.add_argument('--mac-voice',default='Samantha',help='built-in Mac voice used when Kokoro is not installed')
 ap.add_argument('--whisper',default='mlx-community/whisper-large-v3-turbo')
-ap.add_argument('--camera',type=int,default=0); ap.add_argument('--no-mic',action='store_true'); ap.add_argument('--no-camera',action='store_true')
-ap.add_argument('--no-browser',action='store_true')
+ap.add_argument('--camera',default='0'); ap.add_argument('--no-mic',action='store_true'); ap.add_argument('--no-camera',action='store_true')
+ap.add_argument('--no-browser',action='store_true'); ap.add_argument('--app',action='store_true',help='open in its own window')
 args=ap.parse_args(); PI=f'http://{args.pi}:8765'
 
 # ---------------- shared state (read by the control room) ----------------
-S={'status':'starting','interrupted':False,'level':0.0,'log':[],'people':[],'target':None,'robot':False,'asleep':False,'mute_until':0,
+S={'status':'starting','target_id':None,'known':[],'interrupted':False,'level':0.0,'log':[],'people':[],'target':None,'robot':False,'asleep':False,'mute_until':0,
    'voice':'babble' if args.babble else 'words','robotness':0.5,'mic_on':not args.no_mic,'model':args.model,'cam_ok':False,'notes':[]}
-LOCK=threading.Lock(); JPEG=[None]
+LOCK=threading.Lock()
 def log(*a): print(*a,flush=True)
 def note(msg):
     log('  '+msg)
@@ -41,7 +41,7 @@ def pi_post(path,data,**q):
 
 # ---------------- brain ----------------
 EMOTIONS=['happy','sad','curious','excited','love','angry','scared','sleepy','proud','confused','neutral']
-ACTIONS=['none','nod','shake','wiggle','look_around','lean_in','lean_back','spin','dance','sing','sleep','bow','wave']
+ACTIONS=['none','nod','shake','wiggle','look_around','lean_in','lean_back','spin','dance','sing','sleep','bow','wave','follow_me','stop_following']
 SYSTEM=f"""Your name is BITCH. People call you that on purpose ("Hey BITCH"); it is your name, never an insult, and you like it.
 You are a tiny cardboard desk-lamp robot with googly eyes. Brandon built you from a shoebox,
 popsicle sticks and four little servo motors. You are curious, playful, a bit shy and very sweet, like WALL-E.
@@ -50,13 +50,24 @@ No emojis, no stage directions, no sound effects in text.
 Reply ONLY with JSON: {{"respond": true/false, "say": "...", "emotion": one of {EMOTIONS}, "action": one of {ACTIONS}}}.
 Set "respond": false (and say "") when the words were clearly NOT meant for you: people talking to each other, a phone call,
 TV or video audio, song lyrics, or a meaningless fragment. When in doubt and someone is in front of you, respond. If someone says your name, ALWAYS respond.
+Use 'follow_me' when asked to follow or watch someone, 'stop_following' when asked to stop.
+The camera note tells you who you can see and whether they are looking at you. Use people's names naturally (not every time).
+If nobody is looking at you and your name was not said, the words are less likely meant for you.
 Use 'dance' only when asked to dance, 'sing' only when asked to sing, 'sleep' only for good night or go to sleep."""
 HIST=[]
 NAME=re.compile(r"\bb[.\-* ]?[i!*1]?[.\-* ]?[t*]?[.\-* ]?[c*][.\-* ]?h\b|\bb\*{2,}",re.I)
 def named(t): return bool(NAME.search(t))
-def think(text):
-    n=len(S['people']); scene=f"[camera: {n} {'person' if n==1 else 'people'} in front of you]"
-    msgs=[{'role':'system','content':SYSTEM}]+HIST[-12:]+[{'role':'user','content':f'{text}  {scene}'}]
+def scene():
+    ps=sorted(S['people'],key=lambda p:p['d'])
+    if not ps: return '[camera: nobody in view]'
+    bits=[]
+    for p in ps:
+        who=p['name'] or 'someone you do not know yet'
+        bits.append(f"{who} ({p['d']/100:.1f} m away, {'looking at you' if p['looking'] else 'looking away'}{', above you' if p['z']>25 else ''})")
+    return '[camera: '+'; '.join(bits)+'. The closest one is probably talking.]'
+def think(text,force=False):
+    scene_txt=scene()
+    msgs=[{'role':'system','content':SYSTEM}]+HIST[-12:]+[{'role':'user','content':f'{text}  {scene_txt}'}]
     out=None; err=None
     for model,extra in ((args.model,{'think':False}),(args.model,{}),('qwen3:4b-instruct',{})):
         body=json.dumps({'model':model,'messages':msgs,'stream':False,'format':'json','options':{'temperature':0.7},**extra}).encode()
@@ -70,7 +81,7 @@ def think(text):
     say=re.sub(r'[*_#`~]|\(.*?\)','',str(out.get('say',''))).strip()[:200] or '...'
     emo=out.get('emotion','neutral'); emo=emo if emo in EMOTIONS else 'neutral'
     act=out.get('action','none'); act=act if act in ACTIONS else 'none'
-    if (out.get('respond') is False or str(out.get('respond')).lower()=='false') and not named(text): return None,emo,act
+    if (out.get('respond') is False or str(out.get('respond')).lower()=='false') and not named(text) and not force: return None,emo,act
     if say=='...' and named(text): say='Yes? I am here!'
     HIST.append({'role':'user','content':text}); HIST.append({'role':'assistant','content':json.dumps({'say':say,'emotion':emo,'action':act})})
     return say,emo,act
@@ -188,115 +199,218 @@ def ears():
                     elif S['status']=='hearing': status('listening')
 
 # ---------------- eyes ----------------
+# Three threads so the preview never lags: grab (newest camera frame only), see (find + recognise faces),
+# and tell (send where to look to the Pi without ever blocking the camera).
 CFG_F=os.path.expanduser('~/.desk_camera.json')
-CAM={'x':0.0,'y':15.0,'yaw':0.0,'fov':70.0,'face_cm':15.0,'flip':False}
+CAM={'x':0.0,'y':15.0,'z':5.0,'yaw':0.0,'fov':70.0,'face_cm':15.0,'flip':False,'gaze_bias':0.0}
 try: CAM.update(json.load(open(CFG_F)))
 except Exception: pass
 def save_cam():
     try: json.dump(CAM,open(CFG_F,'w'))
     except Exception: pass
+FOLLOW={'mode':'closest','who':None}           # mode: closest | person | off.  who: a name or a track id
+SETTINGS={'greet':True}
+ENROLL={}; FRAME={'seq':0,'jpg':None,'faces':'[]'}; NEWFRAME=threading.Condition(); LOOKOUT={'q':None}
+PRESENT={}                                    # name -> last time seen (for "welcome back" greetings)
 def to_robot(px,py):
     ang=math.degrees(math.atan2(px,max(1e-3,py)))
     return max(-0.9,min(0.9,(ang/90)*(-1 if CAM['flip'] else 1)))
-def person_from_face(cx,cy,fw):
-    t=math.tan(math.radians(CAM['fov']/2)); a=math.atan((cx-0.5)*2*t); d=CAM['face_cm']/max(0.02,fw*2*t)
+def locate(cx,cy,fw,W,H):
+    """Face in the picture -> where that person is on the desk (cm, robot at 0,0) and how high above the camera."""
+    t=math.tan(math.radians(CAM['fov']/2)); tv=t*H/W
+    a=math.atan((cx-0.5)*2*t); d=CAM['face_cm']/max(0.02,fw*2*t)
+    up=d*(0.5-cy)*2*tv                                                   # cm above the camera
     fwd,rt=d*math.cos(a),d*math.sin(a); th=math.radians(CAM['yaw'])
-    return CAM['x']+fwd*math.sin(th)+rt*math.cos(th), CAM['y']+fwd*math.cos(th)-rt*math.sin(th)
-YUNET=os.path.join(HERE,'face_detection_yunet_2023mar.onnx')
-def get_yunet():
-    if not os.path.exists(YUNET):
-        try:
-            note('downloading the face finder (230 KB)...')
-            urllib.request.urlretrieve('https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',YUNET)
-        except Exception as e: note(f'face finder download failed, using the basic one ({e})'); return None
-    return YUNET
-def eyes():
-    import cv2
-    cam=cv2.VideoCapture(args.camera)
-    if not cam.isOpened(): note('camera not available: System Settings > Privacy > Camera, allow Terminal'); return
-    model=get_yunet(); yn=None
-    if model:
-        try: yn=cv2.FaceDetectorYN.create(model,'',(640,360),0.6,0.3,20)
-        except Exception as e: note(f'face finder failed to load ({e})')
-    haar=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml') if yn is None else None
-    S['cam_ok']=True; note('camera on'); tx=ty=None; miss=0; last_send=0
+    return CAM['x']+fwd*math.sin(th)+rt*math.cos(th), CAM['y']+fwd*math.cos(th)-rt*math.sin(th), up+CAM['z'], a
+def gaze(row,W,a_cam,px,py):
+    """Is this person looking at BITCH? Head turn from the 5 face landmarks, compared with where BITCH sits."""
+    if row[4]==0 and row[5]==0: return None,None
+    rex,rey,lex,ley,nx,ny,rmx,rmy,lmx,lmy=[float(v) for v in row[4:14]]
+    ed=max(1.0,math.hypot(lex-rex,ley-rey)); ex,ey=(rex+lex)/2,(rey+ley)/2; mx,my=(rmx+lmx)/2,(rmy+lmy)/2
+    turn=math.degrees(math.asin(max(-1,min(1,2.1*((nx-ex)/ed)))))      # + = head turned toward image right
+    nod=((ny-ey)/max(1.0,my-ey))-0.58                                   # >0 looking down, <0 looking up
+    th=math.radians(CAM['yaw'])
+    to_cam=math.atan2(CAM['x']-px,CAM['y']-py); face_dir=to_cam-math.radians(turn)
+    to_bot=math.atan2(-px,-py); off=math.degrees(math.atan2(math.sin(face_dir-to_bot),math.cos(face_dir-to_bot)))-CAM['gaze_bias']
+    return off, nod
+def tell():
+    last=None
     while True:
-        ok,fr=cam.read()
-        if not ok: time.sleep(0.1); continue
+        q=LOOKOUT['q']
+        if q is not None and q!=last:
+            last=q
+            try: urllib.request.urlopen(PI+'/look?'+urllib.parse.urlencode(q),timeout=0.8).read(); S['robot']=True
+            except Exception: pass
+        time.sleep(0.08)
+def eyes():
+    import cv2, numpy as np
+    from faces import Eyes
+    cam=cv2.VideoCapture(int(args.camera) if str(args.camera).isdigit() else args.camera)
+    if not cam.isOpened(): note('camera not available: allow camera access for BITCH (or Terminal) in System Settings > Privacy > Camera'); return
+    cam.set(cv2.CAP_PROP_FRAME_WIDTH,1280); cam.set(cv2.CAP_PROP_FRAME_HEIGHT,720); cam.set(cv2.CAP_PROP_BUFFERSIZE,1)
+    latest=[None,0]; got=threading.Event()
+    def grab():
+        while True:
+            ok,fr=cam.read()
+            if ok: latest[0]=fr; latest[1]+=1; got.set()
+            else: time.sleep(0.05)
+            if not str(args.camera).isdigit(): time.sleep(1/30)          # test videos play at real speed
+    threading.Thread(target=grab,daemon=True).start(); threading.Thread(target=tell,daemon=True).start()
+    E=Eyes(note); S['cam_ok']=True; S['known']=E.db.names(); note('camera on')
+    for n,v in E.db.people.items(): PRESENT[n]=v.get('last',0)
+    sm={}; miss=0; seen_seq=0; eye_on=False; eye_since=0
+    while True:
+        got.wait(1); got.clear()
+        if latest[1]==seen_seq: continue
+        seen_seq=latest[1]; fr=latest[0]
         fr=cv2.resize(fr,(640,int(640*fr.shape[0]/fr.shape[1]))); H,W=fr.shape[:2]
-        faces=[]
-        if yn is not None:
-            yn.setInputSize((W,H)); _,res=yn.detect(fr)
-            if res is not None: faces=[(float(r[0]),float(r[1]),float(r[2]),float(r[3]),float(r[-1])) for r in res]
-        else:
-            g=cv2.equalizeHist(cv2.cvtColor(fr,cv2.COLOR_BGR2GRAY))
-            faces=[(x,y,w,h,0.7) for (x,y,w,h) in haar.detectMultiScale(g,1.1,4,minSize=(36,36))]
-        people=[]
-        for (x,y,w,h,sc) in faces:
-            px,py=person_from_face((x+w/2)/W,(y+h/2)/H,w/W); people.append({'x':px,'y':py,'box':[x,y,w,h],'score':sc,'d':math.hypot(px,py)})
-        tgt=min(people,key=lambda p:p['d']) if people else None          # closest person gets the attention
+        if ENROLL.get('forget'): E.db.forget(ENROLL.pop('forget')); S['known']=E.db.names()
+        en=None
+        if ENROLL.get('name'):
+            tid=ENROLL.get('track')
+            if tid=='target': tid=S.get('target_id')
+            en={'track':tid,'name':ENROLL['name']}
+        tracks,added=E.step(fr,en)
+        if en and added:
+            ENROLL['n']=ENROLL.get('n',0)+added
+            if ENROLL['n']>=8:
+                chat('note',f"(learned {ENROLL['name']}'s face)"); note(f"learned {ENROLL['name']}"); S['known']=E.db.names(); ENROLL.clear()
+        if ENROLL.get('until') and time.time()>ENROLL['until']: ENROLL.clear()
+        now=time.time(); people=[]
+        for t in tracks:
+            x,y,w,h=[float(v) for v in t.box]; px,py,pz,a=locate((x+w/2)/W,(y+h/2)/H,w/W,W,H)
+            k=sm.get(t.id); px,py,pz=(px,py,pz) if k is None else (k[0]+0.4*(px-k[0]),k[1]+0.4*(py-k[1]),k[2]+0.4*(pz-k[2])); sm[t.id]=(px,py,pz)
+            off,nod=gaze(t.row,W,a,px,py); looking=off is not None and abs(off)<22 and nod is not None and -0.35<nod<0.35
+            if t.name: PRESENT.setdefault(t.name,now)
+            people.append({'id':t.id,'name':t.name,'x':px,'y':py,'z':pz,'d':math.hypot(px,py),'box':[x/W,y/H,w/W,h/H],
+                           'looking':looking,'gaze':None if off is None else round(off,1),'new':now-t.born<1})
+        sm={k:v for k,v in sm.items() if any(p['id']==k for p in people)}
+        # who to follow
+        tgt=None
+        if FOLLOW['mode']=='closest' and people: tgt=min(people,key=lambda p:p['d'])
+        elif FOLLOW['mode']=='person':
+            w=FOLLOW['who']; tgt=next((p for p in people if (p['name']==w if isinstance(w,str) else p['id']==w)),None)
         for p in people: p['target']=p is tgt
+        S['target_id']=tgt['id'] if tgt else None
+        # tell the robot (never blocks this loop)
         if tgt:
-            tx=tgt['x'] if tx is None else tx+0.45*(tgt['x']-tx); ty=tgt['y'] if ty is None else ty+0.45*(tgt['y']-ty); miss=0
-            if time.time()-last_send>0.12:
-                last_send=time.time(); vy=(tgt['box'][1]+tgt['box'][3]/2)/H
-                pi_get('/look',b=f'{to_robot(tx,ty):.3f}',n=f'{max(-1,min(-0.3,-0.8+(0.5-vy)*0.6)):.3f}',seen=1)
+            miss=0; el=math.degrees(math.atan2(tgt['z'],max(10,tgt['d'])))             # how far up BITCH must look
+            n=max(-1.0,min(0.3,-0.8+el/50))
+            if tgt['looking'] and not eye_on and now-eye_since>4: eye_on=True; eye_since=now
+            elif not tgt['looking'] and eye_on: eye_on=False; eye_since=now
+            LOOKOUT['q']={'b':f"{to_robot(tgt['x'],tgt['y']):.2f}",'n':f'{n:.2f}','seen':1,'greet':0,'eye':int(tgt['looking'])}
         else:
             miss+=1
-            if miss==10: pi_get('/look',seen=0)
-        with LOCK: S['people']=[{'x':p['x'],'y':p['y'],'target':p['target'],'score':p['score']} for p in people]
-        for p in people:                                                  # draw what it sees for the preview
-            x,y,w,h=map(int,p['box']); col=(48,196,244) if p['target'] else (223,108,45)
-            cv2.rectangle(fr,(x,y),(x+w,y+h),col,3 if p['target'] else 2)
-            lab=f"{p['d']/100:.1f} m" + ('  looking' if p['target'] else '')
-            cv2.putText(fr,lab,(x,max(18,y-8)),cv2.FONT_HERSHEY_SIMPLEX,0.55,col,2,cv2.LINE_AA)
-        ok,jp=cv2.imencode('.jpg',fr,[cv2.IMWRITE_JPEG_QUALITY,70])
-        if ok: JPEG[0]=jp.tobytes()
-        time.sleep(0.05)
+            if miss==8: LOOKOUT['q']={'seen':0}; eye_on=False
+        # welcome back, by name
+        for p in people:
+            if p['name'] and SETTINGS['greet'] and not S['asleep']:
+                gone=now-PRESENT.get(p['name'],0)
+                if gone>600: HEARD.put(('arrive',p['name']))
+                PRESENT[p['name']]=now
+        with LOCK: S['people']=[{k:v for k,v in p.items()} for p in people]
+        ok,jp=cv2.imencode('.jpg',fr,[cv2.IMWRITE_JPEG_QUALITY,72])
+        if ok:
+            with NEWFRAME:
+                FRAME['seq']+=1; FRAME['jpg']=jp.tobytes(); FRAME['faces']=json.dumps(S['people']); NEWFRAME.notify_all()
 
-# ---------------- control room server ----------------
+# ---------------- app server ----------------
 def server():
     from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
     class H(BaseHTTPRequestHandler):
-        def _send(s,body,ct='application/json'):
-            s.send_response(200); s.send_header('Content-Type',ct); s.send_header('Cache-Control','no-store'); s.end_headers(); s.wfile.write(body)
+        def _send(s,body,ct='application/json',extra=()):
+            s.send_response(200); s.send_header('Content-Type',ct); s.send_header('Cache-Control','no-store')
+            for k,v in extra: s.send_header(k,v)
+            s.end_headers(); s.wfile.write(body)
+        def ok(s): s._send(b'{"ok":true}')
         def do_GET(s):
             u=urllib.parse.urlparse(s.path); q={k:v[0] for k,v in urllib.parse.parse_qs(u.query).items()}
             if u.path=='/state':
-                with LOCK: st=dict(S); st['cam']=CAM; st['log']=list(S['log']); st['people']=list(S['people'])
-                st['mute_until']=0; s._send(json.dumps(st).encode())
-            elif u.path=='/video':
-                s.send_response(200); s.send_header('Content-Type','multipart/x-mixed-replace; boundary=frame'); s.end_headers()
-                try:
-                    while True:
-                        if JPEG[0]: s.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'+JPEG[0]+b'\r\n')
-                        time.sleep(0.1)
-                except Exception: return
+                with LOCK: st={k:v for k,v in S.items()}; st['log']=list(S['log']); st['people']=list(S['people'])
+                st.update(cam=CAM,follow=FOLLOW,settings=SETTINGS,enrolling=ENROLL.get('name'),mute_until=0); s._send(json.dumps(st).encode())
+            elif u.path=='/frame':                                        # newest picture + the faces found in it
+                after=int(q.get('after',0))
+                with NEWFRAME:
+                    if FRAME['seq']<=after: NEWFRAME.wait(1.0)
+                    seq,jpg,faces=FRAME['seq'],FRAME['jpg'],FRAME['faces']
+                if not jpg: s.send_response(204); s.end_headers(); return
+                s._send(jpg,'image/jpeg',(('X-Seq',str(seq)),('X-Faces',faces),('Access-Control-Expose-Headers','X-Seq, X-Faces')))
+            elif u.path.startswith('/face/'):
+                from faces import FaceDB
+                p=FaceDB().photo(urllib.parse.unquote(u.path[6:]))
+                if os.path.exists(p): s._send(open(p,'rb').read(),'image/jpeg')
+                else: s.send_response(404); s.end_headers()
             elif u.path=='/set':
-                for k in ('x','y','yaw','fov'):
+                for k in ('x','y','z','yaw','fov'):
                     if k in q: CAM[k]=float(q[k])
                 if 'flip' in q: CAM['flip']=q['flip']=='1'
                 if 'voice' in q: S['voice']=q['voice']
                 if 'robotness' in q: S['robotness']=float(q['robotness'])
                 if 'mic' in q: S['mic_on']=q['mic']=='1'
-                save_cam(); s._send(b'{"ok":true}')
+                if 'greet' in q: SETTINGS['greet']=q['greet']=='1'
+                if q.get('gaze')=='calibrate':
+                    t=next((p for p in S['people'] if p.get('target')),None)
+                    if t and t.get('gaze') is not None: CAM['gaze_bias']+=t['gaze']
+                save_cam(); s.ok()
+            elif u.path=='/follow':
+                m=q.get('mode','closest'); w=q.get('who')
+                FOLLOW['mode']=m; FOLLOW['who']=int(w) if w and w.isdigit() else w
+                if m=='off': LOOKOUT['q']={'seen':0}
+                s.ok()
+            elif u.path=='/learn':                                        # remember a face under a name
+                name=q.get('name','').strip()[:24]
+                if name: ENROLL.clear(); ENROLL.update(name=name,track=int(q['id']) if q.get('id','').isdigit() else 'target',until=time.time()+8)
+                s.ok()
+            elif u.path=='/forget': ENROLL['forget']=q.get('name',''); s.ok()
             elif u.path=='/aim':
-                pi_get('/look',b=f"{to_robot(float(q['x']),float(q['y'])):.3f}",n='-0.8',seen=1); s._send(b'{"ok":true}')
-            elif u.path=='/stop': interrupt(); s._send(b'{"ok":true}')
+                FOLLOW['mode']='off'; LOOKOUT['q']={'b':f"{to_robot(float(q['x']),float(q['y'])):.2f}",'n':'-0.8','seen':1,'greet':0}; s.ok()
+            elif u.path=='/stop': interrupt(); s.ok()
             elif u.path=='/type':
                 if q.get('text','').strip(): HEARD.put(q['text'].strip())
-                s._send(b'{"ok":true}')
-            elif u.path=='/emote':
-                pi_get('/emote',emotion=q.get('emotion','neutral'),action=q.get('action','none')); s._send(b'{"ok":true}')
-            else: s._send(open(os.path.join(HERE,'dashboard.html'),'rb').read(),'text/html')
+                s.ok()
+            elif u.path=='/emote': pi_get('/emote',emotion=q.get('emotion','neutral'),action=q.get('action','none')); s.ok()
+            elif u.path=='/icon.png': s._send(open(os.path.join(HERE,'icon.png'),'rb').read(),'image/png')
+            else: s._send(open(os.path.join(HERE,'dashboard.html'),'rb').read(),'text/html; charset=utf-8')
         def log_message(s,*a): pass
     ThreadingHTTPServer(('127.0.0.1',8770),H).serve_forever()
 
+INTRO=re.compile(r"\b(?:my name is|my name's|call me|i am called)\s+([A-Za-z][A-Za-z\-']{1,20})",re.I)
+def conversation():
+    while True:
+        item=HEARD.get()
+        if isinstance(item,tuple):                                      # someone it knows just walked up
+            name=item[1]
+            if S['status'] not in ('listening',) or S['asleep']: continue
+            chat('note',f'({name} walked up)'); status('thinking')
+            say,emo,act=think(f'({name} just walked up to you after being away. Greet {name} by name, warmly and briefly.)',force=True)
+        else:
+            text=item; chat('you',text); log(f'  you: {text}')
+            m=INTRO.search(text)
+            tp=next((p for p in S['people'] if p.get('target')),None)
+            if m and tp and (not tp['name'] or tp['name'].lower()==m.group(1).lower()):
+                ENROLL.clear(); ENROLL.update(name=m.group(1).capitalize(),track='target',until=time.time()+8)
+            if S['asleep']:
+                if named(text) or re.search(r'\b(wake up|good morning)\b',text.lower()):
+                    S['asleep']=False; pi_get('/emote',emotion='happy',action='wake'); time.sleep(4)
+                else: chat('note','(asleep: say "Hey BITCH" or "wake up")'); continue
+            status('thinking'); say,emo,act=think(text,force=bool(m))
+        if say is None:
+            chat('note','(not meant for me, ignored)'); log('  (ignored: not meant for the robot)'); status('listening'); continue
+        if act in ('follow_me','stop_following'):
+            if act=='follow_me':
+                t=next((p for p in S['people'] if p.get('target')),None)
+                if t: FOLLOW.update(mode='person',who=t['name'] or t['id'])
+            else: FOLLOW.update(mode='off',who=None); LOOKOUT['q']={'seen':0}
+            act='nod'
+        chat('robot',say,emotion=emo,action=act); log(f'  robot: {say}   [{emo}, {act}]')
+        speak(say,emo,act)
+        if S['interrupted']: S['interrupted']=False; continue
+        if act=='sleep': S['asleep']=True; status('asleep')
+        elif S['status']=='speaking': status('listening')
+
 def main():
-    log(f'\n  BITCH COMPANION\n  control room: http://localhost:8770\n')
+    log(f'\n  BITCH COMPANION\n  app: http://localhost:8770\n')
     threading.Thread(target=server,daemon=True).start()
-    if not args.no_browser:
-        import webbrowser; threading.Timer(1.0,lambda: webbrowser.open('http://localhost:8770')).start()
     if pi_get('/ping') is None: note(f'robot not found at {args.pi}: start listen mode on the Pi (same Wi-Fi)')
     if not args.no_mic: threading.Thread(target=lambda: _safe(ears,'mic'),daemon=True).start()
     else: status('listening')
@@ -305,20 +419,18 @@ def main():
     def ping():
         while True: pi_get('/ping'); time.sleep(3)
     threading.Thread(target=ping,daemon=True).start()
-    while True:
-        text=HEARD.get(); chat('you',text); log(f'  you: {text}')
-        if S['asleep']:
-            if named(text) or re.search(r'\b(wake up|good morning)\b',text.lower()):
-                S['asleep']=False; pi_get('/emote',emotion='happy',action='wake'); time.sleep(4)
-            else: chat('note','(asleep: say "Hey BITCH" or "wake up")'); continue
-        status('thinking'); say,emo,act=think(text)
-        if say is None:
-            chat('note','(not meant for me, ignored)'); log('  (ignored: not meant for the robot)'); status('listening'); continue
-        chat('robot',say,emotion=emo,action=act); log(f'  robot: {say}   [{emo}, {act}]')
-        speak(say,emo,act)
-        if S['interrupted']: S['interrupted']=False; continue
-        if act=='sleep': S['asleep']=True; status('asleep')
-        elif S['status']=='speaking': status('listening')
+    if args.app:                                                        # its own window (the BITCH app)
+        threading.Thread(target=conversation,daemon=True).start()
+        try:
+            import webview
+            webview.create_window('BITCH','http://127.0.0.1:8770',width=1320,height=880,min_size=(380,600),background_color='#DFE4E8')
+            webview.start(); os._exit(0)
+        except ImportError: note('app window needs pywebview; opening in the browser instead')
+        import webbrowser; webbrowser.open('http://localhost:8770')
+        while True: time.sleep(3600)
+    if not args.no_browser:
+        import webbrowser; threading.Timer(1.0,lambda: webbrowser.open('http://localhost:8770')).start()
+    conversation()
 def typing():
     while True:
         try: t=input()

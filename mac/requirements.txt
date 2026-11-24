@@ -3,3 +3,4 @@ sounddevice
 numpy
 opencv-python
 silero-vad
+pywebview

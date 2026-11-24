@@ -24,7 +24,10 @@ class _H(BaseHTTPRequestHandler):
         elif u.path=='/say': Q.put(('say',q.get('text',''),q.get('emotion','neutral'),q.get('action','none')))
         elif u.path=='/look':
             seen=q.get('seen','1')=='1'
-            if seen and not LOOK['seen'] and time.time()-LOOK['t']>8: Q.put(('arrived',))
+            if seen and not LOOK['seen'] and time.time()-LOOK['t']>8 and q.get('greet','1')=='1': Q.put(('arrived',))
+            eye=q.get('eye')=='1'
+            if eye and not LOOK.get('eye') and time.time()-LOOK.get('eye_t',0)>4 and not BUSY[0] and Q.empty(): Q.put(('eye',))
+            if eye!=LOOK.get('eye',False): LOOK['eye']=eye; LOOK['eye_t']=time.time()
             LOOK.update(x=float(q.get('x',0.5)),y=float(q.get('y',0.5)),seen=seen,t=time.time(),
                         b=float(q['b']) if 'b' in q else None,n=float(q['n']) if 'n' in q else None)
         s._ok({'ok':True,'busy':BUSY[0]})
@@ -141,7 +144,7 @@ def listen():
             except queue.Empty:
                 if LOOK['seen'] and time.time()-LOOK['t']<1.5:     # someone is in view: look at them
                     if LOOK.get('b') is not None:                       # Mac already worked out the angle
-                        A.to(b=max(-0.9,min(0.9,LOOK['b'])),n=max(-1,min(-0.3,LOOK['n'] if LOOK.get('n') is not None else REST[2])),stiff=1.1)
+                        A.to(b=max(-0.9,min(0.9,LOOK['b'])),n=max(-1,min(0.3,LOOK['n'] if LOOK.get('n') is not None else REST[2])),stiff=1.4)
                     else:
                         A.to(b=max(-0.85,min(0.85,(LOOK['x']-0.5)*GAZE['span']*GAZE['flip'])),
                              n=max(-1,min(-0.3,REST[2]+(0.5-LOOK['y'])*0.5)),stiff=1.1)
@@ -151,6 +154,8 @@ def listen():
                 A.wait(0.05); continue
             BUSY[0]=True; kind=item[0]; res=None
             if kind=='hear': res=react(A,item[1])
+            elif kind=='eye':                                   # you looked at it: a small happy perk
+                A.sfx(random.choice(['doubleblip','curious','happy'])); A.to(h=0.18,stiff=2.2).wait(0.25); A.to(h=-0.12).wait(0.25); A.to(h=0).wait(0.2)
             elif kind=='arrived': A.sfx('hello'); pose(A,'happy'); act(A,'wave'); A.rest().wait(0.4)
             elif kind=='emote':
                 _,emo,action=item; c=EMO.get(emo,EMO['neutral'])[1]

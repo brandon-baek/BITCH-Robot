@@ -13,7 +13,8 @@ a 2.42" OLED face (in progress), and a synthesized creature voice.
 | `control.py` | Keyboard control mode: drive every joint live, trigger sounds and emotes |
 | `brain.py` | Listen mode: reacts to what you say (heard by your Mac) with moves and chirps |
 | `mac/companion.py` | Runs on the Mac: ears (Whisper + speech detector), brain (LLM), voice, eyes (camera) |
-| `mac/dashboard.html` | The control room page the companion serves |
+| `mac/dashboard.html` | The BITCH app screen (live view, desk map, chat, people, settings) |
+| `mac/faces.py` | Finds, tracks and recognises faces on the Mac |
 | `update.sh` | Pulls the latest code and links it into `~` |
 
 ## First time on the Pi
@@ -45,9 +46,9 @@ the robot moves, looks at you and talks back through its speaker.
 `git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh`
 (add `--words` at the end to also install the real-words voice)
 
-**On the Mac, each time:** `cd ~/BITCH-Robot && git pull -q && ~/dc-venv/bin/python mac/companion.py`
+**On the Mac, each time:** open **BITCH** from your Applications folder (or Spotlight). It updates itself when it starts.
 
-The control room opens by itself at http://localhost:8770: live camera with face boxes, a desk map of everyone it sees, the conversation, quick actions and voice settings. Drag the camera on the map to where it really sits. Talk over the robot any time to interrupt it.
+The app shows the live camera with everyone it sees (named if it knows them), a desk map, the conversation, the people it knows and settings. Click a face to follow that person or teach BITCH their name, or say "my name is …" to it. It notices when you look at it, tilts up when you're above it, and you can talk over it any time.
 
 Options: `--words` (real words, needs `brew install espeak-ng` and `~/dc-venv/bin/pip install kokoro soundfile`),
 `--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--calibrate` (open the camera map),
