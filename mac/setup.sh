@@ -41,13 +41,7 @@ cat > "$APP/Contents/Info.plist" <<'PL'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PL
-cat > "$APP/Contents/MacOS/BITCH" <<'SH'
-#!/bin/bash
-cd ~/BITCH-Robot && git pull -q --ff-only 2>/dev/null
-curl -s -m 1 localhost:11434 >/dev/null || (open -a Ollama 2>/dev/null; sleep 3)
-pkill -f "[-]m core" 2>/dev/null; sleep 0.5                           # only one BITCH at a time
-exec caffeinate -i ~/dc-venv/bin/python -m core --app >> ~/.bitch/log.txt 2>&1   # caffeinate: the Mac stays awake while BITCH runs
-SH
+clang -O2 -o "$APP/Contents/MacOS/BITCH" ~/BITCH-Robot/mac/launcher.c   # a real program, so macOS can grant it the camera and mic
 chmod +x "$APP/Contents/MacOS/BITCH"
 I=/tmp/bitch.iconset; rm -rf $I; mkdir $I
 for s in 16 32 128 256 512; do sips -z $s $s ~/BITCH-Robot/mac/icon.png --out $I/icon_${s}x${s}.png >/dev/null; sips -z $((s*2)) $((s*2)) ~/BITCH-Robot/mac/icon.png --out $I/icon_${s}x${s}@2x.png >/dev/null; done
