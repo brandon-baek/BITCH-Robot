@@ -1,0 +1,11 @@
+{
+  "name": "BITCH",
+  "short_name": "BITCH",
+  "description": "BITCH, the desk robot",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#dfe4e8",
+  "theme_color": "#dfe4e8",
+  "icons": [{ "src": "/icon.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" }]
+}

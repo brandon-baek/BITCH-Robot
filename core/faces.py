@@ -4,8 +4,8 @@ import json, os, time, urllib.request
 from collections import deque, Counter
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-HOME = os.path.expanduser('~/.bitch'); FACES = os.path.join(HOME, 'faces')
+HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'mac')   # the model files live in mac/
+HOME = os.environ.get('BITCH_HOME') or os.path.expanduser('~/.bitch'); FACES = os.path.join(HOME, 'faces')
 ZOO = 'https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/'
 MODELS = {'yunet': 'face_detection_yunet/face_detection_yunet_2023mar.onnx',
           'sface': 'face_recognition_sface/face_recognition_sface_2021dec.onnx'}
