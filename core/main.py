@@ -57,6 +57,10 @@ def main():
         ask_permission('camera'); ask_permission('mic')       # macOS asks once: "BITCH would like to access..."
         try:
             from . import mac_app
+            import urllib.request
+            for _ in range(60):                         # open the window only once the app is being served
+                try: urllib.request.urlopen(f'http://127.0.0.1:{port}/api/hello', timeout=1); break
+                except Exception: time.sleep(0.25)
             mac_app.run(f'http://127.0.0.1:{port}')     # closing the window only hides it; quit from the menu bar item
             os._exit(0)
         except ImportError:
