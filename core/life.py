@@ -77,7 +77,7 @@ REFLECT = {'type': 'object', 'properties': {
 class Life:
     def __init__(s):
         s.mood = Mood()
-        s.last_proactive = memory.kv_get('last_proactive', 0)
+        s.last_proactive = max(memory.kv_get('last_proactive', 0), time.time() - 3600 + 900)   # not in its first 15 minutes awake
         s.last_reflect = memory.kv_get('last_reflect', time.time())
         s.last_conv = 0
         s.present_since = None
@@ -222,7 +222,10 @@ class Life:
         c = config.get('chattiness'); now = time.time()
         if c <= 0 or hub.asleep or quiet_now() or hub.status not in ('listening',): return
         gap = 60 * (90 - 80 * c)                                   # minutes between unprompted things: about 70 (quiet) .. 50 (normal) .. 10 (chatty)
-        if now - s.last_proactive < gap or now - hub.last_talk < 240: return
+        if now - s.last_proactive < gap: return
+        if now - max(hub.last_talk, hub.brain.last_spoke if hub.brain else 0) < 600: return     # someone talked lately: let it be
+        p = hub.brain.pending_identity if hub.brain else None
+        if p and now < p['until']: return                          # still waiting for "is that you?" to be answered
         present = hub.someone_at_desk(120) is not False          # no camera: assume someone might be there
         if not present and len([a for a in memory.activity(40, now - 86400) if a['kind'] == 'notify' and 'on its own' in (a['why'] or '')]) >= 2: return
         s.last_proactive = now; memory.kv_set('last_proactive', now)
