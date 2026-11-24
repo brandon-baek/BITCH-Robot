@@ -81,6 +81,7 @@
     function draw(now) {
       requestAnimationFrame(draw);
       if (!W) { fit(); if (!W) return; }
+      if (now - last > 250) s.blinkAt = now / 1000 + 1.5;            // the page was hidden: don't wake up mid-blink
       const dt = Math.min(0.05, (now - last) / 1000); last = now;
       for (let k = 0; k < 2; k++) step(dt / 2);
       const [b, a, n, h] = s.out || s.x;

@@ -44,7 +44,7 @@ class Stream:
         if s.dev == 'mac-mic': s.ears.level(min(1.0, r * 12))
         if s.ptt is not None:
             s.ptt.append(x); return
-        if not config.get('mic_on') or hub.status in ('thinking', 'understanding'):
+        if (s.dev == 'mac-mic' and not config.get('mic_on')) or hub.status in ('thinking', 'understanding'):
             s.pre = []; return
         p = s.prob(x)
         speaking = time.time() < hub.speaking_until

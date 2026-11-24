@@ -1,58 +1,63 @@
-# Desk Creature
+# BITCH
 
-A cardboard, lamp-style desk robot: Raspberry Pi 4, four MG90S servos on a PCA9685 board,
-a 2.42" OLED face (in progress), and a synthesized creature voice.
+A cardboard, lamp-style desk robot with googly eyes, and the AI that lives in it. Raspberry Pi 4, four MG90S servos
+on a PCA9685 board, a JBL speaker, and a brain that runs on your Mac (free and on-device: Whisper, Qwen in Ollama, Kokoro).
 
-| File | What it is |
+You talk to BITCH at the desk, or from your phone anywhere in the house. It remembers what you tell it, sets timers
+and reminders, keeps lists, checks the weather, looks things up, sees through the camera, greets you by name,
+speaks up on its own now and then, and when you ask for a move it has never done, it invents one.
+
+## Start it
+
+**Mac, once** (Ollama app installed and opened):
+```
+git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh
+```
+**Mac, every time:** open **BITCH** from Applications (or Spotlight). Allow the camera and microphone the first time.
+Keep its window open (minimise it if you like): closing it puts BITCH to sleep.
+
+**Pi, every time:** `python3 -c "from brain import *; listen()"`
+**Pi, after an update:** `bash ~/BITCH-Robot/update.sh`
+
+## Your phone
+1. Same Wi-Fi as the Mac. Open `http://<your Mac's name>.local:8780` (the BITCH window shows the exact address under **More**).
+2. Type the 6-digit pairing code from **More** on the Mac. Phones only pair once.
+3. For voice, the camera and notifications, follow **More › This phone** once: install BITCH's home certificate, then use
+   the `https://…:8781` address and add it to your Home Screen.
+
+## Things to say
+"Hey BITCH, set a 10 minute timer" · "remind me at 7 to call mum" · "every weekday at 8 tell me the weather" ·
+"add eggs to the shopping list" · "remember that my sister is Chloe" · "what am I holding?" · "do the chicken dance" ·
+"good night"
+
+## How it fits together
+```
+ phone app      Mac (mic, camera, speaker)      robot (body, JBL)      new hardware later
+     \                    |                          |                        /
+      '----------- device link: each device says what it can do ----------'
+                                  |
+            core (on the Mac):  senses -> mind -> outputs
+                                memory, mood, routines, initiative
+```
+Every sense and output is a **device** with capabilities: `ears`, `eyes`, `keys` (senses) and `voice`, `body`, `face`,
+`notify` (outputs). Adding a mic, camera or OLED to the robot means writing one small driver in `core/devices/`.
+
+| Where | What |
 |---|---|
-| `desk.py` | Servo control: smooth moves, spring-driven `Actor`, wake-up, rest, bedtime |
-| `shows.py` | Performances: `showtime()`, `life()`, `hello()`, `disco()`, `disco_pro()`, `opera()`, `peekaboo()`, `spooked()`, `sleepy()`, `catch_fly()`, `emotions()` and more |
-| `tests.py` | Joint tests, hold test, nudge tool |
-| `sounds.py` | The voice: vowel-shaped creature sounds plus R2-style machine chirps, randomized every time |
-| `music.py` | Original background music made on the Pi: disco (70 s, sectioned), dance, spooky, lullaby, playful, fanfare, ambient |
-| `control.py` | Keyboard control mode: drive every joint live, trigger sounds and emotes |
-| `brain.py` | Listen mode: reacts to what you say (heard by your Mac) with moves and chirps |
-| `mac/companion.py` | Runs on the Mac: ears (Whisper + speech detector), brain (LLM), voice, eyes (camera) |
-| `mac/dashboard.html` | The BITCH app screen (live view, desk map, chat, people, settings) |
-| `mac/faces.py` | Finds, tracks and recognises faces on the Mac |
-| `update.sh` | Pulls the latest code and links it into `~` |
-
-## First time on the Pi
-```
-git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot && bash ~/BITCH-Robot/update.sh
-pip install adafruit-circuitpython-servokit --break-system-packages
-python3 -c "from sounds import *; build()"
-```
-
-## Every update after that
-```
-bash ~/BITCH-Robot/update.sh
-```
-
-## Run a show
-```
-python3 -c "from shows import *; showtime()"
-```
+| `core/` | BITCH's mind, runs on the Mac: `python -m core` |
+| `core/devices/` | One driver per kind of device: `robot.py` (the Pi), `mac.py` (Mac mic, camera, speaker), `web.py` (phones and the app) |
+| `core/brain.py`, `persona.md` | How it thinks and who it is |
+| `core/tools.py` | What it can do (timers, reminders, lists, weather, look-ups, camera, routines) |
+| `core/moves.py` | Its body language, and how it invents new moves |
+| `core/life.py` | Mood, schedule, greetings, speaking up on its own, memories and diary |
+| `core/memory.py` | Everything it remembers, in `~/.bitch/bitch.db` |
+| `app/` | The app for your phone and the Mac window |
+| `brain.py` | On the Pi: listens to the Mac and moves the servos (also plays invented moves) |
+| `desk.py`, `shows.py`, `sounds.py`, `music.py` | On the Pi: servos, performances, voice and music |
+| `control.py`, `tests.py` | On the Pi: keyboard driving, joint tests |
+| `testing/` | Tests that need no hardware: `~/dc-venv/bin/python -m unittest testing.test_bitch` |
 
 Servo channels on the PCA9685: 0 base, 1 arm, 2 neck, 3 head.
 
-## Talk to it from your Mac (on-device AI)
-The Mac does the hearing (Whisper), thinking (a small LLM in Ollama) and seeing (camera);
-the robot moves, looks at you and talks back through its speaker.
-
-**On the Pi:** `python3 -c "from brain import *; listen()"`
-
-**On the Mac, once** (Ollama app installed and opened):
-`git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh`
-(add `--words` at the end to also install the real-words voice)
-
-**On the Mac, each time:** open **BITCH** from your Applications folder (or Spotlight). It updates itself when it starts.
-
-The app shows the live camera with everyone it sees (named if it knows them), a desk map, the conversation, the people it knows and settings. Click a face to follow that person or teach BITCH their name, or say "my name is …" to it. It notices when you look at it, tilts up when you're above it, and you can talk over it any time.
-
-Options: `--words` (real words, needs `brew install espeak-ng` and `~/dc-venv/bin/pip install kokoro soundfile`),
-`--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--calibrate` (open the camera map),
-`--no-camera`, `--no-mic`, `--pi <address>`, `--model <ollama model> (default qwen3.5:4b)`.
-
-## Drive it with the keyboard
-`python3 -c "from control import *; drive()"`
+## On the Pi without the Mac
+Run a show: `python3 -c "from shows import *; showtime()"` · Drive with the keyboard: `python3 -c "from control import *; drive()"`

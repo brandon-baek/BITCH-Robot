@@ -6,11 +6,11 @@ Two brains, both Qwen 3.5 and both free and local:
                    whether to speak up on its own
 Replies are JSON that follows a schema, which keeps small models reliable.
 """
-import base64, json, threading, time, urllib.request
+import base64, json, os, threading, time, urllib.request
 import numpy as np
 from . import config
 
-URL = 'http://localhost:11434'
+URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')   # tests point this at testing/fake_ollama.py
 _ok = [None]
 
 

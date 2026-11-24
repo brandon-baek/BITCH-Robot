@@ -18,6 +18,7 @@ def main():
     ap.add_argument('--no-mic', action='store_true'); ap.add_argument('--no-camera', action='store_true')
     ap.add_argument('--no-robot', action='store_true'); ap.add_argument('--no-browser', action='store_true')
     ap.add_argument('--no-life', action='store_true', help='no reminders, greetings or speaking up (for tests)')
+    ap.add_argument('--quiet', action='store_true', help="don't use the Mac's speaker (for tests)")
     config.args = args = ap.parse_args()
 
     from .hub import hub
@@ -35,7 +36,7 @@ def main():
         hub.note('starting Ollama (the brain)...', problem=False)
 
     hub.brain, hub.hearing, hub.sight, hub.life = Brain(), Hearing(), Sight(), Life()
-    devs = [MacSpeaker()]
+    devs = [] if args.quiet else [MacSpeaker()]
     if not args.no_robot: devs.append(Robot(args.pi))
     if not args.no_mic: devs.append(MacMic())
     if not args.no_camera: devs.append(MacCamera(args.camera))

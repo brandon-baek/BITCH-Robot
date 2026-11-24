@@ -33,20 +33,28 @@ personality, memory and habits, and it should notice things on its own instead o
 |---|---|---|
 | `desk.py` | Pi | Servo drivers, `go()` easing, `Actor` spring-motion engine, remembered pose, bedtime and wake-up |
 | `shows.py` | Pi | Performances (disco_pro and opera are synced to the music) |
-| `sounds.py`, `music.py` | Pi | Synthesized creature voice, original music tracks, cached files |
-| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop; lip-sync, emotion poses, eye-contact perk |
+| `sounds.py`, `music.py` | Pi (sounds.py also on the Mac) | Synthesized creature voice, original music tracks, cached files |
+| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop /move /ping; lip-sync, emotion poses, plays move steps |
 | `control.py` | Pi | Keyboard driving mode |
-| `mac/companion.py` | Mac | Ears (Silero VAD + Whisper, barge-in), brain (Qwen in Ollama, JSON replies), voice (Kokoro or the Mac's `say`), app server on :8770 |
-| `mac/faces.py` | Mac | YuNet face detection, tracking, SFace recognition; known faces kept in `~/.bitch/faces` |
-| `mac/dashboard.html` | Browser | The BITCH app: live view, desk map, chat, people, follow mode, settings |
+| `core/` | Mac | BITCH's mind: `python -m core` (the BITCH app runs `python -m core --app`). App on :8780 (http) and :8781 (https) |
+| `core/hub.py` | Mac | Device registry, events, routing (which device speaks a reply), app updates |
+| `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
+| `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device; YuNet/SFace faces, desk map, arrivals; Kokoro or `say` voice |
+| `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON with actions; tools run; deep brain (qwen3.5:9b) for background work |
+| `core/moves.py` | Mac | Move steps shared by the robot and the app; invents new moves (keyframes from the 9B, clamped to Actor limits) |
+| `core/life.py` | Mac | Mood, timers/reminders/routines, greetings and the one-time welcome, initiative, memory reflection, diary |
+| `core/memory.py`, `config.py` | Mac | SQLite memory and settings in `~/.bitch` (never in the repo) |
+| `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
+| `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
+| `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` |
 
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.
 
 ## Working rules
 - The GitHub repo `brandon-baek/BITCH-Robot` is public, so never commit secrets.
 - Commit as `Brandon <brandonbaekk@gmail.com>`.
-- Test without the hardware first: mock `adafruit_servokit`, run a fake Ollama, and use a test video as the camera
-  (`--camera file.mp4`). Then hand Brandon short commands to run.
+- Test without the hardware first: `testing/fakes/adafruit_servokit.py`, `testing/fake_ollama.py` (OLLAMA_URL), a test video as
+  the camera (`--camera file.mp4`), `BITCH_HOME=<scratch dir>` so tests never touch ~/.bitch. Then hand Brandon short commands to run.
 - Brandon is a beginner with hardware but wants ambitious results. Give short, copy-pasteable steps and visuals.
   The design taste: big Helvetica type, the desk-grey, ink-navy, kraft palette, nothing that looks AI-generated.

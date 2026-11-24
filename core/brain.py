@@ -22,6 +22,10 @@ WAKE = re.compile(r'\b(wake up|good morning|rise and shine|morning)\b', re.I)
 NOT_NAMES = {'not', 'just', 'here', 'back', 'home', 'so', 'very', 'really', 'tired', 'fine', 'good', 'ok', 'okay', 'sorry', 'going', 'the'}
 
 
+CLAIMS = {'set_timer': r'timer|minutes? (?:is|are) (?:set|running)|counting', 'remind': r'remind', 'remember': r'remember|saved|noted|memory',
+          'forget': r'forgot|forget|erased', 'teach': r'routine|learned|every', 'list': r'list'}
+
+
 def named(t): return bool(NAME.search(t or ''))
 
 
@@ -58,7 +62,7 @@ def examples(o):
         ('I failed my exam', J('sad', "Oh no, I'm sorry. That stings, but one exam doesn't define you. Want to talk about it?", 'lean_in')),
         ('every morning at 8, tell me the weather and my reminders', J('excited', "A morning routine! I'll do that every day at eight.", 'nod',
                                                                         [A('teach', name='morning update', steps='Check the weather for today and list my reminders, then tell me both.', when='every day at 8am')])),
-        ('tell me a joke', J('happy', "Why did the robot go on holiday? It needed to recharge its batteries!", 'wiggle')),
+        ("I'm bored", J('curious', 'Ooh, want me to invent a dance, or shall we plan something fun for later?', 'look_around')),
         ('yeah no, I told you, I will be there in ten. Bye.', J('neutral', '', 'none', respond=False)),
         ('good night BITCH', J('sleepy', f'Good night, {o}. Sweet dreams!', 'none', [A('perform', what='sleep')])),
     ]
@@ -173,7 +177,7 @@ class Brain:
                 name = pend['name']; s.pending_identity = None
                 if hub.sight: hub.sight.learn(name)
                 if pend.get('reveal') and hub.life and not memory.kv_get('revealed'):
-                    hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None); return
+                    hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None, inline=True); return
                 it['extra'] = f'They just told you they are {name}. You are learning their face right now, so you will recognise them from now on.'
             m = INTRO.search(text)
             if m and m.group(1).lower() not in NOT_NAMES and hub.sight:
@@ -183,7 +187,7 @@ class Brain:
                 if mode in ('typed', 'ptt') or named(text) or WAKE.search(text): s.wake()
                 else: hub.chat('note', '(asleep: say "Hey BITCH" or "wake up")'); return
             if hub.life and not memory.kv_get('revealed') and not pend and (mode != 'ambient' or named(text)):
-                hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None)     # the first hello after the upgrade
+                hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None, inline=True)   # the first hello after the upgrade
                 if GREETING.match(text): return
         hub.set_status('thinking')
         user = text if it['kind'] == 'user' else f'({text})'
@@ -191,6 +195,7 @@ class Brain:
         out = s.ask(msgs)
         if it['kind'] == 'user' and mode == 'ambient' and out.get('respond') is False and not named(text) and not it.get('extra'):
             hub.chat('note', '(not meant for me)'); return
+        it['_say'] = out.get('say', '')
         results, redo = s.act(out.get('actions') or [], it)
         if redo:
             msgs += [{'role': 'assistant', 'content': json.dumps(out)},
@@ -222,8 +227,9 @@ class Brain:
             seen.add(key)
             ok, res = tools.run(name, args, ctx)
             print(f'  action {name} {args} -> {ok} {res}', flush=True)
-            if res is None:                              # skipped: nobody asked for it
-                if name != 'perform': results.append(f'{name}: NOT done, the person did not ask for that'); redo = True
+            if res is None:                              # skipped: nobody asked for it. Only answer again if the reply claims it happened.
+                if re.search(CLAIMS.get(name, r'$^'), str(it.get('_say', '')), re.I):
+                    results.append(f'{name}: not needed, so it was NOT done. Reply without mentioning it'); redo = True
                 continue
             results.append(f'{name}: {res}')
             if not ok or tools.TOOLS[name].kind == 'info' or res.startswith(('I could not', 'I need', 'I do not', 'No ', 'There')): redo = True

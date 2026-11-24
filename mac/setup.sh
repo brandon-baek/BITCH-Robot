@@ -22,7 +22,10 @@ cd ~/BITCH-Robot/mac
 [ -s face_detection_yunet_2023mar.onnx ] || curl -fsSL -o face_detection_yunet_2023mar.onnx $Z/face_detection_yunet/face_detection_yunet_2023mar.onnx || true
 [ -s face_recognition_sface_2021dec.onnx ] || curl -fsSL -o face_recognition_sface_2021dec.onnx $Z/face_recognition_sface/face_recognition_sface_2021dec.onnx || true
 
-if command -v ollama >/dev/null; then echo "-> downloading the brain model (qwen3.5:4b, ~3 GB)"; ollama pull qwen3.5:4b || ollama pull qwen3:4b-instruct
+if command -v ollama >/dev/null; then
+  echo "-> downloading the brains: fast (qwen3.5:4b, ~3 GB), deep (qwen3.5:9b, ~7 GB) and memory search (nomic-embed-text)"
+  ollama pull qwen3.5:4b || true; ollama pull qwen3.5:9b || echo "!! the deep brain did not download; BITCH will use the fast one for everything"
+  ollama pull nomic-embed-text || true
 else echo "!! Ollama command not found. Open the Ollama app once, then run this again."; fi
 
 echo "-> making the BITCH app"
@@ -42,7 +45,8 @@ cat > "$APP/Contents/MacOS/BITCH" <<'SH'
 #!/bin/bash
 cd ~/BITCH-Robot && git pull -q --ff-only 2>/dev/null
 curl -s -m 1 localhost:11434 >/dev/null || (open -a Ollama 2>/dev/null; sleep 3)
-exec ~/dc-venv/bin/python mac/companion.py --app >> ~/.bitch/log.txt 2>&1
+pkill -f "[-]m core" 2>/dev/null; sleep 0.5                           # only one BITCH at a time
+exec caffeinate -i ~/dc-venv/bin/python -m core --app >> ~/.bitch/log.txt 2>&1   # caffeinate: the Mac stays awake while BITCH runs
 SH
 chmod +x "$APP/Contents/MacOS/BITCH"
 I=/tmp/bitch.iconset; rm -rf $I; mkdir $I
@@ -52,3 +56,4 @@ codesign --force -s - "$APP" 2>/dev/null || true
 touch "$APP"
 echo "== done. Open BITCH from your Applications folder (or Spotlight: BITCH). =="
 echo "   It will ask for camera and microphone access the first time: allow both."
+echo "   On your phone (same Wi-Fi): http://$(scutil --get LocalHostName).local:8780  (pair with the code in BITCH > More)"

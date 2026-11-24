@@ -165,7 +165,7 @@ def listen():
     try: ip=socket.gethostbyname(socket.gethostname()+'.local')
     except Exception: ip='?'
     print(f'\n  LISTEN MODE on port {PORT}. Robot address: raspberrypi.local (or {ip})')
-    print('  Start the companion on your Mac. Ctrl+C to stop.\n',flush=True)
+    print('  Open the BITCH app on your Mac. Ctrl+C to stop.\n',flush=True)
     A=Actor(); last=time.time(); A.idle_amt=0.8
     try:
         while True:

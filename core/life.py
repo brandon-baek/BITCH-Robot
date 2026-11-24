@@ -8,7 +8,7 @@
               logged with the reason, so you can tell it "don't do that" in the app
   reflection  after you finish talking it saves what's worth remembering, and writes a short diary each night
 """
-import datetime as dt, json, math, random, threading, time
+import datetime as dt, json, math, random, re, threading, time
 from . import config, llm, memory, moves, timeparse
 from .hub import hub
 
@@ -184,8 +184,9 @@ class Life:
         hub.brain.event(f'{name} just came back to the desk after {away} away. Greet {name} warmly by name in a sentence or two.{brief}{news}',
                         why=f'{name} arrived', away='skip')
 
-    def reveal(s, origin=None):
-        """The one-time 'welcome home' after the big upgrade: celebrate, then show off a little."""
+    def reveal(s, origin=None, inline=False):
+        """The one-time 'welcome home' after the big upgrade: celebrate, then show off a little.
+        inline: called from inside the brain (speak now, in order) rather than from the camera (queue it)."""
         if memory.kv_get('revealed'): return
         memory.kv_set('revealed', True)
         o = config.get('owner')
@@ -197,7 +198,9 @@ class Life:
                  "check the weather and look stuff up.", 'proud', 'none'),
                 ("You can talk to me from your phone, too. And if you ask for a move I've never done, I'll invent it on the spot.", 'happy', 'wiggle'),
                 ('So, what should we try first?', 'curious', 'lean_in')):
-            hub.brain.q.put({'kind': 'say', 'text': text, 'feeling': feeling, 'move': move, 'device': origin, 'why': 'welcome home', 'mode': 'event'})
+            it = {'kind': 'say', 'text': text, 'feeling': feeling, 'move': move, 'device': origin, 'why': 'welcome home', 'mode': 'event'}
+            if inline: hub.brain.express(text, feeling, move, it)
+            else: hub.brain.q.put(it)
 
     def while_away(s, since):
         acts = [a for a in memory.activity(20, since) if a['kind'] in ('reminder', 'timer', 'notify', 'learned')]
@@ -218,30 +221,33 @@ class Life:
     def consider(s):
         c = config.get('chattiness'); now = time.time()
         if c <= 0 or hub.asleep or quiet_now() or hub.status not in ('listening',): return
-        gap = 60 * (45 - 37 * c)                                   # minutes between unprompted things: 45 (quiet) .. 8 (chatty)
+        gap = 60 * (90 - 80 * c)                                   # minutes between unprompted things: about 70 (quiet) .. 50 (normal) .. 10 (chatty)
         if now - s.last_proactive < gap or now - hub.last_talk < 240: return
         present = hub.someone_at_desk(120) is not False          # no camera: assume someone might be there
         if not present and len([a for a in memory.activity(40, now - 86400) if a['kind'] == 'notify' and 'on its own' in (a['why'] or '')]) >= 2: return
         s.last_proactive = now; memory.kv_set('last_proactive', now)
         o = config.get('owner'); d = dt.datetime.now()
-        recent = [f'{a["text"]} ({a["feedback"] or "no feedback"})' for a in memory.activity(8)]
+        recent = [f'"{a["text"]}" ({a["feedback"] or "no feedback"})' for a in memory.activity(10) if a['kind'] in ('spoke', 'moved', 'notify')]
         dislikes = [m['text'] for m in memory.memories(kind='feedback')][:6]
         mems = [m['text'] for m in memory.recall('plans, events, worries, goals, things to follow up on today', k=6, min_score=0.3)]
         stay = f'{round((now - s.present_since) / 60)} minutes' if present and s.present_since else ''
         who = ', '.join(p['name'] or 'someone' for p in hub.people) or ('nobody is at the desk right now' if not present else o)
         ups = [f'{t["text"]} {timeparse.nice(dt.datetime.fromtimestamp(t["due"]))}' for t in memory.tasks()[:3]]
-        prompt = (f'You are BITCH, {o}\'s little desk robot, deciding whether to do something on your own right now. Be a delightful companion, '
-                  f'not an annoying one: most of the time the answer is "nothing". Good reasons to act: following up on something {o} told you about, '
-                  f'a helpful nudge (they have been sitting a long time, it is late, a reminder is coming), a fun little idea or move when you are bored, '
-                  f'or a quick check-in. Never repeat something you did recently. Never make things up about {o}.\n'
+        level = 'quiet' if c < 0.3 else 'normal' if c < 0.7 else 'chatty'
+        prompt = (f'You are BITCH, {o}\'s little desk robot. You get a chance to do something on your own every so often, and this is one. '
+                  f'{o} set your chattiness to {level}. Be a delightful companion, not an annoying one. Use this chance when there is a good reason:\n'
+                  f'- {o} has been sitting for over an hour: a short, kind nudge to stretch, drink water or rest their eyes.\n'
+                  f'- Something {o} told you about is coming up or just happened (an exam, a plan, a visit): a quick, warm check-in or good-luck.\n'
+                  f'- You are bored: a little performance ("move", describe a fun move) with a tiny line, or a fun fact or idea.\n'
+                  f'- {o} is away and something genuinely matters soon: a phone notification.\n'
+                  f'Choose "nothing" if none of these fit or if {o} asked you not to. Never say anything like what you already said on your own today. Never make things up.\n'
                   f'Time: {d:%A %-I:%M %p}. Your mood: {s.mood.describe()}. At the desk: {who}' + (f', for {stay}' if stay else '') +
                   f'. Last talked {round((now - hub.last_talk) / 60) if hub.last_talk else "many"} minutes ago.\n'
                   f'Coming up: {"; ".join(ups) or "nothing"}.\nThings you remember: {"; ".join(mems) or "nothing special"}.\n'
-                  f'What you did on your own lately: {"; ".join(recent) or "nothing"}.\n'
-                  f'{o} told you not to: {"; ".join(dislikes) or "(nothing yet)"}.\n'
-                  f'Options: "nothing"; "say" (only if someone is at the desk; a short line, at most 2 sentences); "move" (a little performance, '
-                  f'describe it in "move", and a tiny line in "say" or ""); "notify" (only if {o} is away and it is genuinely worth a phone notification). '
-                  f'"why" is one short reason.')
+                  f'What you did on your own lately: {"; ".join(recent) or "nothing yet"}.\n'
+                  f'{o} asked you not to: {"; ".join(dislikes) or "(nothing)"}.\n'
+                  f'"say": what you say out loud, one or two short sentences, talking to {o} as "you". "move": describe the move, or "". '
+                  f'"why": a few words on why.')
         out = llm.chat([{'role': 'user', 'content': prompt}], DECIDE, deep=True, temperature=0.8, timeout=90, max_tokens=300)
         do = out.get('do'); say = (out.get('say') or '').strip(); why = (out.get('why') or '').strip()[:160]
         print(f'  initiative: {do} {say!r} ({why})', flush=True)
@@ -266,21 +272,26 @@ class Life:
         if not s.lock.acquire(blocking=False): return
         try:
             o = config.get('owner')
-            msgs = [m for m in memory.recent_messages(30, since=s.last_reflect - 1) if m['role'] in ('you', 'bitch')]
+            msgs = [m for m in memory.recent_messages(30, since=s.last_reflect - 1) if m['role'] == 'you' or (m['role'] == 'bitch' and not m.get('proactive'))]
             s.last_reflect = time.time(); memory.kv_set('last_reflect', s.last_reflect)
             if not any(m['role'] == 'you' for m in msgs): return
             convo = '\n'.join(f'{o if m["role"] == "you" else "BITCH"}: {m["text"]}' for m in msgs[-24:])
             known = '; '.join(m['text'] for m in memory.memories(limit=40))
             out = llm.chat([{'role': 'user', 'content':
-                f'You are the memory of BITCH, {o}\'s desk robot. Read this conversation and pick out lasting facts worth remembering: '
-                f'names and relationships, likes and dislikes, plans and dates, goals, worries, what {o} is working on, how {o} wants BITCH to behave. '
-                f'Write each as one complete sentence that makes sense on its own (use names, not "he" or "I"). Skip small talk, trivia, maths and '
-                f'anything already known. Importance: 5 = core identity, 4 = important, 3 = useful, 2 = minor. If there is nothing worth keeping, '
-                f'return no memories. Also write a one-sentence summary of the conversation.\nAlready known: {known or "nothing"}\n\nConversation:\n{convo}'}],
+                f'You are the memory of BITCH, {o}\'s desk robot. Read this conversation and pick out lasting facts worth remembering, '
+                f'taken only from what {o} (or other people) said about themselves and their world: names and relationships, likes and dislikes, '
+                f'plans and dates, goals, worries, what they are working on, and how they want BITCH to behave. '
+                f'Write each as one complete sentence using names, never he, she, his, her or I (write "{o}\'s exam is on Thursday", not "his exam"). Never save facts about BITCH itself, its abilities, '
+                f'timers, reminders, lists, small talk, jokes, trivia or maths, and nothing already known. '
+                f'Importance: 5 = core identity, 4 = important, 3 = useful, 2 = minor. Usually there is nothing worth keeping: then return no memories. '
+                f'Also write a one-sentence summary of the conversation, using names.\nAlready known: {known or "nothing"}\n\nConversation:\n{convo}'}],
                 REFLECT, deep=True, temperature=0.3, timeout=120, max_tokens=500)
             n = 0
             for m in out.get('memories', [])[:6]:
                 f = (m.get('fact') or '').strip()
+                pref = re.search(r"\b(wants?|likes?|prefers?|doesn.?t want|does not want|hates?|stop|don.?t)\b", f, re.I)
+                if 'BITCH' in f and not pref: continue                    # not about BITCH's own abilities
+                if re.search(r'\b(timer|reminder|alarm)\b', f, re.I): continue
                 if len(f) > 8:
                     kind = 'feedback' if 'BITCH' in f and any(w in f.lower() for w in ("doesn't want", 'does not want', "don't", 'stop', 'prefers', 'wants bitch')) else 'fact'
                     memory.remember(f, kind, about=m.get('about') or None, importance=max(1, min(5, int(m.get('importance') or 3)))); n += 1

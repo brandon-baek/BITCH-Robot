@@ -4,3 +4,7 @@ numpy
 opencv-python
 silero-vad
 pywebview
+pyobjc-framework-AVFoundation
+fastapi
+uvicorn[standard]
+pywebpush
