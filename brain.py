@@ -19,7 +19,13 @@ class _H(BaseHTTPRequestHandler):
     def do_GET(s):
         u=urlparse(s.path); q={k:v[0] for k,v in parse_qs(u.query).items()}
         if u.path=='/hear' and q.get('text','').strip(): Q.put(('hear',q['text'].strip()))
-        elif u.path=='/stop': STOP.set()
+        elif u.path=='/stop':                                # stop talking now, and drop anything still waiting to be said
+            STOP.set()
+            keep=[]
+            while not Q.empty():
+                it=Q.get()
+                if it[0] not in ('speak','say','move'): keep.append(it)
+            for it in keep: Q.put(it)
         elif u.path=='/emote': Q.put(('emote',q.get('emotion','neutral'),q.get('action','none')))
         elif u.path=='/say': Q.put(('say',q.get('text',''),q.get('emotion','neutral'),q.get('action','none')))
         elif u.path=='/look':
@@ -30,7 +36,7 @@ class _H(BaseHTTPRequestHandler):
             if eye!=LOOK.get('eye',False): LOOK['eye']=eye; LOOK['eye_t']=time.time()
             LOOK.update(x=float(q.get('x',0.5)),y=float(q.get('y',0.5)),seen=seen,t=time.time(),
                         b=float(q['b']) if 'b' in q else None,n=float(q['n']) if 'n' in q else None)
-        s._ok({'ok':True,'busy':BUSY[0]})
+        s._ok({'ok':True,'busy':BUSY[0],'caps':CAPS})
     def do_POST(s):
         u=urlparse(s.path); q={k:v[0] for k,v in parse_qs(u.query).items()}
         n=int(s.headers.get('Content-Length',0)); data=s.rfile.read(n)
@@ -38,10 +44,33 @@ class _H(BaseHTTPRequestHandler):
             p='/tmp/desk_speech_%d.wav'%int(time.time()*1000)
             open(p,'wb').write(data)
             Q.put(('speak',p,q.get('emotion','neutral'),q.get('action','none'),q.get('text','')))
-        s._ok({'ok':True,'busy':BUSY[0]})
+        elif u.path=='/move':                                # a move made of steps (see core/moves.py on the Mac)
+            try: m=json.loads(data or b'{}'); Q.put(('move',m.get('steps') or [],m.get('name','')))
+            except ValueError: pass
+        s._ok({'ok':True,'busy':BUSY[0],'caps':CAPS})
     def log_message(s,*a): pass
 BUSY=[False]
 STOP=threading.Event()
+CAPS=['move','speak','look','emote']                         # what this robot can do; the Mac reads it from /ping
+JOINT={'base':'b','arm':'a','neck':'n','head':'h'}
+SPEEDS={'slow':0.6,'normal':1.2,'snappy':2.6}
+def run_steps(A,steps,name=''):
+    """Play a move: pose / wiggle / sound / wait / rest steps. Positions are clamped by the Actor's safe limits."""
+    if name: print(f'  move: {name}',flush=True)
+    STOP.clear()
+    for st in steps[:60]:
+        if STOP.is_set(): break
+        d=st.get('do'); secs=max(0.0,min(4.0,float(st.get('secs',0.5) or 0)))
+        if d=='pose':
+            A.to(stiff=SPEEDS.get(st.get('speed'),1.2),**{JOINT[j]:max(-1.0,min(1.0,float(st[j]))) for j in JOINT if st.get(j) is not None}); A.wait(secs)
+        elif d=='wiggle':
+            for j in (st.get('joints') or ['head'])[:3]:
+                if j in JOINT: A.shake(JOINT[j],max(0.0,min(0.5,float(st.get('size',0.3)))),max(0.3,min(6.0,float(st.get('hz',3)))),secs)
+            A.wait(secs)
+        elif d=='sound': A.sfx(str(st.get('sound','blip')))
+        elif d=='wait': A.wait(secs)
+        elif d=='rest': A.rest(stiff=0.9).wait(secs or 0.8)
+    A.rest(stiff=0.9).wait(0.3)
 def has(t,*ws): return any(re.search(r'\b'+w+r'\b',t) for w in ws)
 def react(A,text):
     t=text.lower(); print(f'\n  heard: "{text}"',flush=True)
@@ -157,6 +186,7 @@ def listen():
             elif kind=='eye':                                   # you looked at it: a small happy perk
                 A.sfx(random.choice(['doubleblip','curious','happy'])); A.to(h=0.18,stiff=2.2).wait(0.25); A.to(h=-0.12).wait(0.25); A.to(h=0).wait(0.2)
             elif kind=='arrived': A.sfx('hello'); pose(A,'happy'); act(A,'wave'); A.rest().wait(0.4)
+            elif kind=='move': run_steps(A,item[1],item[2])
             elif kind=='emote':
                 _,emo,action=item; c=EMO.get(emo,EMO['neutral'])[1]
                 if c: A.sfx(c)

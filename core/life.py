@@ -160,18 +160,13 @@ class Life:
         away = 'a while' if gone is None else (f'{round(gone / 60)} minutes' if gone < 5400 else f'{round(gone / 3600)} hours')
         news = s.while_away(now - (gone or 0))
         knows_faces = bool(hub.sight and hub.sight.known())
-        if not memory.kv_get('revealed') and (name == o or (name is None and not knows_faces)):
-            memory.kv_set('revealed', True); s.greeted_today = today; memory.kv_set('greeted_day', today)
-            ask = '' if name == o else f' You cannot recognise faces yet, so warmly ask "Is that you, {o}?"'
-            if name is None: hub.brain.pending_identity = {'name': o, 'until': now + 120}
-            hub.brain.play('celebrate', CELEBRATE)
-            s.did('greeting', f'Welcomed {o} home after the big upgrade', 'first time seeing them since the upgrade')
-            hub.brain.event(f'{o} just came home and walked up to the desk. This is the first time you see them since you got a huge upgrade today: '
-                            f'{o} can now talk to you from their phone app, you have a real memory, timers, reminders, lists and routines, you can check '
-                            f'the weather and look things up, you notice things and speak up on your own, and you can invent brand-new moves when asked. '
-                            f'Greet them with huge, happy excitement and welcome them home, then in two or three short sentences tease what you can do now.{ask}',
-                            why='welcome home after the upgrade', away='skip', record=True)
-            return
+        if not memory.kv_get('revealed'):
+            if name == o: s.greeted_today = today; memory.kv_set('greeted_day', today); s.reveal(); return
+            if name is None and not knows_faces:
+                hub.brain.pending_identity = {'name': o, 'until': now + 300, 'reveal': True}
+                hub.brain.q.put({'kind': 'say', 'text': random.choice([f"Oh! Someone's here. Is that you, {o}?", f'Wait, wait, wait. Is that you, {o}?']),
+                                 'feeling': 'curious', 'move': 'lean_in', 'device': None, 'why': 'someone sat down at the desk', 'mode': 'event'})
+                return
         if name is None:
             if not knows_faces:
                 hub.brain.pending_identity = {'name': o, 'until': now + 120}
@@ -188,6 +183,21 @@ class Life:
                      + ('use the weather tool for today, ' if config.get('location') else '') + "and mention anything coming up today.")
         hub.brain.event(f'{name} just came back to the desk after {away} away. Greet {name} warmly by name in a sentence or two.{brief}{news}',
                         why=f'{name} arrived', away='skip')
+
+    def reveal(s, origin=None):
+        """The one-time 'welcome home' after the big upgrade: celebrate, then show off a little."""
+        if memory.kv_get('revealed'): return
+        memory.kv_set('revealed', True)
+        o = config.get('owner')
+        s.did('greeting', f'Welcomed {o} home and showed off the upgrade', 'first time seeing them since the upgrade')
+        hub.brain.play('celebrate', CELEBRATE)
+        for text, feeling, move in (
+                (f"{o}! You're home!", 'excited', 'none'),
+                ("I got a huge upgrade while you were out. I remember things now, I can set timers and reminders, keep your lists, "
+                 "check the weather and look stuff up.", 'proud', 'none'),
+                ("You can talk to me from your phone, too. And if you ask for a move I've never done, I'll invent it on the spot.", 'happy', 'wiggle'),
+                ('So, what should we try first?', 'curious', 'lean_in')):
+            hub.brain.q.put({'kind': 'say', 'text': text, 'feeling': feeling, 'move': move, 'device': origin, 'why': 'welcome home', 'mode': 'event'})
 
     def while_away(s, since):
         acts = [a for a in memory.activity(20, since) if a['kind'] in ('reminder', 'timer', 'notify', 'learned')]

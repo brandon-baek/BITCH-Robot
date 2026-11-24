@@ -7,11 +7,11 @@ been empty for a while (or a person it knows comes back), it raises an 'arrived'
 Only the desk camera (the Mac's, for now) is used for tracking. A phone camera is used for snapshots
 ("what is this?"), because it moves around with you.
 """
-import json, math, threading, time
+import json, math, os, threading, time
 from . import config
 from .hub import hub
 
-AWAY = 600           # seconds the desk must be empty (or a person gone) before it counts as an arrival
+AWAY = int(os.environ.get("BITCH_AWAY", 600))   # seconds the desk must be empty (or a person gone) before it counts as an arrival
 
 
 def cam():
@@ -165,6 +165,6 @@ class Sight:
         for p in people:                         # someone it knows came back while others were here
             n = p['name']
             if not n: continue
-            if s.arriving is None and now - s.present.get(n, 0) > AWAY and now - s.last_seen < 5:
-                hub.emit('arrived', name=n, gone=now - s.present[n] if s.present.get(n) else None, track=p['id'])
+            if s.arriving is None and n in s.present and now - s.present[n] > AWAY and now - s.last_seen < 5:
+                hub.emit('arrived', name=n, gone=now - s.present[n], track=p['id'])
             s.present[n] = now

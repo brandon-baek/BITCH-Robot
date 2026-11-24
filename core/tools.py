@@ -34,7 +34,9 @@ def run(name, args, ctx):
     """Run one tool. Returns (ok, result text)."""
     t = TOOLS.get(name)
     if not t: return False, f'There is no tool called {name}.'
-    if t.guard and ctx.get('text') and not t.guard.search(ctx['text']) and ctx.get('mode') not in ('routine', 'event'):
+    if ctx.get('mode') == 'event' and name in ('perform', 'set_timer', 'remind', 'teach', 'forget'):
+        return False, None                                   # greetings and other events never start these on their own
+    if t.guard and ctx.get('text') and not t.guard.search(ctx['text']) and ctx.get('mode') != 'routine':
         return False, None                                   # not asked for: silently skipped
     try:
         out = t.fn(ctx, **{k: v for k, v in (args or {}).items() if isinstance(k, str)})
@@ -96,7 +98,7 @@ def remind(ctx, when='', text='', **_):
 def reminders(ctx, action='list', what='', **_):
     ts = [t for t in memory.tasks() if t['kind'] in ('timer', 'reminder', 'routine')]
     if action == 'cancel':
-        if not re.search(r'cancel|delete|remove|stop|never ?mind|clear|forget', ctx.get('text', ''), re.I) and ctx.get('mode') != 'event':
+        if not re.search(r'cancel|delete|remove|stop|never ?mind|clear|forget', ctx.get('text', ''), re.I) and ctx.get('mode') != 'routine':
             return 'Not cancelled: the person did not ask to cancel anything.'
         hit = _best(what, ts, lambda t: t['text']) if what else (ts[-1] if ts else None)
         if not hit: return 'There was nothing to cancel.'

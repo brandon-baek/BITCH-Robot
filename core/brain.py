@@ -17,6 +17,7 @@ GESTURES = ['none'] + list(moves.GESTURES)
 NAME = re.compile(r"\bb[.\-* ]?[i!*1]?[.\-* ]?[t*]?[.\-* ]?[c*][.\-* ]?h\b|\bb\*{2,}", re.I)
 INTRO = re.compile(r"\b(?:my name is|my name's|call me|i am called|this is)\s+([A-Za-z][A-Za-z\-']{1,20})", re.I)
 YES = re.compile(r"^\W*(yes|yeah|yep|yup|ya|yah|that'?s me|it'?s me|i am|correct|of course|sure|uh[- ]?huh|mhm|indeed|you got it)\b", re.I)
+GREETING = re.compile(r"^\W*((hey|hi|hello|yo|sup|hiya|howdy|good (morning|afternoon|evening))\W*(there|bitch|buddy|bud|you)?\W*)+$", re.I)
 WAKE = re.compile(r'\b(wake up|good morning|rise and shine|morning)\b', re.I)
 NOT_NAMES = {'not', 'just', 'here', 'back', 'home', 'so', 'very', 'really', 'tired', 'fine', 'good', 'ok', 'okay', 'sorry', 'going', 'the'}
 
@@ -167,9 +168,12 @@ class Brain:
         if it['kind'] == 'user':
             hub.last_talk = time.time()
             hub.chat('you', text, dev, mode=mode)
-            if s.pending_identity and time.time() < s.pending_identity['until'] and YES.search(text):
-                name = s.pending_identity['name']; s.pending_identity = None
+            pend = s.pending_identity if s.pending_identity and time.time() < s.pending_identity['until'] else None
+            if pend and YES.search(text):
+                name = pend['name']; s.pending_identity = None
                 if hub.sight: hub.sight.learn(name)
+                if pend.get('reveal') and hub.life and not memory.kv_get('revealed'):
+                    hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None); return
                 it['extra'] = f'They just told you they are {name}. You are learning their face right now, so you will recognise them from now on.'
             m = INTRO.search(text)
             if m and m.group(1).lower() not in NOT_NAMES and hub.sight:
@@ -178,6 +182,9 @@ class Brain:
             if hub.asleep:
                 if mode in ('typed', 'ptt') or named(text) or WAKE.search(text): s.wake()
                 else: hub.chat('note', '(asleep: say "Hey BITCH" or "wake up")'); return
+            if hub.life and not memory.kv_get('revealed') and not pend and (mode != 'ambient' or named(text)):
+                hub.life.reveal(origin=dev if hub.place_of(dev) == 'mobile' else None)     # the first hello after the upgrade
+                if GREETING.match(text): return
         hub.set_status('thinking')
         user = text if it['kind'] == 'user' else f'({text})'
         msgs = [{'role': 'system', 'content': s.system()}] + s.history() + [{'role': 'user', 'content': f'{user}\n{s.senses(it)}'}]
