@@ -13,14 +13,15 @@ ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.inser
 
 ap=argparse.ArgumentParser()
 ap.add_argument('--pi',default='raspberrypi.local',help='robot address')
-ap.add_argument('--model',default='llama3.2:3b',help='Ollama model')
+ap.add_argument('--model',default='qwen3.5:4b',help='Ollama model (falls back to qwen3:4b-instruct)')
 ap.add_argument('--words',action='store_true',help='speak real words (needs kokoro)')
 ap.add_argument('--voice',default='af_heart',help='Kokoro voice for --words')
 ap.add_argument('--whisper',default='mlx-community/whisper-small.en-mlx')
 ap.add_argument('--no-mic',action='store_true'); ap.add_argument('--no-camera',action='store_true')
 ap.add_argument('--camera',type=int,default=0,help='camera number (try 1 for an iPhone)')
 ap.add_argument('--preview',action='store_true',help='show the camera window')
-ap.add_argument('--flip',action='store_true',help='robot looks the wrong way? use this')
+ap.add_argument('--flip',action='store_true',help='robot turns the wrong way? (also a checkbox in the camera map)')
+ap.add_argument('--calibrate',action='store_true',help='open the camera position map')
 args=ap.parse_args()
 PI=f'http://{args.pi}:8765'
 
@@ -47,12 +48,15 @@ Pick 'dance' only if asked to dance, 'sing' only if asked to sing, 'sleep' only 
 HIST=[]
 def think(text,seen):
     msgs=[{'role':'system','content':SYSTEM}]+HIST[-10:]+[{'role':'user','content':text+('' if seen is None else f"  [camera: {'a person is in front of you' if seen else 'nobody visible'}]")}]
-    body=json.dumps({'model':args.model,'messages':msgs,'stream':False,'format':'json','options':{'temperature':0.8}}).encode()
-    try:
-        r=json.loads(urllib.request.urlopen(urllib.request.Request('http://localhost:11434/api/chat',data=body,headers={'Content-Type':'application/json'}),timeout=60).read())
-        out=json.loads(r['message']['content'])
-    except Exception as e:
-        log('  ! LLM problem (is Ollama running? did you pull the model?):',e)
+    out=None
+    for model,extra in ((args.model,{'think':False}),(args.model,{}),('qwen3:4b-instruct',{})):
+        body=json.dumps({'model':model,'messages':msgs,'stream':False,'format':'json','options':{'temperature':0.8},**extra}).encode()
+        try:
+            r=json.loads(urllib.request.urlopen(urllib.request.Request('http://localhost:11434/api/chat',data=body,headers={'Content-Type':'application/json'}),timeout=90).read())
+            out=json.loads(r['message']['content']); break
+        except Exception as e: err=e
+    if out is None:
+        log(f'  ! LLM problem (is Ollama open? run: ollama pull {args.model}):',err)
         out={'say':'Beep? My brain is sleepy.','emotion':'confused','action':'none'}
     say=re.sub(r'[*_#`]','',str(out.get('say','')))[:160] or '...'
     emo=out.get('emotion','neutral'); emo=emo if emo in EMOTIONS else 'neutral'
@@ -96,7 +100,7 @@ def speak(text,emotion,action):
     STATE['mute_until']=time.time()+dur+1.2
 
 # ---------------- ears: mic + Whisper ----------------
-HEARD=queue.Queue(); STATE={'mute_until':0,'seen':None,'asleep':False}
+HEARD=queue.Queue(); STATE={'mute_until':0,'seen':None,'asleep':False,'person':None}
 def ears():
     import numpy as np, sounddevice as sd, mlx_whisper
     log('  loading Whisper (first time downloads ~250 MB)...')
@@ -121,30 +125,102 @@ def ears():
                         txt=mlx_whisper.transcribe(audio,path_or_hf_repo=args.whisper,language='en')['text'].strip()
                         if txt and not re.fullmatch(r'[\W_]*|(thank you\.?)|(you)',txt.lower()): HEARD.put(txt)
 
-# ---------------- eyes: camera face tracking ----------------
+# ---------------- eyes: camera face tracking, placed anywhere around the robot ----------------
+import math
+CFG_F=os.path.expanduser('~/.desk_camera.json')
+CAM={'x':0.0,'y':15.0,'yaw':0.0,'fov':70.0,'face_cm':15.0,'flip':False}   # cm; robot at (0,0) facing +y; yaw 0 = camera faces the same way as the robot
+try: CAM.update(json.load(open(CFG_F)))
+except Exception: pass
+if args.flip: CAM['flip']=True
+def save_cam():
+    try: json.dump(CAM,open(CFG_F,'w'))
+    except Exception as e: log('  ! could not save camera map:',e)
+def to_robot(px,py):
+    """a point on the floor map -> base angle value for the robot (+ head pitch kept neutral)"""
+    ang=math.degrees(math.atan2(px,max(1e-3,py)))           # degrees right of straight ahead
+    return max(-0.9,min(0.9,(ang/90)*(-1 if CAM['flip'] else 1)))
+def person_from_face(cx,cy,fw):
+    """face centre/width (0-1 of frame) -> (x,y) cm on the map"""
+    t=math.tan(math.radians(CAM['fov']/2))
+    a=math.atan((cx-0.5)*2*t)                                # angle right of the camera's view
+    d=CAM['face_cm']/max(0.02,fw*2*t)                        # distance from face size
+    fwd,rt=d*math.cos(a),d*math.sin(a); th=math.radians(CAM['yaw'])
+    return CAM['x']+fwd*math.sin(th)+rt*math.cos(th), CAM['y']+fwd*math.cos(th)-rt*math.sin(th)
 def eyes():
     import cv2
     cam=cv2.VideoCapture(args.camera)
-    if not cam.isOpened(): log('  ! camera not available (allow Terminal to use the camera in System Settings)'); return
+    if not cam.isOpened(): log('  ! camera not available (System Settings > Privacy > Camera: allow Terminal)'); return
     det=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
-    log('  📷 camera on: the robot will look at you'); sx=sy=0.5; miss=0
+    log('  📷 camera on: the robot will look at you'); px=py=None; miss=0
     while True:
         ok,fr=cam.read()
         if not ok: time.sleep(0.2); continue
         g=cv2.cvtColor(cv2.resize(fr,(320,int(320*fr.shape[0]/fr.shape[1]))),cv2.COLOR_BGR2GRAY)
-        faces=det.detectMultiScale(g,1.15,5,minSize=(30,30))
+        faces=det.detectMultiScale(g,1.15,5,minSize=(24,24))
         if len(faces):
-            x,y,w,h=max(faces,key=lambda f:f[2]*f[3]); cx=(x+w/2)/g.shape[1]; cy=(y+h/2)/g.shape[0]
-            if args.flip: cx=1-cx
-            sx+=0.5*(cx-sx); sy+=0.5*(cy-sy); miss=0; STATE['seen']=True
-            pi_get('/look',x=f'{sx:.3f}',y=f'{sy:.3f}',seen=1)
+            x,y,w,h=max(faces,key=lambda f:f[2]*f[3]); W,H=g.shape[1],g.shape[0]
+            nx,ny=person_from_face((x+w/2)/W,(y+h/2)/H,w/W)
+            px=nx if px is None else px+0.45*(nx-px); py=ny if py is None else py+0.45*(ny-py)
+            miss=0; STATE['seen']=True; STATE['person']=(px,py); vy=(y+h/2)/H
+            pi_get('/look',b=f'{to_robot(px,py):.3f}',n=f'{max(-1,min(-0.3,-0.8+(0.5-vy)*0.6)):.3f}',seen=1)
         else:
             miss+=1
-            if miss==8: STATE['seen']=False; pi_get('/look',seen=0)
+            if miss==8: STATE['seen']=False; STATE['person']=None; pi_get('/look',seen=0)
         if args.preview:
             for (x,y,w,h) in faces: cv2.rectangle(g,(x,y),(x+w,y+h),255,2)
             cv2.imshow('Desk Creature eyes',g); cv2.waitKey(1)
         time.sleep(0.12)
+
+MAP_HTML=r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Camera map</title>
+<style>:root{color-scheme:light dark;--bg:light-dark(#e9d6b4,#241b12);--card:light-dark(#f7ecd8,#33271a);--ink:light-dark(#2a1d10,#f3e6cf);--mute:light-dark(#6e5636,#c4ad8a)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;padding:16px}
+main{width:min(720px,100%);display:grid;gap:12px}h1{margin:0;font:800 30px/1.1 system-ui}canvas{width:100%;aspect-ratio:1;background:var(--card);border-radius:16px;touch-action:none;cursor:crosshair}
+.row{display:flex;flex-wrap:wrap;gap:16px;align-items:center}label{display:flex;gap:8px;align-items:center}input[type=range]{width:180px;accent-color:#e8741e}p{margin:0;color:var(--mute)}b{color:#e8741e}</style></head>
+<body><main><h1>Where is the camera?</h1>
+<p>Top-down view. The robot is the brown circle facing up (toward you). <b>Drag the blue camera</b> to where it really sits, and turn it with the slider (or the scroll wheel) until its cone faces where the camera points. The orange dot is where it thinks you are. Click anywhere else to make the robot look there.</p>
+<canvas id="c" width="720" height="720"></canvas>
+<div class="row"><label>Camera turn <input type="range" id="yaw" min="-180" max="180" step="1"><span id="yv"></span>°</label>
+<label>Camera view width <input type="range" id="fov" min="40" max="110" step="1"><span id="fv"></span>°</label>
+<label><input type="checkbox" id="flip"> Robot turns the wrong way</label></div>
+<p id="st"></p></main>
+<script>{const c=document.getElementById('c'),x=c.getContext('2d'),S=2.2,OX=360,OY=600;let cfg=null,person=null,drag=false,aim=null;
+const W2S=(px,py)=>[OX+px*S,OY-py*S],S2W=(sx,sy)=>[(sx-OX)/S,(OY-sy)/S];
+function draw(){if(!cfg)return;x.clearRect(0,0,720,720);x.strokeStyle='rgba(128,100,60,.25)';x.lineWidth=1;
+for(let i=-160;i<=160;i+=20){let[a,b]=W2S(i,-40),[a2,b2]=W2S(i,260);x.beginPath();x.moveTo(a,b);x.lineTo(a2,b2);x.stroke();[a,b]=W2S(-160,i+100);[a2,b2]=W2S(160,i+100);x.beginPath();x.moveTo(a,b);x.lineTo(a2,b2);x.stroke()}
+x.fillStyle='#8a6a40';x.font='13px system-ui';x.fillText('20 cm grid',12,710);
+const[cx,cy]=W2S(cfg.x,cfg.y),th=cfg.yaw*Math.PI/180,f=cfg.fov*Math.PI/360;x.fillStyle='rgba(60,130,230,.15)';x.beginPath();x.moveTo(cx,cy);
+for(const s of[-f,f]){}x.lineTo(cx+600*Math.sin(th-f),cy-600*Math.cos(th-f));x.lineTo(cx+600*Math.sin(th+f),cy-600*Math.cos(th+f));x.closePath();x.fill();
+x.save();x.translate(cx,cy);x.rotate(th);x.fillStyle='#2f6fd6';x.fillRect(-16,-10,32,20);x.fillStyle='#fff';x.beginPath();x.arc(0,-10,5,0,7);x.fill();x.restore();
+const[rx,ry]=W2S(0,0);x.fillStyle='#8a5a2b';x.beginPath();x.arc(rx,ry,22,0,7);x.fill();x.strokeStyle='#8a5a2b';x.lineWidth=5;x.beginPath();x.moveTo(rx,ry);x.lineTo(rx,ry-42);x.stroke();
+const tgt=aim||person;if(tgt){const[px,py]=W2S(tgt[0],tgt[1]);x.strokeStyle='#e8741e';x.lineWidth=3;x.setLineDash([6,6]);x.beginPath();x.moveTo(rx,ry);x.lineTo(px,py);x.stroke();x.setLineDash([]);
+x.fillStyle='#e8741e';x.beginPath();x.arc(px,py,12,0,7);x.fill()}}
+async function pull(){try{const r=await(await fetch('/state')).json();if(!cfg||!drag)cfg=r.cam;person=r.person;
+document.getElementById('st').textContent=r.person?`You: ${Math.round(r.person[0])} cm right, ${Math.round(r.person[1])} cm in front of the robot`:'No face seen right now.';
+if(!drag){yaw.value=cfg.yaw;fov.value=cfg.fov;flip.checked=cfg.flip}yv.textContent=cfg.yaw;fv.textContent=cfg.fov;draw()}catch(e){}}
+const set=()=>fetch('/set?'+new URLSearchParams({x:cfg.x,y:cfg.y,yaw:cfg.yaw,fov:cfg.fov,flip:cfg.flip?1:0}));
+const ev=e=>{const r=c.getBoundingClientRect();return S2W((e.clientX-r.left)*720/r.width,(e.clientY-r.top)*720/r.height)};
+c.onpointerdown=e=>{const[wx,wy]=ev(e);if(Math.hypot(wx-cfg.x,wy-cfg.y)<14){drag=true;c.setPointerCapture(e.pointerId)}else{aim=[wx,wy];fetch('/aim?x='+wx+'&y='+wy);setTimeout(()=>{aim=null},2500);draw()}};
+c.onpointermove=e=>{if(!drag)return;[cfg.x,cfg.y]=ev(e).map(v=>Math.round(v));draw()};c.onpointerup=()=>{if(drag){drag=false;set()}};
+c.onwheel=e=>{e.preventDefault();cfg.yaw=((cfg.yaw+Math.sign(e.deltaY)*5+540)%360)-180;set();draw()};
+yaw.oninput=()=>{cfg.yaw=+yaw.value;set();draw()};fov.oninput=()=>{cfg.fov=+fov.value;set();draw()};flip.onchange=()=>{cfg.flip=flip.checked;set()};
+setInterval(pull,200);pull()}</script></body></html>"""
+def map_server():
+    from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+    class H(BaseHTTPRequestHandler):
+        def do_GET(s):
+            u=urllib.parse.urlparse(s.path); q={k:v[0] for k,v in urllib.parse.parse_qs(u.query).items()}
+            if u.path=='/state': body=json.dumps({'cam':CAM,'person':STATE.get('person')}).encode(); ct='application/json'
+            elif u.path=='/set':
+                for k in ('x','y','yaw','fov'):
+                    if k in q: CAM[k]=float(q[k])
+                if 'flip' in q: CAM['flip']=q['flip']=='1'
+                save_cam(); body=b'{"ok":true}'; ct='application/json'
+            elif u.path=='/aim':
+                b=to_robot(float(q['x']),float(q['y'])); pi_get('/look',b=f'{b:.3f}',n='-0.8',seen=1); body=b'{"ok":true}'; ct='application/json'
+            else: body=MAP_HTML.encode(); ct='text/html'
+            s.send_response(200); s.send_header('Content-Type',ct); s.end_headers(); s.wfile.write(body)
+        def log_message(s,*a): pass
+    ThreadingHTTPServer(('127.0.0.1',8770),H).serve_forever()
 
 # ---------------- main ----------------
 def typing():
@@ -159,7 +235,12 @@ def main():
     log(f"  voice: {'real words (Kokoro)' if args.words else 'creature babble'}   brain: {args.model}")
     log('  You can also type here and press Enter.\n')
     if not args.no_mic: threading.Thread(target=lambda: _safe(ears,'mic'),daemon=True).start()
-    if not args.no_camera: threading.Thread(target=lambda: _safe(eyes,'camera'),daemon=True).start()
+    if not args.no_camera:
+        threading.Thread(target=lambda: _safe(eyes,'camera'),daemon=True).start()
+        threading.Thread(target=map_server,daemon=True).start()
+        log('  🗺  camera map: http://localhost:8770  (set where the camera sits around the robot)')
+        if args.calibrate or not os.path.exists(CFG_F):
+            import webbrowser; save_cam(); webbrowser.open('http://localhost:8770')
     threading.Thread(target=typing,daemon=True).start()
     while True:
         text=HEARD.get(); log(f'\n  you: {text}')

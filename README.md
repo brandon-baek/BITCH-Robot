@@ -40,16 +40,17 @@ the robot moves, looks at you and talks back through its speaker.
 
 **On the Pi:** `python3 -c "from brain import *; listen()"`
 
-**On the Mac, once:**
-1. Install Ollama from https://ollama.com, open it, then in Terminal: `ollama pull llama3.2:3b`
-2. `git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot`
-3. `python3 -m venv ~/dc-venv && ~/dc-venv/bin/pip install -r ~/BITCH-Robot/mac/requirements.txt`
+**On the Mac, once** (Ollama app installed and opened):
+`git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh`
+(add `--words` at the end to also install the real-words voice)
 
 **On the Mac, each time:** `cd ~/BITCH-Robot && git pull -q && ~/dc-venv/bin/python mac/companion.py`
 
+Camera map: http://localhost:8770 while it runs. Drag the camera to where it really is around the robot.
+
 Options: `--words` (real words, needs `brew install espeak-ng` and `~/dc-venv/bin/pip install kokoro soundfile`),
-`--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--flip` (looks the wrong way),
-`--no-camera`, `--no-mic`, `--pi <address>`, `--model <ollama model>`.
+`--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--calibrate` (open the camera map),
+`--no-camera`, `--no-mic`, `--pi <address>`, `--model <ollama model> (default qwen3.5:4b)`.
 
 ## Drive it with the keyboard
 `python3 -c "from control import *; drive()"`

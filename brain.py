@@ -24,7 +24,8 @@ class _H(BaseHTTPRequestHandler):
         elif u.path=='/look':
             seen=q.get('seen','1')=='1'
             if seen and not LOOK['seen'] and time.time()-LOOK['t']>8: Q.put(('arrived',))
-            LOOK.update(x=float(q.get('x',0.5)),y=float(q.get('y',0.5)),seen=seen,t=time.time())
+            LOOK.update(x=float(q.get('x',0.5)),y=float(q.get('y',0.5)),seen=seen,t=time.time(),
+                        b=float(q['b']) if 'b' in q else None,n=float(q['n']) if 'n' in q else None)
         s._ok({'ok':True,'busy':BUSY[0]})
     def do_POST(s):
         u=urlparse(s.path); q={k:v[0] for k,v in parse_qs(u.query).items()}
@@ -131,8 +132,11 @@ def listen():
             try: item=Q.get(timeout=0.05)
             except queue.Empty:
                 if LOOK['seen'] and time.time()-LOOK['t']<1.5:     # someone is in view: look at them
-                    A.to(b=max(-0.85,min(0.85,(LOOK['x']-0.5)*GAZE['span']*GAZE['flip'])),
-                         n=max(-1,min(-0.3,REST[2]+(0.5-LOOK['y'])*0.5)),stiff=1.1)
+                    if LOOK.get('b') is not None:                       # Mac already worked out the angle
+                        A.to(b=max(-0.9,min(0.9,LOOK['b'])),n=max(-1,min(-0.3,LOOK['n'] if LOOK.get('n') is not None else REST[2])),stiff=1.1)
+                    else:
+                        A.to(b=max(-0.85,min(0.85,(LOOK['x']-0.5)*GAZE['span']*GAZE['flip'])),
+                             n=max(-1,min(-0.3,REST[2]+(0.5-LOOK['y'])*0.5)),stiff=1.1)
                     last=time.time()
                 elif time.time()-last>random.uniform(5,9):
                     last=time.time(); A.to(b=random.uniform(-0.4,0.4),h=random.uniform(-0.2,0.2),stiff=1.2)
