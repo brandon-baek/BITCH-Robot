@@ -11,7 +11,7 @@ HERE=os.path.dirname(os.path.abspath(__file__)); ROOT=os.path.dirname(HERE); sys
 ap=argparse.ArgumentParser()
 ap.add_argument('--pi',default='raspberrypi.local'); ap.add_argument('--model',default='qwen3.5:4b')
 ap.add_argument('--babble',action='store_true',help='start in creature-babble voice instead of words')
-ap.add_argument('--voice',default='af_heart',help='Kokoro voice')
+ap.add_argument('--voice',default='af_heart',help='Kokoro voice'); ap.add_argument('--mac-voice',default='Samantha',help='built-in Mac voice used when Kokoro is not installed')
 ap.add_argument('--whisper',default='mlx-community/whisper-large-v3-turbo')
 ap.add_argument('--camera',type=int,default=0); ap.add_argument('--no-mic',action='store_true'); ap.add_argument('--no-camera',action='store_true')
 ap.add_argument('--no-browser',action='store_true')
@@ -78,23 +78,35 @@ def think(text):
 # ---------------- voice ----------------
 import sounds
 def wav_bytes(samples,sr):
-    pk=max(1e-6,max(abs(float(x)) for x in samples)); g=0.9/pk
-    f=tempfile.NamedTemporaryFile(suffix='.wav',delete=False); f.close()
-    with wave.open(f.name,'wb') as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-        w.writeframes(b''.join(struct.pack('<h',int(max(-1,min(1,float(x)*g))*32000)) for x in samples))
-    d=open(f.name,'rb').read(); os.remove(f.name); return d,len(samples)/sr
-_kok=[None]
-def words_audio(text,emotion):
+    import numpy as np, io
+    a=np.asarray(samples,dtype=np.float32); a=np.clip(a*(0.9/max(1e-6,float(np.abs(a).max()))),-1,1)
+    b=io.BytesIO()
+    with wave.open(b,'wb') as w: w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes((a*32000).astype('<i2').tobytes())
+    return b.getvalue(),len(a)/sr
+_kok=[None]; _said=[False]
+def tts(text):
+    """Real words. Kokoro if installed (most natural), otherwise the Mac's own built-in voice via `say`."""
     import numpy as np
     if _kok[0] is None:
-        note('loading the word voice (first time downloads it)...')
-        from kokoro import KPipeline; _kok[0]=KPipeline(lang_code='a')
-    parts=[a for _,_,a in _kok[0](text,voice=args.voice,speed=1.0)]
-    a=np.concatenate([np.asarray(p,dtype=np.float32).reshape(-1) for p in parts]) if parts else np.zeros(2400,np.float32)
+        try:
+            from kokoro import KPipeline; note('loading the word voice...'); _kok[0]=KPipeline(lang_code='a')
+        except Exception as e:
+            _kok[0]=False
+            if not _said[0]: _said[0]=True; note(f'using the Mac voice ({args.mac_voice}) for words')
+    if _kok[0]:
+        parts=[a for _,_,a in _kok[0](text,voice=args.voice,speed=1.0)]
+        return (np.concatenate([np.asarray(p,dtype=np.float32).reshape(-1) for p in parts]) if parts else np.zeros(2400,np.float32)),24000
+    import subprocess
+    f=tempfile.NamedTemporaryFile(suffix='.wav',delete=False); f.close()
+    subprocess.run(['say','-v',args.mac_voice,'-r','185','-o',f.name,'--file-format=WAVE','--data-format=LEI16@22050',text],check=True,capture_output=True)
+    with wave.open(f.name) as w: a=np.frombuffer(w.readframes(w.getnframes()),np.int16).astype(np.float32)/32768
+    os.remove(f.name); return a,22050
+def words_audio(text,emotion):
+    import numpy as np
+    a,sr=tts(text)
     R=float(S['robotness'])
     up=1+0.16*R*{'excited':1.3,'happy':1.15,'scared':1.3,'sad':0.7,'sleepy':0.6,'angry':0.6}.get(emotion,1.0)
-    n=int(len(a)*22050/(24000/up)); y=np.interp(np.linspace(0,len(a)-1,n),np.arange(len(a)),a)    # small-creature pitch
+    n=int(len(a)*22050/(sr/up)); y=np.interp(np.linspace(0,len(a)-1,n),np.arange(len(a)),a)    # small-creature pitch
     y=y/(np.abs(y).max()+1e-6)
     if R>0:
         y=np.tanh((1+1.2*R)*y)/np.tanh(1+1.2*R)                                                   # warm grit
@@ -109,7 +121,7 @@ def speak(text,emotion,action):
     s=None
     if S['voice']=='words':
         try: s=words_audio(text,emotion)
-        except Exception as e: note(f'word voice unavailable, using babble ({e})'); S['voice']='babble'
+        except Exception as e: note(f'word voice failed, using babble this time ({e})')
     if s is None: s=sounds._fx(sounds.speak_audio(text,emotion)[0])
     data,dur=wav_bytes(s,22050)
     S['interrupted']=False
