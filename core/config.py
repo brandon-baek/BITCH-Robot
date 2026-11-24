@@ -22,7 +22,7 @@ DEFAULTS = {
     'voice': 'words',                # 'words' or 'babble'
     'kokoro_voice': 'af_heart',
     'mac_voice': 'Samantha',
-    'robotness': 0.5,                # robot effect on the voice, 0..1
+    'robotness': 0.65,                # robot effect on the voice, 0..1
     'mic_on': True,
     'muted': False,
     'camera_on': True,               # False: the camera is fully off (its light goes out) until you turn it back on                  # muted: BITCH never speaks out loud (it still answers in the app)

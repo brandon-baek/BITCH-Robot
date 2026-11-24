@@ -53,17 +53,23 @@ CHIRP = {'happy': 'happy', 'excited': 'excited', 'sad': 'sad', 'love': 'love', '
 def words(text, emotion, chirp=True):
     a, sr = tts(text)
     R = float(config.get('robotness'))
-    up = 1 + 0.16 * R * {'excited': 1.3, 'happy': 1.15, 'scared': 1.3, 'sad': 0.7, 'sleepy': 0.6, 'angry': 0.6}.get(emotion, 1.0)
+    up = 1 + 0.22 * R * {'excited': 1.3, 'happy': 1.15, 'scared': 1.3, 'sad': 0.7, 'sleepy': 0.6, 'angry': 0.6}.get(emotion, 1.0)
     n = int(len(a) * SR / (sr / up)); y = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a)   # small-creature pitch
     y = y / (np.abs(y).max() + 1e-6)
     if R > 0:
         y = np.tanh((1 + 1.2 * R) * y) / np.tanh(1 + 1.2 * R)                       # warm grit
-        t = np.arange(len(y)) / SR; y = y * (1 + 0.05 * R * np.sin(2 * np.pi * 38 * t))  # faint electronic shimmer
+        t = np.arange(len(y)) / SR
+        m = 0.38 * R; y = y * (1 - m) + y * np.sin(2 * np.pi * 70 * t) * m          # ring modulator: the metallic robot sound
+        d = int(0.0045 * SR); y[d:] = y[d:] + 0.35 * R * y[:-d]                     # short echo: a tinny little tin-can body
+        y = y / (np.abs(y).max() + 1e-6)
         q = int(64 - 40 * R); y = np.round(y * q) / q                               # digital edge
+    head = []
+    if R > 0.3 and random.random() < 0.5:                                          # a little beep before it talks, sometimes
+        head = [0.4 * v for v in sounds.V[random.choice(['blip', 'doubleblip', 'beepboop'])]()] + [0.0] * int(0.05 * SR)
     tail = []
     c = CHIRP.get(emotion)
     if chirp and c and R > 0.15 and random.random() < 0.6: tail = [0.55 * v for v in sounds.V[c]()]
-    return list(y) + [0.0] * int(0.07 * SR) + tail
+    return head + list(y) + [0.0] * int(0.07 * SR) + tail
 
 
 def render(text, emotion='neutral', chirp=True):
