@@ -103,9 +103,14 @@ class MacCamera(Device):
     def _run(s):
         import cv2
         video = not str(s.source).isdigit()
+        asked = 0
         while True:
-            if not video and permission('camera') == 'no':
+            p = 'yes' if video else permission('camera')
+            if p == 'no':
                 s.detail = 'Not allowed: System Settings > Privacy & Security > Camera > BITCH'; s._changed(); time.sleep(10); continue
+            if p == 'ask':                                   # opening it now would only give black frames
+                if time.time() - asked > 120: ask_permission('camera'); asked = time.time()
+                s.detail = 'Waiting for you to click Allow (camera) on the Mac'; s._changed(); time.sleep(2); continue
             cam = cv2.VideoCapture(s.source if video else int(s.source))
             if not cam.isOpened():
                 s.detail = 'Waiting for the camera (click Allow if the Mac asks)'; s._changed(); time.sleep(5); continue
