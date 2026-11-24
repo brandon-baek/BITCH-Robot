@@ -17,6 +17,8 @@ GESTURES = ['none'] + list(moves.GESTURES)
 NAME = re.compile(r"\bb[.\-* ]?[i!*1]?[.\-* ]?[t*]?[.\-* ]?[c*][.\-* ]?h\b|\bb\*{2,}", re.I)
 INTRO = re.compile(r"\b(?:my name is|my name's|call me|i am called|this is)\s+([A-Za-z][A-Za-z\-']{1,20})", re.I)
 YES = re.compile(r"^\W*(yes|yeah|yep|yup|ya|yah|that'?s me|it'?s me|i am|correct|of course|sure|uh[- ]?huh|mhm|indeed|you got it)\b", re.I)
+CAM_OFF = re.compile(r"\b(camera off|turn off (the|your) camera|stop (watching|looking)|close your eyes|privacy)\b", re.I)
+CAM_ON = re.compile(r"\b(camera on|turn on (the|your) camera|open your eyes|watch again|you can look)\b", re.I)
 MUTE = re.compile(r"\b(mute|be quiet|shut up|stop talking|quiet mode|hush)\b", re.I)
 UNMUTE = re.compile(r"\b(unmute|you can talk|talk again|speak again)\b", re.I)
 GREETING = re.compile(r"^\W*((hey|hi|hello|yo|sup|hiya|howdy|good (morning|afternoon|evening))\W*(there|bitch|buddy|bud|you)?\W*)+$", re.I)
@@ -188,6 +190,10 @@ class Brain:
             if m and m.group(1).lower() not in NOT_NAMES and hub.sight:
                 who = m.group(1).capitalize(); tp = next((p for p in hub.people if p.get('target')), None)
                 if tp and (not tp['name'] or tp['name'].lower() == who.lower()): hub.sight.learn(who)
+            for rx, on, line in ((CAM_OFF, False, "Eyes closed. The camera is off until you say camera on."), (CAM_ON, True, 'Eyes open! I can see again.')):
+                if rx.search(text) and (mode != 'ambient' or named(text)):
+                    config.set('camera_on', on); hub.ui({'type': 'settings', 'settings': config.all()})
+                    s.express(line, 'happy' if on else 'neutral', 'nod', it); return
             if UNMUTE.search(text) and (mode != 'ambient' or named(text)):
                 config.set('muted', False); hub.ui({'type': 'settings', 'settings': config.all()})
                 s.express('Yay, I can talk again!', 'happy', 'wiggle', it); return

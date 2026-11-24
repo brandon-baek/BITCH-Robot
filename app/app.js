@@ -105,11 +105,12 @@ function setup() {
   $('say').onsubmit = e => { e.preventDefault(); const v = $('sayText').value.trim(); if (!v) return; unlockAudio(); send({ type: 'say', text: v, speak: spkOn || isDesk() }); $('sayText').value = '' };
   const Q = [['Wave', 'happy', 'wave'], ['Nod', 'happy', 'nod'], ['Wiggle', 'excited', 'wiggle'], ['Look around', 'curious', 'look_around'], ['Spin', 'excited', 'spin'],
     ['Bow', 'proud', 'bow'], ['Dance', 'show', 'dance'], ['Sing', 'show', 'sing'], ['Sleep', 'show', 'sleep'], ['Wake up', 'show', 'wake'], ['Stop', 'stop', '']];
-  Q.unshift(['Mute', 'mute', '']);
+  Q.unshift(['Mute', 'mute', ''], ['Camera off', 'cam', '']);
   $('quick').innerHTML = Q.map(([l, e, a]) => `<button class="chip" type="button" data-e="${e}" data-a="${a}">${l}</button>`).join('');
   $('quick').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.e === 'stop') { api('/api/act', { do: 'stop' }); hush(); return }
+    if (b.dataset.e === 'cam') { saveSet({ camera_on: !(S.settings.camera_on !== false) }); renderSettings(); return }
     if (b.dataset.e === 'mute') { const m = !S.settings.muted; saveSet({ muted: m }); if (m) { api('/api/act', { do: 'stop' }); hush() } renderSettings(); return }
     if (b.dataset.e === 'show') api('/api/act', { do: 'show', name: b.dataset.a });
     else { api('/api/act', { do: 'gesture', emotion: b.dataset.e, move: b.dataset.a }); rig.feel(b.dataset.e) }
@@ -139,6 +140,7 @@ function setup() {
   $$('#voiceSeg button').forEach(b => b.onclick = () => saveSet({ voice: b.dataset.v }));
   $('rob').oninput = () => { $('robv').textContent = Math.round($('rob').value * 100) + '%'; saveSet({ robotness: +$('rob').value }) };
   $('deskmic').onchange = () => saveSet({ mic_on: $('deskmic').checked });
+  $('camsw').onchange = () => { saveSet({ camera_on: $('camsw').checked }); renderSettings() };
   $('mutesw').onchange = () => { saveSet({ muted: $('mutesw').checked }); renderSettings() };
   $('cm').onchange = () => saveSet({ chat_model: $('cm').value.trim() }); $('dm').onchange = () => saveSet({ deep_model: $('dm').value.trim() });
   $('quit').onclick = () => { if ($('quit').textContent !== 'Sure?') { $('quit').textContent = 'Sure?'; setTimeout(() => $('quit').textContent = 'Quit BITCH', 2500); return } api('/api/act', { do: 'quit' }) };
@@ -545,6 +547,8 @@ function renderSettings() {
   $$('#voiceSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === s.voice));
   $('rob').value = s.robotness; $('robv').textContent = Math.round(s.robotness * 100) + '%';
   $('deskmic').checked = s.mic_on !== false; $('mutesw').checked = !!s.muted;
+  const cb = document.querySelector('#quick [data-e=cam]'); if (cb) { cb.textContent = s.camera_on === false ? 'Camera on' : 'Camera off'; cb.classList.toggle('on', s.camera_on === false) }
+  $('camsw').checked = s.camera_on !== false;
   const mb = document.querySelector('#quick [data-e=mute]'); if (mb) { mb.textContent = s.muted ? 'Unmute' : 'Mute'; mb.classList.toggle('on', !!s.muted) }
   $('mood').textContent = s.muted ? 'Muted: answers here in text only' : (S.mood ? 'Feeling ' + S.mood.words : ''); $('cm').value = s.chat_model || ''; $('dm').value = s.deep_model || '';
   paintCam(); renderPills();

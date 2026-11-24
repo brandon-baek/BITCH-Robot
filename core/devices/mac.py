@@ -5,6 +5,7 @@ so BITCH starts seeing and hearing the moment you allow it.
 """
 import os, subprocess, tempfile, threading, time
 from .base import Device
+from .. import config
 
 os.environ.setdefault('OPENCV_AVFOUNDATION_SKIP_AUTH', '1')   # we ask for permission ourselves (see ask_permission)
 
@@ -105,6 +106,8 @@ class MacCamera(Device):
         video = not str(s.source).isdigit()
         asked = 0
         while True:
+            if not config.get('camera_on'):
+                s.detail = 'Camera paused'; s.latest = None; s._changed(); time.sleep(1); continue
             p = 'yes' if video else permission('camera')
             if p == 'no':
                 s.detail = 'Not allowed: System Settings > Privacy & Security > Camera > BITCH'; s._changed(); time.sleep(10); continue
@@ -124,6 +127,7 @@ class MacCamera(Device):
                     bad += 1
                     if bad > 50: break
                     time.sleep(0.05); continue
+                if not config.get('camera_on'): break          # paused: let go of the camera right away
                 bad = 0; s.latest = fr
                 if s.active('eyes') and s.hub and s.hub.sight: s.hub.sight.frame(s.id, fr)
                 if video: time.sleep(1 / min(30, fps))                          # play at real speed
