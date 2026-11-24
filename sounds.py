@@ -1,6 +1,6 @@
 # Desk Creature voice: R2-D2 / WALL-E style chirps, built fresh with a little randomness
 # so the robot never says the exact same thing twice. No downloads needed.
-import math, wave, struct, os, random, shutil, subprocess, threading, json, hashlib
+import math, wave, struct, os, random, shutil, subprocess, threading, json, hashlib, re
 SR=22050
 # --- style knobs (overridden by ~/voice.json) ---
 PITCH=1.0    # overall pitch
@@ -194,6 +194,56 @@ def s_think():  return click()+hop(14,600,2600,0.025,0.32)+whir(260,380,0.25)+fm
 def s_scan():   return whir(300,520,0.2)+hop(8,900,2400,0.03,0.33)+click()+zipp(2200,500,0.15,0.35)
 def s_powerup():return whir(120,600,0.45,0.18)+zipp(200,3000,0.5,0.45)+vox([(0.3,[300,500,450],'ae',0.02)])
 def s_powerdown():return vox([(0.5,[500,300,180],'aou',0.02)],vol=0.45)+fm(1500,80,1.5,3,0,0.6,0.35)+whir(300,80,0.4,0.15)
+# ---------- talking: Animal-Crossing-style speech made from the creature voice ----------
+_VMAP={'a':'a','e':'e','i':'i','y':'i','o':'o','u':'u'}
+EMO_PITCH={'happy':1.15,'excited':1.25,'sad':0.85,'angry':0.8,'scared':1.2,'love':1.08,'curious':1.05,'sleepy':0.82,'proud':1.0,'confused':1.0,'neutral':1.0}
+def _noise(d,lo=0.3,vol=0.25):
+    n=int(SR*d); o=[]; lp=0.0
+    for k in range(n):
+        x=random.uniform(-1,1); lp+=lo*(x-lp); o.append(vol*(x-lp)*min(1,k/40,(n-k)/40))
+    return o
+def speak_audio(text,emotion='neutral',rate=1.0):
+    """text -> (samples, syllable onset times). Vowels come from the real words, consonants become
+    hiss/click/hum, pitch follows sentence intonation, so it sounds like talking without being words."""
+    base=430*EMO_PITCH.get(emotion,1.0); out=[]; onsets=[]
+    sents=re.findall(r"[^.!?]+[.!?]?",text) or [text]
+    for sent in sents:
+        q=sent.strip().endswith('?'); ex=sent.strip().endswith('!')
+        words=re.findall(r"[a-zA-Z']+",sent.lower())
+        sylls=[]
+        for w in words:
+            parts=re.findall(r"[^aeiouy]*[aeiouy]+(?:[^aeiouy]*$)?",w) or [w]
+            for p in parts: sylls.append(p)
+            sylls.append(' ')
+        n=max(1,len([x for x in sylls if x!=' '])); i=0
+        for p in sylls:
+            if p==' ': out+=[0.0]*int(SR*0.035/rate); continue
+            t=i/max(1,n-1); i+=1
+            f=base*(1.12-0.22*t)                                   # sentence falls...
+            if q and t>0.6: f=base*(0.95+0.6*(t-0.6)/0.4)           # ...or rises for a question
+            if ex: f*=1.12
+            f*=random.uniform(0.9,1.12)
+            on=re.match(r"[^aeiouy]*",p).group(0); vs=[_VMAP[c] for c in p if c in _VMAP] or ['a']
+            if on:
+                c=on[0]
+                if c in 'szxc' or on.startswith('sh') or on.startswith('ch'): out+=_noise(0.045/rate,0.85,0.22)
+                elif c in 'fhv': out+=_noise(0.035/rate,0.35,0.18)
+                elif c in 'tkpbdgq': out+=_noise(0.012,0.95,0.35)+[0.0]*int(SR*0.012)
+            onsets.append(len(out)/SR)
+            d=random.uniform(0.085,0.12)/rate*(1.25 if (q or ex) and t>0.85 else 1)
+            vw=(vs[0]+vs[-1]) if len(vs)>1 else vs[0]
+            out+=vox([(d,[f,f*random.uniform(0.97,1.06)],vw,0.02)],vol=0.5,breath=0.1)
+        out+=[0.0]*int(SR*(0.22 if sent.strip()[-1:] in '.!?' else 0.1)/rate)
+    return out,onsets
+def speak_wav(text,emotion='neutral',path=None,rate=1.0):
+    s,on=speak_audio(text,emotion,rate); s=_fx(s)
+    pk=max(1e-6,max(abs(x) for x in s)); g=0.9/pk
+    path=path or os.path.join(DIR,'_speech.wav'); os.makedirs(os.path.dirname(path),exist_ok=True)
+    with wave.open(path,'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes(b''.join(struct.pack('<h',int(x*g*32000)) for x in s))
+    return path,on
+
 # quiet background 'machine doing stuff' sounds (used by the chatter loop, not by captions)
 def s_tick():    return click(0.25)+gap(0.03)+zipp(random.choice([1800,2400,3000]),random.choice([2200,2800,3400]),0.025,0.3)
 def s_process(): return hop(random.randint(4,9),900,2600,0.022,0.3)

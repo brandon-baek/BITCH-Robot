@@ -12,7 +12,7 @@ a 2.42" OLED face (in progress), and a synthesized creature voice.
 | `music.py` | Original background music made on the Pi: disco (70 s, sectioned), dance, spooky, lullaby, playful, fanfare, ambient |
 | `control.py` | Keyboard control mode: drive every joint live, trigger sounds and emotes |
 | `brain.py` | Listen mode: reacts to what you say (heard by your Mac) with moves and chirps |
-| `talk.html` | Open on your Mac in Chrome to talk to the robot (mic or typing) |
+| `mac/companion.py` | Runs on the Mac: ears (Whisper), brain (LLM), voice, eyes (camera) |
 | `update.sh` | Pulls the latest code and links it into `~` |
 
 ## First time on the Pi
@@ -34,12 +34,22 @@ python3 -c "from shows import *; showtime()"
 
 Servo channels on the PCA9685: 0 base, 1 arm, 2 neck, 3 head.
 
-## Talk to it from your Mac
-On the Pi: `python3 -c "from brain import *; listen()"`
+## Talk to it from your Mac (on-device AI)
+The Mac does the hearing (Whisper), thinking (a small LLM in Ollama) and seeing (camera);
+the robot moves, looks at you and talks back through its speaker.
 
-On the Mac (once): `git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot`
-then each time: `cd ~/BITCH-Robot && git pull && python3 -m http.server 8000`
-and open **http://localhost:8000/talk.html** in Chrome.
+**On the Pi:** `python3 -c "from brain import *; listen()"`
+
+**On the Mac, once:**
+1. Install Ollama from https://ollama.com, open it, then in Terminal: `ollama pull llama3.2:3b`
+2. `git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot`
+3. `python3 -m venv ~/dc-venv && ~/dc-venv/bin/pip install -r ~/BITCH-Robot/mac/requirements.txt`
+
+**On the Mac, each time:** `cd ~/BITCH-Robot && git pull -q && ~/dc-venv/bin/python mac/companion.py`
+
+Options: `--words` (real words, needs `brew install espeak-ng` and `~/dc-venv/bin/pip install kokoro soundfile`),
+`--camera 1` (iPhone via Continuity Camera), `--preview` (see what it sees), `--flip` (looks the wrong way),
+`--no-camera`, `--no-mic`, `--pi <address>`, `--model <ollama model>`.
 
 ## Drive it with the keyboard
 `python3 -c "from control import *; drive()"`
