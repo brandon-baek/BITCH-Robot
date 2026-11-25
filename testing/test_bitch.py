@@ -43,6 +43,20 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(brain.requests.get_nowait(), ('What time is it?', 'desk'))
         self.assertFalse(brain.submit('Hey BITCH, hi', 'desk'))
 
+    def test_wake_address_preserves_words_before_and_after_the_name(self):
+        for spoken, expected in (
+            ('Tell me the time BITCH.', 'Tell me the time.'),
+            ('Can you look over here, BITCH?', 'Can you look over here?'),
+            ('Can you look over here BITCH please?', 'Can you look over here?'),
+            ('Can you, BITCH, tell me the time?', 'Can you tell me the time?'),
+        ):
+            brain = Brain()
+            self.assertTrue(brain.addressed(spoken, 'desk', time.monotonic()))
+            self.assertTrue(brain.submit(spoken, 'desk'))
+            self.assertEqual(brain.requests.get_nowait(), (expected, 'desk'))
+            self.assertTrue(brain.accepted_wake)
+        self.assertFalse(Brain().submit('She called me a bitch.', 'desk'))
+
     def test_one_followup_from_the_same_microphone(self):
         brain = Brain()
         brain.followup = ('desk', time.monotonic() + 7)
@@ -134,7 +148,7 @@ class WakeTests(unittest.TestCase):
         stream.offer = lambda phrase, delivery, **kwargs: stream.parts.append((phrase, delivery))
         partial = '{"v":"a","say":"Oh, come on! A fern beat me.'
 
-        def generate(messages, *, schema, model, on_delta, stop):
+        def generate(messages, *, schema, model, on_delta, stop, temperature):
             self.assertEqual(schema['required'], ['v', 'say', 'end'])
             on_delta(partial)
             self.assertEqual(stream.parts, [('Oh, come on!', 'emphatic')])
@@ -145,6 +159,14 @@ class WakeTests(unittest.TestCase):
                              'Oh, come on! A fern beat me.')
         self.assertEqual(brain.performance, 'annoyed')
         self.assertFalse(brain.close_turn)
+
+    def test_streamed_phrases_carry_mood_changes_without_reading_codes_aloud(self):
+        from core.streaming import Phrases
+
+        phrases = Phrases('How are you feeling?')
+        parts, _ = phrases.feed('{"v":"a","say":"Oh, come on! [p] Fine, you win.","end":false}')
+        self.assertEqual(parts, ['Oh, come on!', 'Fine, you win.'])
+        self.assertEqual(phrases.styles, [None, 'p'])
 
     def test_streaming_reply_can_stop_before_playing_a_queued_phrase(self):
         import threading
@@ -201,6 +223,24 @@ class WakeTests(unittest.TestCase):
             self.assertTrue(voice.is_echo(np.r_[echo, silence], 43.1))
             self.assertFalse(voice.is_echo(rng.normal(0, .15, 12000), 43.1))
 
+    def test_interrupted_utterance_waits_for_reply_cleanup(self):
+        import threading
+        from core.hearing import Clip
+
+        brain = Brain()
+        hearing = Hearing()
+        brain.interruption = True
+        brain.busy.set()
+        now = time.monotonic()
+        clip = Clip('final', 'desk', brain.revision, now, now-2, now-1, np.zeros(100), interrupted=True)
+        worker = threading.Timer(.08, brain.busy.clear)
+        worker.start()
+        with patch.object(hub, 'brain', brain), patch.object(hub, 'accepts', return_value=True):
+            self.assertTrue(hearing.wait_for_interrupted_reply(clip))
+            brain.revision += 1
+            self.assertFalse(hearing.wait_for_interrupted_reply(clip))
+        worker.join()
+
     def test_generated_routine_resolves_vision_and_rejects_unknown_actions(self):
         from core import skills
 
@@ -210,6 +250,30 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(skills.actions([bow, chirp], None), [{k: v for k, v in bow.items() if k != 'when'}])
         with self.assertRaises(ValueError):
             skills.validate_plan([{**bow, 'style': 'raw pulse'}])
+
+    def test_taught_phrase_mixes_speech_camera_and_authorized_motion_in_order(self):
+        from core import skills
+
+        brain = Brain()
+        plan = [
+            {'op': 'say', 'style': 'Good work.', 'seconds': 1., 'when': 'always'},
+            {'op': 'look', 'style': 'finger', 'seconds': 2., 'when': 'always'},
+            {'op': 'gesture', 'style': 'bow', 'seconds': 1., 'when': 'always'},
+        ]
+        output = []
+        robot = SimpleNamespace(shows=True, motion_enabled=True, show_active=False,
+                                show=lambda *args: output.append(('gesture', args[3][0]['style'])) or {'state': 'queued'},
+                                show_status=lambda _: 'finished')
+        with (patch.object(hub, 'get', return_value=robot), patch.object(hub, 'sight', None),
+              patch.object(skills, 'draft', return_value=(plan, '')) as draft,
+              patch.object(skills, 'save') as save, patch.object(voice, 'say', side_effect=lambda *a, **k: output.append(('say', a[0]))),
+              patch.object(brain, 'skill_look', side_effect=lambda *a: output.append(('look', a[0])))):
+            self.assertEqual(brain.reply('When I say victory lap, say good work, follow my finger, then bow.', 'desk'),
+                             'Here goes victory lap.')
+            draft.assert_called_once_with('say good work, follow my finger, then bow.')
+            save.assert_called_once_with('victory lap', plan)
+            brain.start_performance()
+        self.assertEqual(output, [('say', 'Good work.'), ('look', 'finger'), ('gesture', 'bow')])
 
     def test_context_memory_keeps_preferences_and_drops_inference_and_sensitive_data(self):
         owner = 'Natural memory fixture'
@@ -221,6 +285,14 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(memory.relevant(owner, 'How do I take my coffee?'), ['I prefer black coffee'])
         finally:
             memory.forget(owner, 'everything')
+
+    def test_missing_personal_context_does_not_reach_the_model(self):
+        brain = Brain()
+        with patch('core.brain.llm.chat') as generate, patch.object(hub, 'sight', None):
+            self.assertIn('don’t have that in my memory', brain.reply('What did I tell you yesterday about my dog?', 'desk'))
+            self.assertIn('can’t see the camera', brain.reply('Who is standing behind me?', 'desk'))
+            self.assertIn('didn’t move', brain.reply('Did you put that package in the closet?', 'desk'))
+            generate.assert_not_called()
 
     def test_saved_notes_are_voice_scoped(self):
         brain = Brain()

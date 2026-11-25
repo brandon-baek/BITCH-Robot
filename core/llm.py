@@ -16,11 +16,12 @@ def request(path, payload, timeout):
         timeout=timeout)
 
 
-def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_delta=None, stop=None):
+def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_delta=None, stop=None,
+         temperature=0.45):
     payload = {
         'model': model or config.get('chat_model'), 'messages': messages, 'stream': on_delta is not None,
         'think': False, 'keep_alive': '30m' if model else CHAT_KEEP_ALIVE,
-        'options': {'temperature': 0.45, 'num_ctx': 4096, 'num_predict': max_tokens},
+        'options': {'temperature': temperature, 'num_ctx': 4096, 'num_predict': max_tokens},
     }
     if schema is not None:
         payload['format'] = schema

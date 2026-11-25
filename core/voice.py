@@ -16,6 +16,7 @@ from .hub import hub
 SR = 24000
 playback = None
 echo_reference = None
+recent_echo = None
 last_played = {}
 STEP = .04
 DELIVERY = {
@@ -133,8 +134,8 @@ def motion_track(pcm):
     nod = np.zeros(len(level))
     peaks = []
     for i in range(1, len(level) - 1):
-        if level[i] >= .38 and level[i-1] < level[i] >= level[i+1]:
-            if peaks and i - peaks[-1] < 7:
+        if level[i] >= .33 and level[i-1] < level[i] >= level[i+1]:
+            if peaks and i - peaks[-1] < 6:
                 # Make one readable nod for a group of closely spaced syllables.
                 if level[i] > level[peaks[-1]] + .11 and i + 1 < len(level):
                     peaks[-1] = i
@@ -151,36 +152,47 @@ def motion_track(pcm):
 
 def is_echo(audio, received):
     """Look for delayed playback in several voiced blocks of microphone audio."""
-    current = echo_reference
-    if not current or len(audio) < 1600:
+    if len(audio) < 1600:
         return False
-    start, pcm = current
+    previous = recent_echo
+    references = [reference for reference in (echo_reference, previous[1] if previous and received < previous[0] else None)
+                  if reference is not None]
     samples = audio[-12800:].astype(float)[::4]
-    index = round((received-start)*4000)
-    matches = []
-    for end in range(len(samples), 479, -480):
-        sample = samples[end-480:end].copy()
-        sample -= np.mean(sample)
-        norm = np.linalg.norm(sample)
-        if norm < .02:
-            continue
-        center = index - len(samples) + end
-        x = pcm[max(0, center-9200):max(0, center+960)]
-        if len(x) < len(sample):
-            continue
-        corr = np.correlate(x, sample, 'valid')
-        power = np.cumsum(np.r_[0, x*x])
-        n = len(sample)
-        denom = norm * np.sqrt(np.maximum(power[n:]-power[:-n], 1e-9))
-        matches.append(float(np.max(np.abs(corr)/denom)))
-    return bool(matches and (matches[0] > .72 or sum(score > .55 for score in matches[:4]) >= 2))
+    for start, pcm in references:
+        index = round((received-start)*4000)
+        matches = []
+        for end in range(len(samples), 479, -480):
+            sample = samples[end-480:end].copy()
+            sample -= np.mean(sample)
+            norm = np.linalg.norm(sample)
+            if norm < .02:
+                continue
+            center = index - len(samples) + end
+            x = pcm[max(0, center-9200):max(0, center+960)]
+            if len(x) < len(sample):
+                continue
+            corr = np.correlate(x, sample, 'valid')
+            power = np.cumsum(np.r_[0, x*x])
+            n = len(sample)
+            denom = norm * np.sqrt(np.maximum(power[n:]-power[:-n], 1e-9))
+            matches.append(float(np.max(np.abs(corr)/denom)))
+        if matches and (matches[0] > .72 or sum(score > .55 for score in matches[:4]) >= 2):
+            return True
+    return False
+
+
+def clear_playback():
+    global playback, echo_reference, recent_echo
+    if echo_reference is not None:
+        recent_echo = time.monotonic() + 1.4, echo_reference
+    playback = echo_reference = None
 
 
 def articulation():
     current = playback
     if current is None:
         return 0., False, 0.
-    started, level, nod, lead, motion_start, motion_end, cue_at, delivery = current
+    started, level, nod, lead, motion_start, motion_end, cue_at, delivery, _ = current
     elapsed = time.monotonic() - started - lead
     chirping = cue_at is not None and cue_at <= elapsed < cue_at + .31
     if not motion_start <= elapsed < motion_end:
@@ -192,7 +204,12 @@ def articulation():
     strength, amplitude, posture = DELIVERY[delivery]
     energy = level[index]*(1-fraction) + level[following]*fraction
     pitch = nod[index]*(1-fraction) + nod[following]*fraction
-    return min(1., float(energy)*strength), chirping, posture + amplitude*float(pitch)
+    return min(1., float(energy)*strength), chirping, posture + amplitude*1.12*float(pitch)
+
+
+def delivery_now():
+    current = playback
+    return current[-2:] if current is not None else None
 
 
 @contextmanager
@@ -242,7 +259,7 @@ class ReplyStream:
         self.workers = ()
         self.closed = False
 
-    def offer(self, phrase, delivery, laugh_first=False):
+    def offer(self, phrase, delivery, laugh_first=False, expression='none'):
         if self.stop.is_set():
             return
         if not self.workers:
@@ -252,14 +269,14 @@ class ReplyStream:
                 worker.start()
         if phrase:
             self.parts.append(phrase)
-        self.pending.put((phrase, delivery, laugh_first))
+        self.pending.put((phrase, delivery, laugh_first, expression))
 
     def synthesize(self):
         try:
             while (part := self.pending.get()) is not None and not self.stop.is_set():
-                phrase, delivery, laugh_first = part
+                phrase, delivery, laugh_first, expression = part
                 wav = render(phrase, delivery=delivery) if phrase else encode(cue())
-                self.audio.put((wav, phrase, delivery, laugh_first))
+                self.audio.put((wav, phrase, delivery, laugh_first, expression))
         except (OSError, RuntimeError, ValueError) as error:
             hub.note('voice', f'Speech synthesis unavailable: {error}')
         finally:
@@ -268,17 +285,17 @@ class ReplyStream:
     def play(self):
         first = True
         while (part := self.audio.get()) is not None and not self.stop.is_set():
-            wav, phrase, delivery, laugh_first = part
+            wav, phrase, delivery, laugh_first, expression = part
             if first:
                 self.finish_thinking()
-                if laugh_first:
-                    laugh(self.stop)
                 first = False
+            if laugh_first:
+                laugh(self.stop)
             if self.stop.is_set():
                 break
             if phrase:
                 self.on_speech(phrase)
-            play(*wav, self.stop, text=bool(phrase), delivery=delivery, segment=True)
+            play(*wav, self.stop, text=bool(phrase), delivery=delivery, segment=True, expression=expression)
 
     def finish(self, reply, delivery, ready_cue):
         spoken = ' '.join(self.parts)
@@ -304,17 +321,18 @@ def laugh(stop):
     # These soft pulses and the animated shoulder bounce share the same audio clock.
     bursts = [note(hz, .14, .18) + note(hz*2, .14, .065) for hz in (310, 277, 238)]
     breath = np.concatenate([np.r_[burst, np.zeros(round(SR*.065))] for burst in bursts])
-    play(*encode(breath), stop, text=True, delivery='playful', interim=True)
+    play(*encode(breath), stop, text=True, delivery='playful', interim=True, expression='amused')
 
 
-def say(text, stop, *, ready_cue=False, delivery='neutral'):
+def say(text, stop, *, ready_cue=False, delivery='neutral', expression='none'):
     if config.get('muted') or not config.get('volume'):
         return
     wav, duration = render(text, ready_cue=ready_cue, delivery=delivery) if text else encode(cue())
-    play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery)
+    play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery, expression=expression)
 
 
-def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False, segment=False):
+def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False, segment=False,
+         expression='none'):
     global playback, echo_reference
     speaker = hub.selected('voice')
     if stop.is_set() or config.get('muted') or not config.get('volume'):
@@ -362,8 +380,8 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         envelope, nod = motion_track(pcm[:round(speech_end*SR)*2])
     else:
         envelope = nod = ()
-    playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery
-    echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float))
+    playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery, expression
+    echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
     early = False
     try:
         while not stop.wait(.06):
@@ -380,18 +398,18 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         if stop.is_set():
             speaker.hush()
     finally:
-        playback = echo_reference = None
+        clear_playback()
         if not early:
             last_played[speaker] = time.monotonic()
     if early and not stop.is_set() and not interim:
         backup = hub.get('mac-speaker') if speaker.id == 'robot' and config.get('speaker_source') == 'auto' else None
         if backup and backup.speak(wav):
             hub.note('speaker', 'Pi playback stopped early. Replayed the reply on the Mac speaker.')
-            playback = time.monotonic(), envelope, nod, 0., 0., speech_end, cue_at, delivery
+            playback = time.monotonic(), envelope, nod, 0., 0., speech_end, cue_at, delivery, expression
             echo_reference = (time.monotonic(), np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
             if stop.wait(duration + .30):
                 backup.hush()
-            playback = echo_reference = None
+            clear_playback()
         else:
             hub.note('speaker', 'Playback ended early. Check the speaker connection.')
     if not interim and not segment and not stop.is_set():

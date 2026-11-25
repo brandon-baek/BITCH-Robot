@@ -56,18 +56,25 @@ def forget(owner, query):
     return len(matches)
 
 
+def keywords(text):
+    generic = {'what', 'that', 'this', 'the', 'for', 'can', 'could', 'would', 'remember',
+               'did', 'about', 'was', 'you', 'your', 'have', 'know', 'really', 'which',
+               'favorite', 'favourite', 'prefer', 'like', 'love', 'been', 'with', 'tell', 'told',
+               'yesterday', 'earlier', 'before', 'when', 'said', 'say'}
+    return {word[:-1] if len(word) > 4 and word.endswith('s') and not word.endswith('ss') else word
+            for word in re.findall(r"[a-z]{3,}", text.casefold()) if word not in generic}
+
+
 def relevant(owner, query):
-    words = set(re.findall(r"[a-z]{3,}", query.lower())) - {
-        'what', 'that', 'this', 'the', 'for', 'can', 'could', 'would', 'remember', 'did', 'about', 'was', 'you',
-    }
-    matching = [(len(words & set(re.findall(r"[a-z]{3,}", note.lower()))), note) for note in recall(owner)]
-    return [note for score, note in sorted(matching, reverse=True) if score][:4]
+    words = keywords(query)
+    matching = [(len(words & keywords(note)), note) for note in recall(owner)]
+    return [note for score, note in sorted(matching, key=lambda row: row[0], reverse=True) if score][:4]
 
 
 _PRIVATE = re.compile(r"\b(?:password|passcode|pin code|api key|account number|social security|credit card|"
                       r"diagnos\w*|allerg\w*|medication|prescription|bank|salary|lawsuit|home address)\b", re.I)
-_PREFERENCE = re.compile(r"\b(?:i (?:definitely |usually |really )?(?:prefer|like|love|hate|dislike|always use)|"
-                         r"my (?:favorite|favourite|ongoing|default)|i(?:'|’)m (?:building|working on|learning)|"
+_PREFERENCE = re.compile(r"\b(?:i (?:definitely |usually |really )?(?:prefer|like|love|hate|dislike|always use|go by)|"
+                         r"my (?:favorite|favourite|ongoing|default|go-to|nickname)|i(?:['’]m| am) (?:building|working on|learning|into)|"
                          r"(?:keep|hold) that (?:in mind|for later)|(?:might|will) ask you again)\b", re.I)
 
 

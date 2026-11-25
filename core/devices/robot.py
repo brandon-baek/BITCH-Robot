@@ -123,6 +123,14 @@ class Robot(Device):
             self.show_active = True
         return result
 
+    def show_status(self, token):
+        result = self.request('show', timeout=.45)
+        if result and result.get('id') == token:
+            state = result.get('state')
+            self.show_active = state in ('preparing', 'playing')
+            return state
+        return None
+
     def macro(self, request_id, name, prompt):
         item = {'id': request_id, 'name': name, 'prompt': prompt}
         return bool(self.post('macro', item) or self.post('macro', item))

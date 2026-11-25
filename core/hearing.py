@@ -14,6 +14,7 @@ from .people import people
 SR = 16000
 FRAME = 512
 WHISPER = 'mlx-community/whisper-large-v3-turbo'
+WAKE_HINT = 'A desk robot is addressed as BITCH.'
 
 
 @dataclass
@@ -27,6 +28,7 @@ class Clip:
     audio: np.ndarray
     speech: np.ndarray | None = None
     voiced: float = 0.
+    interrupted: bool = False
 
 
 class Hearing:
@@ -150,11 +152,12 @@ class Hearing:
                 if quiet * FRAME / SR >= pause or len(clip) * FRAME / SR >= 60:
                     self.capture = None
                     admitted = not talking_over or hub.brain.interruption
-                    if admitted and voiced >= 7 and not self.clips.full():
+                    if admitted and voiced >= (7 if talking_over else 5) and not self.clips.full():
                         recording = np.concatenate(clip)
                         speech_end = (len(clip) - max(0, quiet - 2)) * FRAME
                         self.clips.put_nowait(Clip('final', source, revision, time.monotonic(), began, last_speech,
-                                                   recording, recording[:speech_end], voiced * FRAME / SR))
+                                                   recording, recording[:speech_end], voiced * FRAME / SR,
+                                                   interrupted=talking_over))
                     clip.clear()
                     pre.clear()
                     onset = 0
@@ -182,23 +185,29 @@ class Hearing:
                     except (ValueError, RuntimeError, OSError):
                         pass
                 continue
-            valid = lambda: revision == hub.brain.revision and hub.accepts(source, 'ears') and not hub.brain.busy.is_set()
-            if time.monotonic() - clip.queued > 2 or not valid():
+            valid = lambda: self.valid_clip(clip) and not hub.brain.busy.is_set()
+            if clip.interrupted and not self.wait_for_interrupted_reply(clip):
+                continue
+            if not valid() or not clip.interrupted and time.monotonic() - clip.queued > 2:
                 continue
             stamp = (source, revision, began, clip.last_speech)
+            wake_hint = not hub.brain.addressed('', source, began)
             if clip.kind == 'preview':
                 try:
-                    text = self.transcribe(mlx_whisper, clip.audio)
+                    text = self.transcribe(mlx_whisper, clip.audio, wake_hint=wake_hint)
                     preview = (stamp, text) if text else None
                 except (ValueError, RuntimeError, OSError):
                     preview = None
                 continue
             self.decoding = (source, revision, began, time.monotonic())
             try:
+                if voice.is_echo(clip.speech, clip.last_speech):
+                    continue
                 enrolled, _ = people.speaker(source, clip.speech, clip.voiced, addressed=False)
                 if enrolled:
                     continue
-                text = preview[1] if preview and preview[0] == stamp else self.transcribe(mlx_whisper, clip.audio)
+                text = (preview[1] if preview and preview[0] == stamp
+                        else self.transcribe(mlx_whisper, clip.audio, wake_hint=wake_hint))
                 preview = None
                 if hub.brain.interruption and text:
                     from .brain import INTERRUPT, repeats_playback
@@ -218,10 +227,24 @@ class Hearing:
             finally:
                 self.decoding = None
 
+    @staticmethod
+    def valid_clip(clip):
+        return clip.revision == hub.brain.revision and hub.accepts(clip.source, 'ears')
+
+    def wait_for_interrupted_reply(self, clip):
+        # Keep the full utterance while the previous synthesizer and speaker stop.
+        deadline = clip.queued + 4.
+        while self.valid_clip(clip) and hub.brain.interruption and time.monotonic() < deadline:
+            if not hub.brain.busy.is_set():
+                return True
+            time.sleep(.025)
+        return False
+
 
     @staticmethod
-    def transcribe(engine, audio):
+    def transcribe(engine, audio, *, wake_hint=False):
         result = engine.transcribe(audio, path_or_hf_repo=WHISPER, language='en',
-                                   condition_on_previous_text=False, temperature=0)
+                                   condition_on_previous_text=False, temperature=0,
+                                   initial_prompt=WAKE_HINT if wake_hint else None)
         return ' '.join(segment['text'].strip() for segment in result.get('segments', [])
                         if segment.get('no_speech_prob', 0) < .55 and segment.get('avg_logprob', 0) > -.95)

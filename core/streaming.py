@@ -8,6 +8,7 @@ SENTENCE = re.compile(r'[.!?]+["”’)]*(?=\s)')
 CLAUSE = re.compile(r'[,;:]|[—–]')
 ABBREVIATION = re.compile(r'\b(?:mr|mrs|ms|dr|st|vs|etc|e\.g|i\.e|[a-z])\.$', re.I)
 STAGE = re.compile(r'<think>.*?</think>|\*[^*\n]+\*|\[[^]\n]+\]', re.S)
+BEAT = re.compile(r'^\s*\[([nwugepsalr])\]\s*')
 
 
 def clean(text):
@@ -18,8 +19,10 @@ class Phrases:
     def __init__(self, request):
         self.request = request.casefold().rstrip('?.!')
         self.offset = 0
+        self.styles = []
 
     def feed(self, content):
+        self.styles = []
         field = SPEECH_FIELD.search(content)
         if not field:
             return (), {}
@@ -46,7 +49,9 @@ class Phrases:
                 end = len(tail)
             if not end:
                 break
-            phrase = clean(tail[:end])
+            segment = tail[:end]
+            beat = BEAT.match(segment)
+            phrase = clean(segment)
             # Let the completed-response path handle model output that parrots a request.
             if not self.offset and len(self.request.split()) >= 4 and (
                     self.request == phrase.casefold().rstrip('?.!') or
@@ -55,4 +60,5 @@ class Phrases:
             self.offset += end
             if phrase:
                 phrases.append(phrase)
+                self.styles.append(beat[1] if beat else None)
         return phrases, metadata

@@ -405,14 +405,16 @@ class Sight:
             elif social in ('ponder', 'speaking') and brain.expression and now < brain.expression[1]:
                 social = brain.expression[0]
             if speaking and not chirping:
-                delivery = 'farewell' if brain.close_turn else brain.delivery
-                if not brain.close_turn and brain.performance != 'none':
+                delivery, expression = voice.delivery_now() or (brain.delivery, brain.performance)
+                if brain.close_turn:
+                    delivery = 'farewell'
+                elif expression != 'none':
                     delivery = {
                         'sad': 'gentle',
                         'annoyed': 'annoyed' if robot and robot.emotive_performance else 'emphatic',
                         'amused': 'amused' if robot and robot.emotive_performance else 'playful',
                         'surprised': 'surprised' if robot and robot.emotive_performance else 'upbeat',
-                    }[brain.performance]
+                    }[expression]
                 social = 'speaking' if delivery == 'neutral' else 'speak-' + delivery
             if brain and brain.testing_output:
                 social = None
