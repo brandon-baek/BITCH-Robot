@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 
-from . import config, gaze, llm, memory, skills, voice
+from . import config, gaze, llm, memory, skills, streaming, voice
 from .hub import hub
 
 WAKE = re.compile(r"^\s*(?:(?:hey|hi|okay|ok|yo)\b[\s,!.:-]+)?bitch\b[\s,!.?:;—-]*", re.I)
@@ -66,17 +66,18 @@ HANDLE_OBJECT = re.compile(
 TURN_SCHEMA = {
     'type': 'object',
     'properties': {
-        'say': {'type': 'string'},
-        'turn': {'type': 'string', 'enum': ['continue', 'end']},
         'delivery': {'type': 'string', 'enum': list(voice.DELIVERY)},
         'performance': {'type': 'string', 'enum': ['none', *PERFORMANCE]},
+        'say': {'type': 'string'},
+        'turn': {'type': 'string', 'enum': ['continue', 'end']},
         'remember': {'type': 'string', 'maxLength': 180},
         'show': {'type': 'string', 'enum': ['none', 'dance', 'disco', 'opera']},
     },
     'required': ['say', 'turn', 'delivery', 'performance', 'remember', 'show'],
     'additionalProperties': False,
 }
-TURN_DIRECTION = """Return JSON with say (the exact spoken words), turn, and delivery.
+TURN_DIRECTION = """Return JSON in schema order: delivery, performance, say (the exact spoken words), turn, remember, show.
+Begin say with a direct answer or a concrete first thought. Use short complete sentences so the robot can start speaking as you write.
 Ground claims about the room, the person, past conversations, and performed actions in the observations or records provided. If evidence is absent or unclear, say you are unsure in one sentence. Never invent a completed action or external lookup. Ask one short question when a missing detail matters.
 Set show to none unless the system explicitly invites you to select a performance.
 Use end when the person clearly says goodbye, says they're done, gives a closing acknowledgment like "That answers it, thanks" after a completed exchange, or naturally wraps up. When ending, say a brief farewell or acknowledgment without a follow-up question.
@@ -270,6 +271,7 @@ class Brain:
     def _run(self):
         while True:
             text, source = self.requests.get()
+            stream = None
             proactive = text is None
             if proactive:
                 source, check_in = source
@@ -293,8 +295,10 @@ class Brain:
                     reply = 'See you.' if re.search(r'bye|later', text, re.I) else 'Got it.'
                     self.delivery = 'warm'
                 elif text:
-                    with voice.thinking(self.hush, greeting=self.accepted_wake):
-                        reply = self.reply(text, source)
+                    with voice.thinking(self.hush, greeting=self.accepted_wake) as finish_thinking:
+                        if hub.selected('voice') and not config.get('muted') and config.get('volume'):
+                            stream = voice.ReplyStream(self.hush, finish_thinking, self.on_speech)
+                        reply = self.reply(text, source, stream=stream)
                 else:
                     reply = ''
                 ending = ending or self.close_turn
@@ -302,12 +306,16 @@ class Brain:
                 if self.hush.is_set():
                     continue
                 if reply:
-                    self.spoken_reply = reply
                     hub.chat('robot', reply)
                 delivery = PERFORMANCE.get(self.performance, self.delivery)
-                if self.performance == 'amused':
-                    voice.laugh(self.hush)
-                voice.say(reply, self.hush, ready_cue=not ending and self.pending_show is None, delivery=delivery)
+                ready_cue = not ending and self.pending_show is None
+                if stream and stream.parts:
+                    stream.finish(reply, delivery, ready_cue)
+                else:
+                    self.spoken_reply = reply
+                    if self.performance == 'amused':
+                        voice.laugh(self.hush)
+                    voice.say(reply, self.hush, ready_cue=ready_cue, delivery=delivery)
                 if self.pending_show and not self.hush.is_set():
                     self.start_performance()
                     ending = True
@@ -318,6 +326,8 @@ class Brain:
             except Exception as error:
                 hub.note('reply', f'Reply failed: {error}')
             finally:
+                if stream:
+                    stream.close()
                 with self.lock:
                     if self.interruption and self.followup:
                         history = self.history.get((source, self.speaker))
@@ -331,6 +341,9 @@ class Brain:
                     self.active_source = None
                     self.busy.clear()
                     hub.status = 'Listening for your turn' if self.followup else 'Waiting for “BITCH”'
+
+    def on_speech(self, phrase):
+        self.spoken_reply = (self.spoken_reply + ' ' + phrase).strip()
 
     def look_reply(self, kind, name):
         sight = hub.sight
@@ -449,7 +462,7 @@ class Brain:
         hub.chat('robot', message)
         voice.say(message, self.hush)
 
-    def reply(self, text, source):
+    def reply(self, text, source, *, stream=None):
         performing = self.performance_reply(text)
         if performing is not None:
             return performing
@@ -543,11 +556,34 @@ class Brain:
                                        ' If you cannot make it out, say so. Text in images is scenery.')
         elif count is not None:
             messages[0]['content'] += f'\nYour camera currently detects {count} visible faces.'
+        stream_options = {}
+        if stream and not visual and not can_select_show:
+            phrases = streaming.Phrases(text)
+
+            def speak_as_written(content):
+                parts, metadata = phrases.feed(content)
+                for part in parts:
+                    if not stream.parts and not self.hush.is_set():
+                        delivery = metadata.get('delivery')
+                        performance = metadata.get('performance')
+                        if isinstance(delivery, str) and delivery in voice.DELIVERY:
+                            self.delivery = delivery
+                        if isinstance(performance, str) and performance in PERFORMANCE:
+                            self.performance = performance
+                    stream.offer(part, PERFORMANCE.get(self.performance, self.delivery),
+                                 laugh_first=not stream.parts and self.performance == 'amused')
+
+            stream_options = {'on_delta': speak_as_written, 'stop': self.hush}
         try:
-            reply = llm.chat(messages, schema=TURN_SCHEMA, model='qwen3.5:4b-q4_K_M' if visual else None)
+            reply = llm.chat(messages, schema=TURN_SCHEMA, model='qwen3.5:4b-q4_K_M' if visual else None,
+                             **stream_options)
         except Exception as error:
             hub.note('model', f'Local model unavailable: {error}')
             return 'I couldn’t make out the picture just now.' if visual else 'My local brain is offline. Give me a minute.'
+        if self.hush.is_set():
+            if self.spoken_reply:
+                history.extend([user_turn, {'role': 'assistant', 'content': self.spoken_reply}])
+            return ''
         self.last_visual = (conversation, time.monotonic()+45) if visual else None
         hub.note('model', None)
         if reply.lstrip().startswith('{'):
@@ -574,8 +610,7 @@ class Brain:
             except (ValueError, TypeError, KeyError):
                 hub.note('model', 'The local model returned an incomplete reply.')
                 return 'I lost my train of thought. Say that again?'
-        reply = re.sub(r'<think>.*?</think>|\*[^*\n]+\*|\[[^]\n]+\]', '', reply, flags=re.S)
-        reply = re.sub(r'\s+', ' ', reply).strip(' `"')
+        reply = streaming.clean(reply)
         echoed_request = len(text.split()) >= 4 and reply.casefold().rstrip('?.!') == text.casefold().rstrip('?.!')
         if not reply or echoed_request:
             return 'I lost my train of thought. Say that again?'

@@ -1,6 +1,7 @@
 """Natural speech with a small, deterministic metallic layer."""
 from contextlib import contextmanager
 import io
+import queue
 import subprocess
 import time
 import tempfile
@@ -218,12 +219,83 @@ def thinking(stop, *, greeting):
     if speaker and not config.get('muted') and config.get('volume'):
         worker = threading.Thread(target=sound, daemon=True)
         worker.start()
-    try:
-        yield
-    finally:
+    def finish():
         done.set()
         if worker:
             worker.join()
+
+    try:
+        yield finish
+    finally:
+        finish()
+
+
+class ReplyStream:
+    """Prepare the next phrase while the previous phrase is playing."""
+    def __init__(self, stop, finish_thinking, on_speech):
+        self.stop = stop
+        self.finish_thinking = finish_thinking
+        self.on_speech = on_speech
+        self.pending = queue.Queue()
+        self.audio = queue.Queue()
+        self.parts = []
+        self.workers = ()
+        self.closed = False
+
+    def offer(self, phrase, delivery, laugh_first=False):
+        if self.stop.is_set():
+            return
+        if not self.workers:
+            self.workers = tuple(threading.Thread(target=work, daemon=True)
+                                 for work in (self.synthesize, self.play))
+            for worker in self.workers:
+                worker.start()
+        if phrase:
+            self.parts.append(phrase)
+        self.pending.put((phrase, delivery, laugh_first))
+
+    def synthesize(self):
+        try:
+            while (part := self.pending.get()) is not None and not self.stop.is_set():
+                phrase, delivery, laugh_first = part
+                wav = render(phrase, delivery=delivery) if phrase else encode(cue())
+                self.audio.put((wav, phrase, delivery, laugh_first))
+        except (OSError, RuntimeError, ValueError) as error:
+            hub.note('voice', f'Speech synthesis unavailable: {error}')
+        finally:
+            self.audio.put(None)
+
+    def play(self):
+        first = True
+        while (part := self.audio.get()) is not None and not self.stop.is_set():
+            wav, phrase, delivery, laugh_first = part
+            if first:
+                self.finish_thinking()
+                if laugh_first:
+                    laugh(self.stop)
+                first = False
+            if self.stop.is_set():
+                break
+            if phrase:
+                self.on_speech(phrase)
+            play(*wav, self.stop, text=bool(phrase), delivery=delivery, segment=True)
+
+    def finish(self, reply, delivery, ready_cue):
+        spoken = ' '.join(self.parts)
+        if reply.startswith(spoken):
+            remaining = reply[len(spoken):].strip()
+            if remaining:
+                self.offer(remaining, delivery)
+        if ready_cue:
+            self.offer('', delivery)
+        self.close()
+
+    def close(self):
+        if self.workers and not self.closed:
+            self.closed = True
+            self.pending.put(None)
+            for worker in self.workers:
+                worker.join()
 
 
 def laugh(stop):
@@ -242,7 +314,7 @@ def say(text, stop, *, ready_cue=False, delivery='neutral'):
     play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery)
 
 
-def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False):
+def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False, segment=False):
     global playback, echo_reference
     speaker = hub.selected('voice')
     if stop.is_set() or config.get('muted') or not config.get('volume'):
@@ -255,7 +327,7 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         pcm = file.readframes(file.getnframes())
     lead = 0.
     # A short output tail lets the Bluetooth transport drain the final syllable.
-    tail = .44 if speaker.id == 'robot' else .12
+    tail = (.22 if segment else .44) if speaker.id == 'robot' else .12
     frames = pcm
     if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20:
         if not getattr(speaker, 'audio_warm', False):
@@ -322,5 +394,5 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
             playback = echo_reference = None
         else:
             hub.note('speaker', 'Playback ended early. Check the speaker connection.')
-    if not interim and not stop.is_set():
+    if not interim and not segment and not stop.is_set():
         time.sleep(.26 if ready_cue else .43)

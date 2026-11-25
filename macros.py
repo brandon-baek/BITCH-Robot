@@ -11,11 +11,21 @@ import subprocess
 import tempfile
 import threading
 import time
+import desktop_chatgpt
 
 HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
 QUEUE = HOME / 'macros'
 handoff_lock = threading.Lock()
 ID = re.compile(r'[0-9a-f]{32}')
+
+
+def format_prompt(prompt):
+    return ('BITCH robot handoff\n'
+            'I’m BITCH, the account holder’s desk robot. I’m passing along their request on their behalf.\n\n'
+            'Request from the account holder\n'
+            + prompt.strip() + '\n\n'
+            'Reply for BITCH\n'
+            'Put the main answer first and keep it easy to read aloud. If a detail is missing, ask a focused question I can relay.')
 
 
 def job_path(request_id):
@@ -62,7 +72,7 @@ def prepare_desktop(path, desktop_id):
     job = json.loads(path.read_text())
     if desktop_id:
         subprocess.run(['gtk-launch', '--', desktop_id], check=True, timeout=10)
-    clipboard(job['prompt'])
+    clipboard(format_prompt(job['prompt']))
     print('Request copied. Paste it in the desktop agent when ready.', flush=True)
 
 
@@ -96,8 +106,10 @@ def update_handoff(request_id, action, answer=''):
         state = record.get('state', 'queued')
         if state in ('returned', 'canceled'):
             raise ValueError('This request is already closed.')
-        if action == 'prepare':
+        if action in ('prepare', 'compose'):
             record['state'] = 'ready'
+            if action == 'compose':
+                record['drafted'] = desktop_chatgpt.draft(format_prompt(record['prompt']))
         elif action == 'return':
             answer = answer.strip()
             if state != 'ready' or not 1 <= len(answer) <= 12000:
@@ -126,16 +138,25 @@ def inbox_html():
     for record in sorted(records, key=lambda item: item.get('state') in ('returned', 'canceled')):
         request_id = record['id']
         state = record.get('state', 'queued')
-        label = {'queued': 'Queued', 'ready': 'Ready to paste', 'returned': 'Answer returned',
+        label = {'queued': 'Queued', 'ready': 'Drafted in ChatGPT' if record.get('drafted') else 'Ready to paste',
+                 'returned': 'Answer returned',
                  'canceled': 'Canceled'}[state]
-        section = f'<section><h2>{label}</h2><textarea readonly rows="4" aria-label="Request">{escape(record["prompt"])}</textarea>'
+        prompt = format_prompt(record['prompt']) if state == 'ready' else record['prompt']
+        section = f'<section><h2>{label}</h2><textarea readonly rows="{8 if state == "ready" else 4}" aria-label="Request">{escape(prompt)}</textarea>'
         if state in ('queued', 'ready'):
             section += (f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
-                        '<button name="action" value="prepare">Prepare request</button> '
+                        '<button name="action" value="compose">Draft in ChatGPT</button> '
+                        '<button name="action" value="prepare">Show formatted prompt</button> '
                         '<button name="action" value="cancel">Cancel</button></form>')
         if state == 'ready':
-            section += ('<p><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>. '
-                        'Copy the request above and send it in ChatGPT. Paste its answer below.</p>'
+            if record.get('drafted'):
+                section += '<p>Review and send the draft in ChatGPT, then paste its answer below.</p>'
+            else:
+                if 'drafted' in record:
+                    section += '<p>The browser draft could not be verified. The formatted request is above.</p>'
+                section += ('<p><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>, '
+                            'paste the formatted request, and send it. Paste its answer below.</p>')
+            section += (
                         f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
                         '<label>ChatGPT answer<textarea name="answer" rows="5" maxlength="12000" required></textarea></label>'
                         '<button name="action" value="return">Return to BITCH</button></form>')

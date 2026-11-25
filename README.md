@@ -94,6 +94,10 @@ Say **“BITCH, invent a routine called Victory Lap that bows, chirps twice, the
 
 ## ChatGPT inbox
 
-On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. Prepare it in the inbox, open ChatGPT, and review and send the prompt. Paste the answer into the inbox to return it to BITCH, then ask **“What did ChatGPT say?”**. The Pi desktop inbox stays on loopback, and the paired Mac uses the request ID to fetch an answer. The desktop copy-and-send step gives you control of what goes to ChatGPT.
+On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. **Draft in ChatGPT** opens the standard site in Chromium and fills a fresh composer with the request, prefaced by an introduction from BITCH on the account holder’s behalf. Review and send it there. Paste the answer into the inbox and ask **“What did ChatGPT say?”** to hear it back. **Show formatted prompt** provides a copyable draft if desktop automation is unavailable.
+
+The draft macro uses the Pi’s Wayland desktop, Chromium, `at-spi2-core`, `gir1.2-atspi-2.0`, `wl-clipboard`, and `wtype`. If Chromium was already running without AT-SPI support, reopen it from the Pi desktop with `env -u NO_AT_BRIDGE chromium --force-renderer-accessibility --restore-last-session`.
+
+Local conversation streams complete phrases from Ollama into speech. BITCH can start speaking during generation and prepare the next phrase while the current one plays. A short reply may still arrive as one phrase.
 
 While BITCH is replying, cut in with a short sentence such as **“Actually, I meant the blue one.”** The microphone compares the interruption against playback before forwarding it to the next turn. In **Connections**, **Learn my preferences** lets BITCH keep durable preferences or project details that a recognized speaker says in ordinary conversation. Use **“You can forget about…”** to remove a saved detail.
