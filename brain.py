@@ -654,7 +654,7 @@ def listen(motion_enabled=True):
                     self.respond(200, {'audio': body.sink is not None, 'audio_route': body.audio_label,
                                        'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
-                                       'handoff': 2, 'shows': 1, 'show_active': bool(body.show),
+                                       'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
                                        'motion': body.motion_enabled, 'protocol': 1})
                 elif self.path == '/show':
                     with body.lock:
@@ -741,6 +741,7 @@ def listen(motion_enabled=True):
         print(f'BITCH Pi ready on port {PORT}. Run python3 brain.py --key to pair it.', flush=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         threading.Thread(target=body.ambient_audio, daemon=True).start()
+        threading.Thread(target=macros.send_worker, daemon=True).start()
         try:
             body.run()
         except KeyboardInterrupt:

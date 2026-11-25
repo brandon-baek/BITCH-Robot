@@ -1,6 +1,8 @@
-"""Draft in a fresh ChatGPT composer on the logged-in Pi Chromium desktop."""
+"""Use the signed-in Chromium desktop to draft and send a ChatGPT handoff."""
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -9,21 +11,34 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 HOME_PAGE = 'https://chatgpt.com/'
+CHAT_PATH = re.compile(r'/c/[a-f0-9-]{36}/?')
 
 
 def draft(prompt):
+    return run_desktop(prompt, send=False).get('state') == 'drafted'
+
+
+def submit(prompt):
+    return run_desktop(prompt, send=True)
+
+
+def run_desktop(prompt, *, send):
     service = shutil.which('systemd-run')
     if not service:
-        return False
+        return {'state': 'ready'}
     try:
         result = subprocess.run(
-            [service, '--user', '--quiet', '--wait', '--pipe', '--collect', '--property=RuntimeMaxSec=41s',
-             sys.executable, str(Path(__file__).resolve())],
-            input=prompt, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=44,
+            [service, '--user', '--quiet', '--wait', '--pipe', '--collect',
+             '--property=RuntimeMaxSec=195s' if send else '--property=RuntimeMaxSec=41s',
+             sys.executable, str(Path(__file__).resolve()), 'send' if send else 'draft'],
+            input=prompt, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=198 if send else 44,
         )
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        return {'state': 'send_unverified' if send else 'ready'}
+    except (OSError, ValueError):
+        return {'state': 'send_unverified' if send else 'ready'}
 
 
 def children(node):
@@ -80,7 +95,7 @@ def select_open_chat(atspi):
     return False
 
 
-def find_composer(atspi, marker):
+def active_page(atspi):
     desktop = atspi.get_desktop(0)
     for app in children(desktop):
         if app.get_name().casefold() not in ('chromium', 'google chrome'):
@@ -97,32 +112,120 @@ def find_composer(atspi, marker):
                     document = node
                 if address is not None and document is not None:
                     break
-            if address is None or document is None or not matches_address(text_of(address), marker):
-                continue
-            for node in nodes(document):
-                if (node.get_role() in (atspi.Role.ENTRY, atspi.Role.TEXT, atspi.Role.PARAGRAPH)
-                        and node.get_state_set().contains(atspi.StateType.EDITABLE)
-                        and node.get_name() == 'Ask ChatGPT'
-                        and node.get_attributes().get('id') != 'pending-home-input'):
-                    return window, address, node
+            if address is not None and document is not None:
+                return window, address, document
     return None
 
 
-def fill(prompt):
+def find_composer(atspi, marker):
+    page = active_page(atspi)
+    if page is None or not matches_address(text_of(page[1]), marker):
+        return None
+    window, address, document = page
+    for node in nodes(document):
+        if (node.get_role() in (atspi.Role.ENTRY, atspi.Role.TEXT, atspi.Role.PARAGRAPH)
+                and node.get_state_set().contains(atspi.StateType.EDITABLE)
+                and node.get_name() == 'Ask ChatGPT'
+                and node.get_attributes().get('id') != 'pending-home-input'):
+            return window, address, node
+    return None
+
+
+def normalized(text):
+    return ' '.join(text.split())
+
+
+def chat_url(address):
+    address = address.strip()
+    if address.startswith('chatgpt.com/'):
+        address = 'https://' + address
+    url = urlsplit(address)
+    if (url.scheme == 'https' and url.netloc == 'chatgpt.com' and not url.query
+            and CHAT_PATH.fullmatch(url.path)):
+        return 'https://chatgpt.com' + url.path
+    return None
+
+
+def send_button(document, atspi):
+    return next((node for node in nodes(document)
+                 if node.get_role() == atspi.Role.PUSH_BUTTON
+                 and (node.get_attributes().get('id') == 'composer-submit-button'
+                      or node.get_name() == 'Send prompt')
+                 and node.get_state_set().contains(atspi.StateType.ENABLED)), None)
+
+
+def response_copy(document, prompt, atspi):
+    seen_user = seen_assistant = False
+    for node in nodes(document):
+        role, label = node.get_role(), node.get_name().strip().casefold()
+        if role == atspi.Role.HEADING:
+            if label.rstrip(':') in ('you said', 'user'):
+                seen_user = False
+            elif label.rstrip(':') in ('chatgpt said', 'assistant'):
+                seen_assistant = seen_user
+        elif not seen_assistant and role in (atspi.Role.PARAGRAPH, atspi.Role.SECTION):
+            # The visible user message is a paragraph or an embedded group with one text leaf.
+            direct = text_of(node)
+            leaf = ' '.join(child.get_name() for child in children(node)
+                            if child.get_role() in (atspi.Role.TEXT, atspi.Role.STATIC))
+            if any(normalized(value) == normalized(prompt) for value in (direct, leaf, node.get_name())):
+                seen_user = True
+        elif seen_assistant and role == atspi.Role.PUSH_BUTTON and label in ('copy', 'copy response'):
+            return True, node
+    return seen_user, None
+
+
+def wait_response(prompt, atspi, context, errors):
+    end = time.monotonic() + 150.
+    conversation = None
+    copy_available = False
+    while time.monotonic() < end:
+        while context.pending():
+            context.iteration(False)
+        try:
+            page = active_page(atspi)
+            url = chat_url(text_of(page[1])) if page else None
+            if url and (conversation is None or url == conversation):
+                document = page[2]
+                matched, button = response_copy(document, prompt, atspi)
+                if matched:
+                    conversation = url
+                if button:
+                    generating = any(node.get_role() == atspi.Role.PUSH_BUTTON
+                                     and node.get_name().lower() in ('stop streaming', 'stop generating', 'stop response')
+                                     for node in nodes(document))
+                    if not generating and copy_available:
+                        subprocess.run(['wl-copy', '--clear'], check=True, timeout=2)
+                        if button.do_action(0):
+                            time.sleep(.25)
+                            answer = subprocess.run(['wl-paste', '--no-newline'], capture_output=True,
+                                                    text=True, encoding='utf-8', timeout=2).stdout.strip()
+                            if answer and normalized(answer) != normalized(prompt):
+                                return {'state': 'returned', 'answer': answer[:12000], 'url': conversation}
+                    copy_available = not generating
+                else:
+                    copy_available = False
+        except errors:
+            pass
+        time.sleep(.65)
+    return {'state': 'submitted', 'url': conversation} if conversation else {'state': 'send_unverified'}
+
+
+def fill(prompt, *, send=False):
     import gi
 
     gi.require_version('Atspi', '2.0')
     from gi.repository import Atspi, GLib
 
     if not os.environ.get('WAYLAND_DISPLAY'):
-        return False
+        return {'state': 'ready'} if send else False
     chromium = shutil.which('chromium')
     copy = shutil.which('wl-copy')
     keys = shutil.which('wtype')
     if not chromium or not copy or not keys:
-        return False
+        return {'state': 'ready'} if send else False
     if Atspi.init() not in (0, 1):
-        return False
+        return {'state': 'ready'} if send else False
     Atspi.set_timeout(900, 900)
     context = GLib.MainContext.default()
 
@@ -149,19 +252,20 @@ def fill(prompt):
                        timeout=4, check=True)
         target = wait_composer(marker, 30)
     if target is None:
-        return False
+        return {'state': 'ready'} if send else False
     window, address, composer = target
     if composer_text(composer, Atspi).strip():
-        return False
+        return {'state': 'ready'} if send else False
     if not (composer.get_state_set().contains(Atspi.StateType.FOCUSED)
             or composer.get_component_iface().grab_focus()):
-        return False
+        return {'state': 'ready'} if send else False
     time.sleep(.12)
     if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
             and matches_address(text_of(address), marker)
             and composer.get_state_set().contains(Atspi.StateType.FOCUSED)
             and not composer_text(composer, Atspi).strip()):
-        return False
+        return {'state': 'ready'} if send else False
+    pasted = False
     with subprocess.Popen([copy, '--foreground', '--type', 'text/plain'], stdin=subprocess.PIPE) as clipboard:
         try:
             clipboard.stdin.write(prompt.encode('utf-8'))
@@ -170,16 +274,16 @@ def fill(prompt):
             if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
                     and matches_address(text_of(address), marker)
                     and composer.get_state_set().contains(Atspi.StateType.FOCUSED)):
-                return False
+                return {'state': 'ready'} if send else False
             subprocess.run([keys, '-M', 'ctrl', '-s', '80', '-k', 'v', '-s', '80', '-m', 'ctrl'],
                            check=True, timeout=2)
             for _ in range(12):
                 time.sleep(.15)
                 while context.pending():
                     context.iteration(False)
-                if ' '.join(composer_text(composer, Atspi).split()) == ' '.join(prompt.split()):
-                    return True
-            return False
+                if normalized(composer_text(composer, Atspi)) == normalized(prompt):
+                    pasted = True
+                    break
         finally:
             if clipboard.poll() is None:
                 clipboard.terminate()
@@ -187,11 +291,32 @@ def fill(prompt):
                     clipboard.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     clipboard.kill()
+    if not send:
+        return pasted
+    if not pasted:
+        return {'state': 'ready'}
+    page = active_page(Atspi)
+    if (page is None or not matches_address(text_of(page[1]), marker)
+            or not composer.get_state_set().contains(Atspi.StateType.FOCUSED)
+            or normalized(composer_text(composer, Atspi)) != normalized(prompt)):
+        return {'state': 'ready', 'drafted': True}
+    document = page[2]
+    if any(node.get_role() == Atspi.Role.PUSH_BUTTON and node.get_name().lower() in ('log in', 'sign up')
+           for node in nodes(document)):
+        return {'state': 'ready', 'drafted': True}
+    button = send_button(document, Atspi)
+    if button is None:
+        return {'state': 'ready', 'drafted': True}
+    if not button.do_action(0):
+        return {'state': 'send_unverified'}
+    return wait_response(prompt, Atspi, context, (GLib.Error, OSError, subprocess.SubprocessError, ValueError))
 
 
 if __name__ == '__main__':
+    sending = sys.argv[1:] == ['send']
     try:
         message = sys.stdin.read(3001)
-        sys.exit(0 if 0 < len(message) <= 3000 and fill(message) else 1)
+        result = fill(message, send=sending) if 0 < len(message) <= 3000 else {'state': 'ready'}
     except (ImportError, OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-        sys.exit(1)
+        result = {'state': 'send_unverified' if sending else 'ready'}
+    print(json.dumps(result if isinstance(result, dict) else {'state': 'drafted' if result else 'ready'}))

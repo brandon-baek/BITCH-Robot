@@ -16,6 +16,8 @@ import desktop_chatgpt
 HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
 QUEUE = HOME / 'macros'
 handoff_lock = threading.Lock()
+desktop_lock = threading.Lock()
+wake_worker = threading.Event()
 ID = re.compile(r'[0-9a-f]{32}')
 
 
@@ -42,6 +44,8 @@ def enqueue(item):
     QUEUE.mkdir(parents=True, exist_ok=True, mode=0o700)
     record = {'id': item['id'], 'version': 1, 'macro': 'agent', 'prompt': prompt.strip(),
               'created_at': datetime.now(timezone.utc).isoformat()}
+    if item.get('auto_send') is True:
+        record.update(auto_send=True, state='queued')
     with tempfile.NamedTemporaryFile(mode='w', dir=QUEUE, encoding='utf-8') as temporary:
         json.dump(record, temporary, ensure_ascii=False)
         temporary.flush()
@@ -52,6 +56,8 @@ def enqueue(item):
             previous = json.loads(path.read_text())
             if previous['prompt'] != record['prompt']:
                 raise ValueError('request ID already exists')
+    if record.get('auto_send'):
+        wake_worker.set()
 
 
 def clipboard(prompt):
@@ -99,32 +105,81 @@ def handoff_status(request_id):
     return {'state': record.get('state', 'queued'), 'answer': record.get('answer')}
 
 
+def write_job(path, record):
+    with tempfile.NamedTemporaryFile(mode='w', dir=QUEUE, encoding='utf-8', delete=False) as temporary:
+        json.dump(record, temporary, ensure_ascii=False)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+    try:
+        Path(temporary.name).replace(path)
+        directory = os.open(QUEUE, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary.name).unlink(missing_ok=True)
+
+
+def send_pending():
+    for path in pending():
+        try:
+            with handoff_lock:
+                record = read_job(path.stem)
+                if record.get('state') == 'sending':
+                    # The previous service may have clicked Send just before it stopped.
+                    record['state'] = 'send_unverified'
+                    write_job(path, record)
+                    continue
+                if record.get('state') != 'queued' or record.get('auto_send') is not True:
+                    continue
+                record['state'] = 'sending'
+                write_job(path, record)
+            with desktop_lock:
+                result = desktop_chatgpt.submit(format_prompt(record['prompt']))
+            if result.get('state') not in ('ready', 'submitted', 'send_unverified', 'returned'):
+                result = {'state': 'send_unverified'}
+            with handoff_lock:
+                record.update(result)
+                write_job(path, record)
+        except (OSError, ValueError):
+            continue
+
+
+def send_worker():
+    while True:
+        wake_worker.clear()
+        send_pending()
+        wake_worker.wait(5)
+
+
 def update_handoff(request_id, action, answer=''):
     path = job_path(request_id)
     with handoff_lock:
         record = read_job(request_id)
         state = record.get('state', 'queued')
-        if state in ('returned', 'canceled'):
+        if state in ('returned', 'canceled', 'sending'):
             raise ValueError('This request is already closed.')
-        if action in ('prepare', 'compose'):
+        if action == 'send' and state in ('queued', 'ready'):
+            record.update(state='queued', auto_send=True)
+        elif action in ('prepare', 'compose') and state in ('queued', 'ready'):
             record['state'] = 'ready'
+            record['auto_send'] = False
             if action == 'compose':
-                record['drafted'] = desktop_chatgpt.draft(format_prompt(record['prompt']))
+                with desktop_lock:
+                    record['drafted'] = desktop_chatgpt.draft(format_prompt(record['prompt']))
         elif action == 'return':
             answer = answer.strip()
-            if state != 'ready' or not 1 <= len(answer) <= 12000:
+            if state not in ('ready', 'submitted', 'send_unverified') or not 1 <= len(answer) <= 12000:
                 raise ValueError('Prepare the prompt first and paste an answer of up to 12,000 characters.')
             record.update(state='returned', answer=answer)
         elif action == 'cancel':
             record['state'] = 'canceled'
         else:
             raise ValueError('Unknown handoff action.')
-        with tempfile.NamedTemporaryFile(mode='w', dir=QUEUE, encoding='utf-8', delete=False) as temporary:
-            json.dump(record, temporary, ensure_ascii=False)
-        try:
-            Path(temporary.name).replace(path)
-        finally:
-            Path(temporary.name).unlink(missing_ok=True)
+        write_job(path, record)
+    if action == 'send':
+        wake_worker.set()
 
 
 def inbox_html():
@@ -139,12 +194,14 @@ def inbox_html():
         request_id = record['id']
         state = record.get('state', 'queued')
         label = {'queued': 'Queued', 'ready': 'Drafted in ChatGPT' if record.get('drafted') else 'Ready to paste',
-                 'returned': 'Answer returned',
+                 'returned': 'Answer returned', 'sending': 'Sending and waiting for ChatGPT',
+                 'submitted': 'Sent to ChatGPT', 'send_unverified': 'Check the ChatGPT tab',
                  'canceled': 'Canceled'}[state]
         prompt = format_prompt(record['prompt']) if state == 'ready' else record['prompt']
         section = f'<section><h2>{label}</h2><textarea readonly rows="{8 if state == "ready" else 4}" aria-label="Request">{escape(prompt)}</textarea>'
         if state in ('queued', 'ready'):
             section += (f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
+                        '<button name="action" value="send">Send with ChatGPT</button> '
                         '<button name="action" value="compose">Draft in ChatGPT</button> '
                         '<button name="action" value="prepare">Show formatted prompt</button> '
                         '<button name="action" value="cancel">Cancel</button></form>')
@@ -156,6 +213,13 @@ def inbox_html():
                     section += '<p>The browser draft could not be verified. The formatted request is above.</p>'
                 section += ('<p><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>, '
                             'paste the formatted request, and send it. Paste its answer below.</p>')
+        if state in ('submitted', 'send_unverified'):
+            url = record.get('url') or ''
+            if desktop_chatgpt.chat_url(url):
+                section += f'<p><a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open the conversation</a>.</p>'
+            if state == 'send_unverified':
+                section += '<p>The browser could have sent this request. Check the tab before sending it yourself.</p>'
+        if state in ('ready', 'submitted', 'send_unverified'):
             section += (
                         f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
                         '<label>ChatGPT answer<textarea name="answer" rows="5" maxlength="12000" required></textarea></label>'
