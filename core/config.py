@@ -10,6 +10,7 @@ HOME.mkdir(parents=True, exist_ok=True)
 APP_DIR = ROOT / 'app'
 DEFAULTS = {
     'chat_model': 'qwen3.5:4b-q4_K_M',
+    'ollama_url': 'http://127.0.0.1:11434',
     'kokoro_voice': 'af_heart',
     'mac_voice': 'Samantha',
     'mic_source': 'mac-mic',

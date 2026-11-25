@@ -71,3 +71,5 @@ Ask “Hey BITCH, what am I holding?” to send one fresh frame from the selecte
 Say **“Hey BITCH, look there”** while holding one arm out toward the target. Keep your shoulder, elbow, wrist and hand in the camera frame for a moment. The preview circles the region it picked. **“Look at the blue mug”** looks for a named object. **“What am I pointing at?”** can ask whether a visible object in that region is the one you meant. Camera alignment works best when the target is near the calibration distance. Run `bash mac/setup.sh` on the Mac to install pointing support.
 
 The [character motion and shared attention notes](docs/character-motion.md) describe the research, the choices carried into the robot, and how to evaluate the result.
+
+If you run Ollama on a different local port, set `ollama_url` in the Mac companion’s `~/.bitch/settings.json` or pass `OLLAMA_URL` when launching it. On macOS, a model directory outside iCloud Drive keeps model files available for local inference.

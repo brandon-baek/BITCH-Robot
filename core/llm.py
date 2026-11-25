@@ -6,7 +6,7 @@ import urllib.request
 
 from . import config
 
-URL = os.environ.get('OLLAMA_URL', 'http://127.0.0.1:11434')
+URL = os.environ.get('OLLAMA_URL') or config.get('ollama_url')
 
 
 def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None):
