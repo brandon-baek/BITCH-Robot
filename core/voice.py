@@ -327,7 +327,7 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         pcm = file.readframes(file.getnframes())
     lead = 0.
     # A short output tail lets the Bluetooth transport drain the final syllable.
-    tail = (.22 if segment else .44) if speaker.id == 'robot' else .12
+    tail = .44 if speaker.id == 'robot' else .12
     frames = pcm
     if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20:
         if not getattr(speaker, 'audio_warm', False):

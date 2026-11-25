@@ -44,8 +44,10 @@ def nodes(root):
 
 
 def text_of(node):
+    from gi.repository import Atspi
+
     text = node.get_text_iface()
-    return text.get_text(0, -1) if text is not None else ''
+    return Atspi.Text.get_text(text, 0, -1) if text is not None else ''
 
 
 def matches_address(address, marker):
