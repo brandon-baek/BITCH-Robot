@@ -91,6 +91,23 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(saved[0][1:], ('agent', 'draft a summary.'))
             model.assert_called_once()
 
+    def test_voicechat_gets_addressed_audio_and_qwen_handles_the_local_agent_request(self):
+        brain = Brain()
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertTrue(brain.submit('Bitch, how are you feeling?', 'desk', audio=audio))
+        text, source = brain.requests.get_nowait()
+        stream = SimpleNamespace(parts=[])
+        with (patch.dict(config.stored, {'voicechat_enabled': True}), patch.object(hub, 'sight', None),
+              patch('core.brain.voicechat.respond', return_value=('A little smug.', (b'wav', .8))) as native,
+              patch('core.brain.llm.chat', return_value='{"v":"n","say":"It lowers the freezing point.","end":false}') as agent):
+            self.assertEqual(brain.reply(text, source, stream=stream), 'A little smug.')
+            self.assertIs(native.call_args.args[0], audio)
+            self.assertEqual(brain.native_audio, (b'wav', .8))
+            self.assertEqual(brain.reply('Ask Qwen to explain how salt melts ice.', source, stream=stream),
+                             'It lowers the freezing point.')
+            self.assertEqual(agent.call_args.args[0][-1]['content'], 'explain how salt melts ice.')
+            native.assert_called_once()
+
     def test_volume_attenuates_speech_and_cues(self):
         samples = np.ones(240, dtype=np.float32) * 0.5
         with patch.object(config, 'get', return_value=100):
@@ -615,6 +632,24 @@ class PiProtocolTests(unittest.TestCase):
         self.assertTrue(matches_address('chatgpt.com/#bitch-draft-fixture', 'bitch-draft-fixture'))
         self.assertFalse(matches_address('https://chatgpt.com/c/existing#bitch-draft-fixture', 'bitch-draft-fixture'))
         self.assertFalse(matches_address('https://chatgpt.com.example/#bitch-draft-fixture', 'bitch-draft-fixture'))
+
+    def test_automatic_handoff_sends_once_and_does_not_retry_an_uncertain_click(self):
+        request = {'name': 'agent', 'id': '1' * 32, 'prompt': 'Test light.', 'auto_send': True}
+        uncertain = {**request, 'id': '2' * 32}
+        manual = {'name': 'agent', 'id': '3' * 32, 'prompt': 'Previous queued item.'}
+        with (tempfile.TemporaryDirectory() as folder, patch.object(macros, 'QUEUE', Path(folder)),
+              patch.object(macros.desktop_chatgpt, 'submit', return_value={'state': 'returned', 'answer': 'Good.'}) as send):
+            for item in (request, uncertain, manual):
+                macros.enqueue(item)
+            path = macros.job_path(uncertain['id'])
+            macros.write_job(path, {**macros.read_job(path.stem), 'state': 'sending'})
+            macros.send_pending()
+            macros.enqueue(request)
+            macros.send_pending()
+            send.assert_called_once_with(macros.format_prompt(request['prompt']))
+            self.assertEqual(macros.handoff_status(request['id']), {'state': 'returned', 'answer': 'Good.'})
+            self.assertEqual(macros.handoff_status(uncertain['id'])['state'], 'send_unverified')
+            self.assertEqual(macros.handoff_status(manual['id'])['state'], 'queued')
 
     def test_paired_protocol_motion_idle_and_local_inbox(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as reservation:

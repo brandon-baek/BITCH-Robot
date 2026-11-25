@@ -84,11 +84,14 @@ async function refresh() {
   $('speakerTest').textContent = state.output ? 'Test ' + (state.output === 'Raspberry Pi' ? 'Pi speaker' : state.output) : 'Test speaker';
   const robot = devices.find(device => device.id === 'robot');
   $('robotStatus').textContent = robot ? robot.detail : 'Pi disabled';
-  $('modelName').textContent = state.model ? 'Brain · ' + state.model : '';
+  $('modelName').textContent = state.model
+    ? (state.voicechat_ready && settings.voicechat_enabled ? 'Nemotron VoiceChat 11B · Local agent ' : 'Brain · ') + state.model
+    : '';
+  $('voicechatControl').hidden = !(state.voicechat_ready && state.people);
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
   $('robot_key').placeholder = settings.robot_paired ? 'Key saved' : '';
-  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory']) $(key).checked = settings[key];
+  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'voicechat_enabled']) $(key).checked = settings[key];
   if (document.activeElement !== $('volume')) {
     $('volume').value = settings.volume;
     $('volumeValue').value = settings.volume + '%';
@@ -385,7 +388,8 @@ async function calibrate(step, track = false) {
 }
 
 action('speakerTest', 'click', () => api('test-speaker', {}));
-for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'mic_source', 'camera_source', 'speaker_source']) {
+for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'voicechat_enabled',
+  'mic_source', 'camera_source', 'speaker_source']) {
   action(key, 'change', e => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     settingsVersion++;

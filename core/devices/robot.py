@@ -17,6 +17,7 @@ class Robot(Device):
         self.connection_error = ''
         self.audio_monitor = False
         self.handoff = False
+        self.auto_handoff = False
         self.audio_warm = False
         self.warming_since = None
         self.expressive = False
@@ -55,7 +56,8 @@ class Robot(Device):
         while True:
             result = self.request('ping')
             self.online = bool(result and result.get('protocol') == 1)
-            self.handoff = bool(result and result.get('handoff') == 2)
+            self.handoff = bool(result and result.get('handoff', 0) >= 2)
+            self.auto_handoff = bool(result and result.get('handoff', 0) >= 3)
             self.audio_monitor = bool(result and result.get('playback_monitor'))
             self.expressive = bool(result and result.get('character'))
             self.performance = bool(result and result.get('performance', 0) >= 2)
@@ -132,7 +134,7 @@ class Robot(Device):
         return None
 
     def macro(self, request_id, name, prompt):
-        item = {'id': request_id, 'name': name, 'prompt': prompt}
+        item = {'id': request_id, 'name': name, 'prompt': prompt, 'auto_send': self.auto_handoff}
         return bool(self.post('macro', item) or self.post('macro', item))
 
     def macro_status(self, request_id):

@@ -10,6 +10,9 @@ HOME.mkdir(parents=True, exist_ok=True)
 APP_DIR = ROOT / 'app'
 DEFAULTS = {
     'chat_model': 'qwen3.5:4b-q4_K_M',
+    'voicechat_model': '',
+    'voicechat_bin': '',
+    'voicechat_enabled': False,
     'ollama_url': 'http://127.0.0.1:11434',
     'kokoro_voice': 'af_heart',
     'mac_voice': 'Samantha',
@@ -26,7 +29,8 @@ DEFAULTS = {
     'robot_host': 'raspberrypi.local',
     'robot_key': '',
 }
-PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'volume', 'robot_host'}
+PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'keep_audio',
+          'check_ins', 'natural_memory', 'voicechat_enabled', 'volume', 'robot_host'}
 path = HOME / 'settings.json'
 lock = threading.Lock()
 try:

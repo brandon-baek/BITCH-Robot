@@ -10,7 +10,7 @@ import time
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import config, memory, tls
+from . import config, memory, tls, voicechat
 from .devices.web import WebDevice
 from .hub import hub
 from .people import people
@@ -155,6 +155,7 @@ def state(req: Request):
     output = hub.selected('voice')
     data['output'] = output.name if output else None
     data['model'] = config.get('chat_model')
+    data['voicechat_ready'] = voicechat.settings() is not None
     data['ears_ready'] = hub.hearing.ready
     data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
     data['pointing_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'ready', False))
@@ -170,6 +171,10 @@ async def settings(req: Request):
     data = await payload(req)
     for key, value in data.items():
         if key in ('idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory') and type(value) is bool:
+            continue
+        if key == 'voicechat_enabled' and owner == 'local' and type(value) is bool:
+            if value and not voicechat.settings():
+                raise HTTPException(409, 'Install the VoiceChat runtime and model first.')
             continue
         if key == 'volume' and type(value) is int and 0 <= value <= 100:
             continue

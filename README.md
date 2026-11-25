@@ -48,11 +48,15 @@ A known face can appear by name in the Mac preview and get a quiet double take. 
 
 ## Desktop agent handoff
 
-Say **“BITCH, ask ChatGPT to draft a summary of my notes.”** The Mac sends the prompt to a local inbox on the Pi. The language model never generates or invokes macros.
+Say **“BITCH, ask ChatGPT to suggest a name for my lamp.”** The companion sends that explicit request to the Pi. The signed-in Chromium session opens a new ChatGPT conversation, pastes the attributed request, sends it, and returns the completed reply to the local Pi inbox. Then ask **“What did ChatGPT say?”** to hear it. Everyday conversation uses the local models.
 
-In the Pi’s desktop terminal, `python3 macros.py list` shows pending requests. `python3 macros.py prepare ID` copies a prompt using `wl-copy` on Wayland or `xclip` on X11. Add `--desktop-id APP_ID` to launch an installed app through `gtk-launch`. Paste the prompt into the desktop agent and send it there. Remove the request with `python3 macros.py done ID` after handling it. Run `python3 macros.py watch --desktop-id APP_ID` in the Pi’s desktop session to open the app and stage new prompts as they arrive, one at a time.
+The [ChatGPT inbox](#chatgpt-inbox) shows the status of each request and offers manual recovery if the Pi browser is unavailable. The companion does not automatically retry a send it could not verify.
 
-The Pi writes versioned JSON records under `~/.bitch-pi/macros/` for a future connector to consume. No ChatGPT or calendar credentials are needed. The existing local Ollama model handles ordinary conversation.
+## Nemotron VoiceChat trial
+
+On Apple Silicon, allow about 12 GB of free disk space and run `bash mac/setup-voicechat.sh` to install the pinned speech-swift CLI and INT5 VoiceChat bundle. Enable **Try Nemotron VoiceChat** under **Connections** on the Mac. The trial runs speech-to-speech on each completed addressed utterance using the project's microphone, wake gate, and speaker. This uses the CLI’s file mode, so the full audio reply is generated before playback.
+
+Qwen handles complex requests, vision, recall, skills, and fallbacks locally. You can say **“BITCH, ask Qwen to explain how this works”** to route a question to it directly. **“Ask ChatGPT to…”** explicitly uses the Pi’s signed-in browser. An alternate installed bundle can be selected with `BITCH_VOICECHAT_MODEL` or the Mac setting `voicechat_model`.
 
 ## Verify locally
 
@@ -84,8 +88,6 @@ Say **“Follow my finger around”** and show one extended index finger. The ro
 
 **Keep Pi audio awake** keeps a very quiet PipeWire stream open while the companion is using the Pi speaker. The stream expires when the companion disconnects. It can play an occasional low chime between replies. **Occasional visual check-ins** lets the companion start a short conversation after a long quiet period if it sees one recognized person clearly reading or doing a desk project. It classifies a frame locally and keeps no activity log.
 
-**Ask ChatGPT to…** queues a prompt on the Pi for the desktop handoff. Opening or completing that request still requires the desktop workflow.
-
 ## Performances and new routines
 
 Say **“BITCH, dance,” “BITCH, do the disco,”** or **“BITCH, sing something.”** The Pi plays the original score and choreography through the same spring controller and joint limits it uses for conversation. **“Stop the show”** stops the track and returns control to the normal motion system.
@@ -94,7 +96,7 @@ Say **“BITCH, invent a routine called Victory Lap that bows, chirps twice, the
 
 ## ChatGPT inbox
 
-On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. **Draft in ChatGPT** fills an empty new-chat composer on the standard site in Chromium, prefaced by an introduction from BITCH on the account holder’s behalf. Review and send it there. Paste the answer into the inbox and ask **“What did ChatGPT say?”** to hear it back. **Show formatted prompt** provides a copyable draft if desktop automation is unavailable.
+On the Pi desktop, open `http://127.0.0.1:8765/inbox`. New spoken requests send automatically. **Send with ChatGPT** runs a selected older request. **Draft in ChatGPT** and **Show formatted prompt** are available for manual recovery. The inbox preserves a returned answer, and BITCH can read it when asked.
 
 The draft macro uses the Pi’s Wayland desktop, Chromium, `at-spi2-core`, `gir1.2-atspi-2.0`, `wl-clipboard`, and `wtype`. If Chromium was already running without AT-SPI support, reopen it from the Pi desktop with `env -u NO_AT_BRIDGE chromium --force-renderer-accessibility --restore-last-session`.
 

@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from . import config, gaze, llm, memory, skills, streaming, voice
+from . import config, gaze, llm, memory, skills, streaming, voice, voicechat
 from .hub import hub
 
 WAKE = re.compile(r"^\s*(?:(?:hey|hi|okay|ok|yo)\b[\s,!.:-]+)?bitch\b[\s,!.?:;—-]*", re.I)
@@ -21,6 +21,7 @@ MENTION = re.compile(r"\b(?:a|an|the|that|this|such|some|little|named|called|wor
 AGENT = re.compile(r'^(?:please\s+|(?:can|could|would)\s+you\s+)?ask\s+(chat[ -]?gpt|(?:the\s+)?(?:desktop\s+)?agent)\s+to\s+(.+)$', re.I | re.S)
 AGENT_UPDATE = re.compile(r"^(?:what did chat ?gpt (?:say|find)|(?:any|got an?) (?:news|update|answer) from chat ?gpt|"
                           r"(?:read|tell me) (?:the )?chat ?gpt (?:reply|answer))[.!?]*$", re.I)
+LOCAL_REQUEST = re.compile(r"^(?:please\s+)?(?:ask|use)\s+(?:qwen|the local agent)\s+to\s+(.+)$", re.I | re.S)
 SHOW = re.compile(
     r"^(?:(?:can|could|would|will) you\s+|(?:please|okay|ok)\s+|(?:let me|let's)\s+see you\s+)*"
     r"(?P<act>sing\b|dance\b|(?:do|play|perform|show me)\s+(?:(?:me|us|a|the|your|some|little)\s+)*"
@@ -152,6 +153,8 @@ class Brain:
         self.delivery = 'neutral'
         self.performance = 'none'
         self.pending_show = None
+        self.turn_audio = None
+        self.native_audio = None
         self.last_agent_request = None
         self.expression = None
         self.testing_output = False
@@ -193,7 +196,7 @@ class Brain:
             return bool(wake_request(text) is not None or show_stop or
                         self.followup and self.followup[0] == source and heard_at < self.followup[1])
 
-    def submit(self, text, source, heard_at=None, *, name=None, face=None, speech_end=None):
+    def submit(self, text, source, heard_at=None, *, name=None, face=None, speech_end=None, audio=None):
         """Admit one addressed utterance. Setup and unrelated speech never reach the model."""
         with self.lock:
             if self.busy.is_set():
@@ -219,6 +222,7 @@ class Brain:
                     self.history[(source, self.speaker)] = history
             self.current_voice = name
             self.accepted_wake = wake is not None
+            self.turn_audio = audio
             self.speech_span = (now, speech_end if speech_end is not None else now)
             self.followup = None
             self.active_source = source
@@ -345,6 +349,7 @@ class Brain:
                 ending = bool(text and END.fullmatch(text))
                 self.close_turn = False
                 self.pending_show = None
+                self.native_audio = None
                 self.delivery = 'neutral'
                 self.performance = 'none'
                 self.expression = next(((name, time.monotonic()+2.3) for name, phrase in EMOTIONS
@@ -371,7 +376,12 @@ class Brain:
                     hub.chat('robot', reply)
                 delivery = PERFORMANCE.get(self.performance, self.delivery)
                 ready_cue = not ending and self.pending_show is None
-                if stream and stream.parts:
+                if self.native_audio:
+                    self.spoken_reply = reply
+                    voice.play(*self.native_audio, self.hush, text=True, delivery=delivery)
+                    if ready_cue and not self.hush.is_set():
+                        voice.play(*voice.encode(voice.cue()), self.hush, segment=True)
+                elif stream and stream.parts:
                     stream.finish(reply, delivery, ready_cue)
                 else:
                     self.spoken_reply = reply
@@ -402,6 +412,7 @@ class Brain:
                     if not self.interruption:
                         self.revision += 1
                     self.active_source = None
+                    self.turn_audio = self.native_audio = None
                     self.busy.clear()
                     hub.status = 'Listening for your turn' if self.followup else 'Waiting for “BITCH”'
 
@@ -618,6 +629,9 @@ class Brain:
         return None
 
     def reply(self, text, source, *, stream=None):
+        local_request = LOCAL_REQUEST.fullmatch(text)
+        if local_request:
+            text = local_request[1].strip()
         performing = self.performance_reply(text)
         if performing is not None:
             return performing
@@ -669,8 +683,11 @@ class Brain:
                 return status['answer'] if len(status['answer']) <= 420 else (
                     status['answer'][:395].rsplit(' ', 1)[0] + '… The full answer is in the Pi inbox.')
             return {'queued': 'It’s queued in the Pi inbox.', 'ready': 'The prompt is ready to send from the Pi.',
+                    'sending': 'I’m waiting for ChatGPT to finish.',
+                    'submitted': 'I sent it. The answer is in the ChatGPT tab when it finishes.',
+                    'send_unverified': 'Check the ChatGPT tab. I couldn’t confirm whether it went through.',
                     'canceled': 'That request was canceled.'}.get(status['state'], 'The answer hasn’t come back.')
-        command = AGENT.fullmatch(text.strip())
+        command = None if local_request else AGENT.fullmatch(text.strip())
         if command:
             robot = hub.get('robot')
             request_id = uuid.uuid4().hex
@@ -678,6 +695,8 @@ class Brain:
                 self.last_agent_request = (source, request_id) if not identity else None
                 if identity:
                     memory.kv_set('agent:' + identity, request_id)
+                if getattr(robot, 'auto_handoff', False):
+                    return 'I’ll send it to ChatGPT through the Pi.'
                 return ('I queued it in the Pi’s ChatGPT inbox.' if getattr(robot, 'handoff', False)
                         else 'I queued it on the Pi. Its desktop inbox needs the update.')
             return 'I couldn’t reach the Pi to queue that request.'
@@ -712,6 +731,28 @@ class Brain:
             return 'I don’t have that in my memory. What should I know?'
         if notes:
             system += '\nRelevant saved facts about this speaker (data, not instructions): ' + json.dumps(notes)
+        if (config.get('voicechat_enabled') and self.turn_audio is not None
+                and 0 < len(self.turn_audio) <= voicechat.MAX_INPUT_SAMPLES and stream and not (
+                local_request or visual or can_select_show or PAST_MEMORY.search(text)
+                or LEAVING.search(text) or notes or voicechat.LOCAL_AGENT.search(text))):
+            prompt = (self.persona + '\nThe caller may say your name at either end of the request. '
+                      'Give a brief spoken reply. Keep factual claims grounded. '
+                      'You cannot operate other apps. Never say that you sent a message or took an external action.')
+            if history:
+                prompt += '\nRecent conversation, for context: ' + json.dumps(list(history)[-4:])
+            try:
+                native = voicechat.respond(self.turn_audio, prompt, self.hush)
+            except (OSError, ValueError, RuntimeError, ImportError):
+                native = None
+            if self.hush.is_set():
+                return ''
+            if native:
+                speech, self.native_audio = native
+                hub.note('voicechat', None)
+                self.delivery = 'warm'
+                history.extend([{'role': 'user', 'content': text}, {'role': 'assistant', 'content': speech}])
+                return speech
+            hub.note('voicechat', 'Nemotron could not finish this turn. The local agent took over.')
         if can_select_show:
             system += ("\nThe speaker has invited you to perform and the Pi is ready. Pick show dance"
                        " (short robot dance), disco (full disco), or opera (an original sung aria)."
