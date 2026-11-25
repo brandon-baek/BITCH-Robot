@@ -1,74 +1,85 @@
-"""Start BITCH on the Mac:  ~/dc-venv/bin/python -m core   (the BITCH app in Applications does this for you)
+"""Run the desk companion on the Mac."""
+import argparse
+import socket
+import threading
+import time
+import urllib.request
+import webbrowser
 
-Options:
-  --app              open in its own window (what the BITCH app does)
-  --pi ADDRESS       where the robot is (default raspberrypi.local)
-  --camera N|FILE    which camera (1 = iPhone via Continuity Camera), or a test video file
-  --no-mic --no-camera --no-robot --no-browser
-"""
-import argparse, os, subprocess, sys, threading, time
-from . import config
+from . import config, llm, voice
 
 
 def main():
-    ap = argparse.ArgumentParser(description='BITCH, the desk robot')
-    ap.add_argument('--app', action='store_true', help='open in its own window')
-    ap.add_argument('--pi', default='raspberrypi.local')
-    ap.add_argument('--camera', default='0')
-    ap.add_argument('--no-mic', action='store_true'); ap.add_argument('--no-camera', action='store_true')
-    ap.add_argument('--no-robot', action='store_true'); ap.add_argument('--no-browser', action='store_true')
-    ap.add_argument('--no-life', action='store_true', help='no reminders, greetings or speaking up (for tests)')
-    ap.add_argument('--quiet', action='store_true', help="don't use the Mac's speaker (for tests)")
-    config.args = args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--app', action='store_true', help='open a Mac window')
+    parser.add_argument('--pi', help='set the Raspberry Pi hostname or IPv4 address')
+    parser.add_argument('--camera', default='0', help='Mac camera index or test video file')
+    parser.add_argument('--mic', type=int, help='Mac audio input index (see python -m sounddevice)')
+    for name in ('mic', 'camera', 'robot', 'browser'):
+        parser.add_argument(f'--no-{name}', action='store_true')
+    parser.add_argument('--quiet', action='store_true', help='skip the Mac speaker and voice warmup')
+    args = parser.parse_args()
 
-    from .hub import hub
-    from . import llm, memory, server, voice
+    from . import server
     from .brain import Brain
-    from .hearing import Hearing
-    from .sight import Sight
-    from .life import Life
+    from .devices.mac import MacCamera, MacMic, MacSpeaker, ask_permission
     from .devices.robot import Robot
-    from .devices.mac import MacSpeaker, MacMic, MacCamera, ask_permission
+    from .hearing import Hearing
+    from .hub import hub
+    from .sight import Sight
 
-    port = server.HTTP
-    print(f'\n  BITCH\n  on this Mac:  http://localhost:{port}\n  on your phone: http://' + __import__('core.tls', fromlist=['x']).host() + f':{port}\n', flush=True)
-    if not llm.available():
-        subprocess.run(['open', '-a', 'Ollama'], capture_output=True)
-        hub.note('starting Ollama (the brain)...', problem=False)
+    try:
+        with socket.socket() as port:
+            port.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            port.bind(('0.0.0.0', server.HTTP))
+    except OSError:
+        parser.exit(1, f'The setup port {server.HTTP} is in use. Open the existing setup screen or quit the other listener.\n')
 
-    hub.brain, hub.hearing, hub.sight, hub.life = Brain(), Hearing(), Sight(), Life()
-    devs = [] if args.quiet else [MacSpeaker()]
-    if not args.no_robot: devs.append(Robot(args.pi))
-    if not args.no_mic: devs.append(MacMic())
-    if not args.no_camera: devs.append(MacCamera(args.camera))
-    for d in devs:
-        d.off = set(memory.kv_get('off_' + d.id, []))
-        hub.add(d)
-
-    for ev, msg in (('tasks_changed', 'tasks'), ('memories_changed', 'memories'), ('skills_changed', 'skills'), ('lists_changed', 'tasks')):
-        hub.on(ev, lambda m=msg: hub.ui({'type': m}))
-    hub.hearing.start(); hub.sight.start(); hub.brain.start()
-    if not args.no_life: hub.life.start()
+    if args.pi:
+        if not server.valid_host(args.pi):
+            parser.error('--pi needs a hostname or IPv4 address')
+        config.update({'robot_host': args.pi})
+    hub.brain, hub.hearing, hub.sight = Brain(), Hearing(), Sight()
+    if not args.no_robot:
+        hub.add(Robot())
+    if not args.quiet:
+        hub.add(MacSpeaker())
+    if not args.no_mic:
+        if config.get('mic_source') == 'mac-mic':
+            ask_permission('mic')
+        hub.add(MacMic(args.mic))
+    if not args.no_camera:
+        if config.get('camera_source') == 'mac-camera':
+            ask_permission('camera')
+        hub.add(MacCamera(args.camera))
+    hub.status = 'Waiting for “BITCH”'
+    hub.brain.start()
+    hub.hearing.start()
+    hub.sight.start()
     server.start()
-    llm.warm(); voice.warm()
-    if args.no_mic: hub.set_status('listening')
+    llm.warm()
+    if not args.quiet:
+        voice.warm()
 
+    url = f'http://127.0.0.1:{server.HTTP}'
+    print(f'BITCH setup · {url}', flush=True)
     if args.app:
-        ask_permission('camera'); ask_permission('mic')       # macOS asks once: "BITCH would like to access..."
         try:
             from . import mac_app
-            import urllib.request
-            for _ in range(60):                         # open the window only once the app is being served
-                try: urllib.request.urlopen(f'http://127.0.0.1:{port}/api/hello', timeout=1); break
-                except Exception: time.sleep(0.25)
-            mac_app.run(f'http://127.0.0.1:{port}')     # closing the window only hides it; quit from the menu bar item
-            os._exit(0)
+
+            for _ in range(40):
+                try:
+                    with urllib.request.urlopen(url + '/api/hello', timeout=0.3):
+                        break
+                except OSError:
+                    time.sleep(0.2)
+            mac_app.run(url)
+            return
         except ImportError:
-            hub.note('the app window needs pywebview; opening the browser instead')
-    if not args.no_browser and not args.app:
-        threading.Timer(1.5, lambda: subprocess.run(['open', f'http://localhost:{port}'])).start()
+            hub.note('window', 'Open the setup screen in your browser.')
+    if not args.no_browser:
+        threading.Timer(1, webbrowser.open, args=(url,)).start()
     try:
-        while True: time.sleep(3600)
+        threading.Event().wait()
     except KeyboardInterrupt:
-        print('\n  bye!')
-        os._exit(0)
+        hub.brain.stop()

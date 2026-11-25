@@ -1,123 +1,89 @@
-"""The robot today: the Raspberry Pi running listen mode (brain.py), reached over Wi-Fi on port 8765.
+"""Fixed commands sent to the paired Pi."""
+import json
+import threading
+import time
+import urllib.error
+import urllib.request
 
-Its body moves and its speaker (the JBL) is BITCH's desk voice. The Pi does the lip-sync and the springy motion;
-this driver just tells it what to do. If the Pi has the newer brain.py it can also play invented moves
-(/move); with an older one, invented moves fall back to turning and nodding only.
-"""
-import json, threading, time, urllib.parse, urllib.request
 from .base import Device
+from .. import config
 
 
 class Robot(Device):
-    kind = 'robot'
-    priority = 10
+    def __init__(self):
+        super().__init__('robot', 'Raspberry Pi', ('body', 'voice'), 'Enter the connection key')
+        self.online = False
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.connection_error = ''
+        self.audio_monitor = False
+        self.expressive = False
+        self.performance = False
+        self.motion_enabled = False
+        self.joint_attention = False
 
-    def __init__(s, host='raspberrypi.local'):
-        super().__init__('robot', 'BITCH robot', caps=('body', 'voice'), place='desk')
-        s.base = f'http://{host}:8765'
-        s.host = host
-        s.online = False
-        s.can_move = False
-        s.busy = False
-        s._look = None; s._looked = None
-        s._fallback = None
-        s._ears_on = False
+    def start(self):
+        threading.Thread(target=self.watch, daemon=True).start()
 
-    # ----- connection -----
-    def _get(s, path, timeout=3, **q):
+    def request(self, path, data=None, content_type='application/json', timeout=2):
+        host, key = config.get('robot_host'), config.get('robot_key')
+        if not host or not key:
+            return None
+        request = urllib.request.Request(f'http://{host}:8765/{path}', data=data, headers={
+            'Authorization': 'Bearer ' + key, 'Content-Type': content_type,
+        })
         try:
-            r = json.loads(urllib.request.urlopen(s.base + path + ('?' + urllib.parse.urlencode(q) if q else ''), timeout=timeout).read())
-            s._alive(True, r); return r
-        except Exception:
-            s._alive(False); return None
+            with self.opener.open(request, timeout=timeout) as response:
+                return json.load(response)
+        except (OSError, ValueError) as error:
+            if path == 'ping':
+                if isinstance(error, urllib.error.HTTPError):
+                    self.connection_error = f'HTTP {error.code}'
+                else:
+                    self.connection_error = str(getattr(error, 'reason', error))
+            return None
 
-    def _post(s, path, data, ctype, timeout=15, **q):
-        try:
-            req = urllib.request.Request(s.base + path + ('?' + urllib.parse.urlencode(q) if q else ''), data=data, method='POST',
-                                         headers={'Content-Type': ctype})
-            r = json.loads(urllib.request.urlopen(req, timeout=timeout).read()); s._alive(True, r); return r
-        except Exception:
-            s._alive(False); return None
+    def post(self, path, item):
+        return self.request(path, json.dumps(item).encode())
 
-    def _alive(s, ok, r=None):
-        if r:
-            s.busy = bool(r.get('busy'))
-            hw = r.get('caps') or []
-            s.can_move = 'move' in hw
-            caps = {'body', 'voice'} | ({'face'} if 'face' in hw else set()) | ({'ears'} if 'ears' in hw else set())
-            if caps != s.caps:                        # new hardware on the robot shows up as a new sense or output
-                s.caps = caps
-                if 'ears' in caps and not s._ears_on: s._ears_on = True; threading.Thread(target=s._ears, daemon=True).start()
-                if s.hub: s.hub.devices_changed()
-        if ok != s.online:
-            s.online = ok
-            s.detail = (f'Connected at {s.host}' + ('' if s.can_move else ' (update the Pi for invented moves)')) if ok else \
-                       f'Not found at {s.host}. On the Pi run: python3 -c "from brain import *; listen()"'
-            if s.hub: s.hub.devices_changed()
-
-    def start(s):
-        s.detail = f'Looking for the robot at {s.host}...'
-        def ping():
-            while True:
-                s._get('/ping'); time.sleep(3)
-        def tell():                                   # where to look: newest wins, never blocks the camera
-            while True:
-                q = s._look
-                if q is not None and q != s._looked and s.online:
-                    s._looked = q
-                    try: urllib.request.urlopen(s.base + '/look?' + urllib.parse.urlencode(q), timeout=0.8).read()
-                    except Exception: pass
-                time.sleep(0.08)
-        threading.Thread(target=ping, daemon=True).start()
-        threading.Thread(target=tell, daemon=True).start()
-
-    def _ears(s):
-        """The robot has its own microphone: pull its sound from /mic and hear through it."""
-        import numpy as np
+    def watch(self):
         while True:
-            if not (s.online and s.active('ears')): time.sleep(2); continue
-            try:
-                r = urllib.request.urlopen(s.base + '/mic', timeout=10); left = b''
-                while s.online and s.active('ears'):
-                    b = r.read(2048)
-                    if not b: break
-                    b = left + b; n = len(b) // 2 * 2; left = b[n:]
-                    if s.hub and s.hub.hearing: s.hub.hearing.feed(s.id, np.frombuffer(b[:n], '<i2').astype(np.float32) / 32768)
-                r.close()
-            except Exception:
-                pass
-            time.sleep(3)
+            result = self.request('ping')
+            self.online = bool(result and result.get('protocol') == 1)
+            self.audio_monitor = bool(result and result.get('playback_monitor'))
+            self.expressive = bool(result and result.get('character'))
+            self.performance = bool(result and result.get('performance', 0) >= 2)
+            self.motion_enabled = bool(result and result.get('motion', True))
+            self.joint_attention = bool(result and result.get('joint_attention'))
+            if self.online and result.get('audio'):
+                self.caps.add('voice')
+            else:
+                self.caps.discard('voice')
+            self.detail = ('Connected' if self.active('voice') else 'Connected · speaker unavailable') if self.online else (
+                'Pi unreachable, old software, or key rejected' if config.get('robot_key') else 'Enter the connection key')
+            if result and result.get('audio_route'):
+                self.detail += ' · ' + result['audio_route']
+            if not self.online and self.connection_error:
+                self.detail += f' ({self.connection_error})'
+            if self.online and not result.get('motion', True):
+                self.detail += ' · motion off on Pi'
+            time.sleep(2)
 
-    # ----- outputs -----
-    def speak(s, wav, seconds, text='', emotion='neutral', move='none'):
-        s._post('/speak', wav, 'audio/wav', emotion=emotion, action=move or 'none', text=text)
+    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0.):
+        return self.post('look', {'mode': mode, 'base': base, 'neck': neck, 'energy': energy, 'accent': accent})
 
-    def hush(s):
-        s._get('/stop', timeout=1.5)
+    def speak(self, wav):
+        return bool(self.request('speak', wav, 'audio/wav', timeout=4))
 
-    def gesture(s, emotion='neutral', move='none'):
-        threading.Thread(target=s._get, args=('/emote',), kwargs=dict(emotion=emotion, action=move or 'none'), daemon=True).start()
+    def playing(self):
+        if self.audio_monitor:
+            result = self.request('playback', timeout=.45)
+            if result is not None:
+                return result.get('playing')
+        return None
 
-    def show(s, name):
-        emo = {'dance': 'excited', 'sing': 'happy', 'sleep': 'sleepy', 'wake': 'happy'}.get(name, 'happy')
-        s._get('/emote', emotion=emo, action=name)
+    def hush(self):
+        self.post('stop', {})
 
-    def look(s, b=None, n=None, eye=False, seen=True):
-        if not seen: s._look = {'seen': 0}; return
-        q = {'seen': 1, 'greet': 0, 'eye': int(bool(eye))}
-        if b is not None: q['b'] = f'{b:.2f}'
-        if n is not None: q['n'] = f'{n:.2f}'
-        s._look = q
-
-    def perform(s, steps, name=''):
-        if s.can_move and s._post('/move', json.dumps({'name': name, 'steps': steps}).encode(), 'application/json'):
-            return
-        # older Pi: act it out with what /look and /emote can do (turning and nodding, plus chirps)
-        def act():
-            from ..moves import timeline
-            for t, pose, sound in timeline(steps, fps=10):
-                if sound: s._get('/emote', emotion={'happy': 'happy', 'excited': 'excited', 'sad': 'sad'}.get(sound, 'curious'), action='none')
-                s._look = {'seen': 1, 'greet': 0, 'b': f"{pose['base']:.2f}", 'n': f"{pose['neck']:.2f}"}
-                time.sleep(0.1)
-            s._look = {'seen': 0}
-        threading.Thread(target=act, daemon=True).start()
+    def macro(self, request_id, name, prompt):
+        item = {'id': request_id, 'name': name, 'prompt': prompt}
+        return bool(self.post('macro', item) or self.post('macro', item))

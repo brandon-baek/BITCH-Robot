@@ -1,164 +1,462 @@
-"""Tests that run on the Mac with no robot, no camera and no real AI models.
+"""Checks for wake gating, alignment, pairing and the Pi protocol."""
+import io
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+import urllib.error
+import urllib.request
+import wave
 
-  ~/dc-venv/bin/python -m unittest testing.test_bitch -v
+import numpy as np
 
-The end-to-end test starts a fake Ollama, the Pi's brain.py with a fake servo board, and BITCH itself in a
-scratch folder, then chats with it like a phone would.
-"""
-import datetime as dt, json, os, socket, subprocess, sys, tempfile, time, unittest, urllib.request
+SCRATCH = tempfile.TemporaryDirectory(prefix='bitch-test-')
+os.environ['BITCH_HOME'] = SCRATCH.name
+os.environ['BITCH_PI_HOME'] = SCRATCH.name
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRATCH = tempfile.mkdtemp(prefix='bitch-test-')
-os.environ['BITCH_HOME'] = os.path.join(SCRATCH, 'home')
-os.environ.setdefault('OLLAMA_URL', 'http://127.0.0.1:1')          # unit tests never reach a model
-sys.path.insert(0, ROOT)
-
-
-class Times(unittest.TestCase):
-    def test_when(self):
-        from core import timeparse as T
-        now = dt.datetime(2026, 11, 23, 17, 30)          # a Monday
-        cases = {'in 10 minutes': '2026-11-23 17:40', 'at 7': '2026-11-23 19:00', 'at 9': '2026-11-23 21:00', 'tomorrow at 9': '2026-11-24 09:00',
-                 'tomorrow at 3': '2026-11-24 15:00', 'friday at 10am': '2026-11-27 10:00', 'in half an hour': '2026-11-23 18:00', 'tonight': '2026-11-23 20:00'}
-        for words, want in cases.items():
-            self.assertEqual(T.when(words, now).strftime('%Y-%m-%d %H:%M'), want, words)
-        self.assertIsNone(T.when('banana', now))
-
-    def test_repeat(self):
-        from core import timeparse as T
-        r = T.repeat('every weekday at 7:30'); self.assertEqual(r['days'], [0, 1, 2, 3, 4]); self.assertEqual(r['at'], '07:30')
-        self.assertEqual(T.next_due(r, dt.datetime(2026, 11, 28, 12, 0)).strftime('%a %H:%M'), 'Mon 07:30')
-        self.assertEqual(T.repeat('every 2 hours')['secs'], 7200)
-
-
-class Moves(unittest.TestCase):
-    def test_clean_keeps_the_servos_safe(self):
-        from core import moves
-        st = moves.clean([{'do': 'pose', 'base': 5, 'arm': 0.9, 'secs': 99}, {'do': 'wiggle', 'joints': ['head', 'tail'], 'size': 3, 'hz': 50},
-                          {'do': 'sound', 'sound': 'not a sound'}, {'do': 'explode'}, 'junk'])
-        self.assertEqual(st[0]['base'], 0.9); self.assertEqual(st[0]['arm'], -0.15); self.assertEqual(st[0]['secs'], 4.0)
-        self.assertEqual(st[1]['joints'], ['head']); self.assertEqual(st[1]['size'], 0.5); self.assertEqual(st[1]['hz'], 6)
-        self.assertEqual(len(st), 2)
-
-    def test_frames(self):
-        from core import moves
-        st = moves.from_frames([{'base': 0.3, 'arm': -0.5, 'neck': -0.4, 'head': 0.2, 'secs': 1, 'speed': 'snappy', 'wiggle': 'head', 'sound': 'tada'}])
-        self.assertEqual([s['do'] for s in st], ['sound', 'pose', 'wiggle'])
-
-    def test_find(self):
-        from core import moves
-        self.assertEqual(moves.find('dance')[0], 'show'); self.assertEqual(moves.find('the wave')[1], 'wave')
-        self.assertIsNone(moves.find('a robot sneeze'))
+import brain as pi
+from core import config, gaze, voice
+from core.brain import Brain
+from core.devices.base import Device
+from core.hub import hub
+from core.sight import Attention, HeadGesture, Sight, aim_at
+from core.hearing import Hearing
+from core.people import People
+import macros
 
 
-class Tools(unittest.TestCase):
-    def test_calculate(self):
-        from core import tools
-        self.assertEqual(tools.run('calculate', {'expression': '17*23'}, {})[1], '17*23 = 391')
-        self.assertFalse(tools.run('calculate', {'expression': '__import__("os")'}, {})[0])
+class WakeTests(unittest.TestCase):
+    def test_only_addressed_speech_enters_the_queue(self):
+        brain = Brain()
+        for sentence in ['Playing in the kitchen', 'Ask ChatGPT to read my calendar', 'Call her a bitch', 'The bit chart']:
+            self.assertFalse(brain.submit(sentence, 'desk'), sentence)
+        self.assertTrue(brain.submit('Hey, BITCH! What time is it?', 'desk'))
+        self.assertEqual(brain.requests.get_nowait(), ('What time is it?', 'desk'))
+        self.assertFalse(brain.submit('Hey BITCH, hi', 'desk'))
 
-    def test_guard_blocks_timers_nobody_asked_for(self):
-        from core import tools
-        self.assertEqual(tools.run('set_timer', {'minutes': 5}, {'text': "I'm so tired", 'mode': 'typed'}), (False, None))
+    def test_one_followup_from_the_same_microphone(self):
+        brain = Brain()
+        brain.followup = ('desk', time.monotonic() + 7)
+        self.assertFalse(brain.submit('Can you hear me?', 'phone'))
+        self.assertTrue(brain.submit('Can you hear me?', 'desk'))
+        self.assertIsNone(brain.followup)
+        other = Brain()
+        other.followup = ('desk', time.monotonic() - 1)
+        self.assertFalse(other.submit('Can you hear me?', 'desk'))
 
-    def test_lists(self):
-        from core import tools
-        tools.run('list', {'action': 'add', 'list': 'shopping list', 'items': 'eggs and milk'}, {'mode': 'typed'})
-        self.assertIn('eggs, milk', tools.run('list', {'action': 'read', 'list': 'shopping'}, {})[1])
+    def test_each_turn_renews_the_conversation_on_the_same_mic(self):
+        brain = Brain()
+        with patch.object(hub, 'accepts', return_value=True), patch.object(brain, 'reply', return_value='Okay.'), patch.object(voice, 'say'):
+            brain.start()
+            for index, text in enumerate(['Hey BITCH, first', 'second turn', 'third turn', 'stop listening']):
+                self.assertTrue(brain.submit(text, 'desk'))
+                deadline = time.monotonic() + 2
+                while brain.busy.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertFalse(brain.busy.is_set())
+                self.assertEqual(brain.followup_seconds() > 0, index < 3)
+            self.assertFalse(brain.submit('outside the window', 'desk'))
+
+    def test_brain_can_only_queue_an_explicit_agent_request(self):
+        brain = Brain()
+        saved = []
+        robot = SimpleNamespace(macro=lambda *args: saved.append(args) or True)
+        with patch.object(hub, 'get', return_value=robot), patch('core.brain.llm.chat', return_value='*waves* Got it.') as model:
+            self.assertEqual(brain.reply('Could an agent help?', 'desk'), 'Got it.')
+            self.assertEqual(saved, [])
+            self.assertIn('Queued', brain.reply('Could you ask Chat GPT to draft a summary.', 'desk'))
+            self.assertEqual(saved[0][1:], ('agent', 'draft a summary.'))
+            model.assert_called_once()
+
+    def test_volume_attenuates_speech_and_cues(self):
+        samples = np.ones(240, dtype=np.float32) * 0.5
+        with patch.object(config, 'get', return_value=100):
+            loud, _ = voice.encode(samples)
+        with patch.object(config, 'get', return_value=40):
+            quiet, _ = voice.encode(samples)
+        with wave.open(io.BytesIO(loud), 'rb') as a, wave.open(io.BytesIO(quiet), 'rb') as b:
+            peak = lambda stream: np.frombuffer(stream.readframes(stream.getnframes()), '<i2').max()
+            full, reduced = peak(a), peak(b)
+            self.assertGreater(reduced, 0)
+            self.assertLess(reduced, full / 2)
+
+    def test_model_closure_does_not_rearm_the_mic_or_play_a_listening_cue(self):
+        brain = Brain()
+        with (patch.object(hub, 'accepts', return_value=True), patch.object(voice, 'say') as say,
+              patch('core.brain.llm.chat', return_value='{"say":"Take care.","turn":"end","delivery":"warm"}')):
+            brain.start()
+            self.assertTrue(brain.submit("Hey BITCH, that answers it. Appreciate it.", 'desk'))
+            deadline = time.monotonic() + 2
+            while brain.busy.is_set() and time.monotonic() < deadline:
+                time.sleep(.005)
+            self.assertFalse(brain.busy.is_set())
+            say.assert_called_once_with('Take care.', brain.hush, ready_cue=False, delivery='warm')
+            self.assertEqual(brain.followup_seconds(), 0)
+            self.assertFalse(brain.addressed("Let's go to the store", 'desk', time.monotonic()))
+            self.assertFalse(brain.history)
+
+    def test_new_question_overrides_model_closure(self):
+        brain = Brain()
+        with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):
+            self.assertEqual(brain.reply('Thanks. One more thing, does that work on the Mac?', 'desk'), 'Yes.')
+        self.assertFalse(brain.close_turn)
+
+    def test_first_turn_distinguishes_face_and_voice_evidence(self):
+        brain = Brain()
+        self.assertTrue(brain.submit('Hey BITCH, do you recognize my voice?', 'desk', face='Sample'))
+        self.assertEqual(brain.reply('Do you recognize my voice?', 'desk'),
+                         'I see you, Sample. Give me another sentence to check your voice.')
+        brain.busy.clear()
+        brain.requests.get_nowait()
+        brain.followup = ('desk', time.monotonic() + 3)
+        self.assertTrue(brain.submit('Can you recognize my voice now?', 'desk', name='Sample'))
+        self.assertEqual(brain.reply('Can you recognize my voice now?', 'desk'),
+                         'Yeah, I recognize your voice, Sample.')
+
+    def test_bluetooth_preroll_preserves_the_entire_audible_cue(self):
+        pcm = np.asarray([20, 10, -30, -40], dtype='<i2').tobytes()
+        with patch.object(config, 'get', return_value=50):
+            audio, duration = voice.preroll(pcm)
+        self.assertGreaterEqual(duration, 2.)
+        self.assertTrue(any(audio[:-len(pcm)]))
+        self.assertEqual(audio[-len(pcm):], pcm)
+
+    def test_syllable_track_leaves_spaces_and_gives_signed_nod(self):
+        signal = np.zeros(voice.SR, dtype='<i2')
+        signal[4800:7680] = (np.sin(np.arange(2880)*.08) * 6000).astype('<i2')
+        signal[14400:17280] = signal[4800:7680]
+        energy, nods = voice.motion_track(signal.tobytes())
+        self.assertEqual(energy[0], 0)
+        self.assertEqual(energy[-1], 0)
+        self.assertGreater(energy.max(), .7)
+        self.assertGreater(nods.max(), .5)
+        self.assertLess(nods.min(), -.7)
+
+    def test_voice_keeps_a_valid_mono_wav_and_intelligible_speed(self):
+        samples = np.sin(2 * np.pi * 440 * np.arange(24000) / 24000)
+        with patch.object(voice, 'synthesize', return_value=(samples, 24000)):
+            data, duration = voice.render('Hello.')
+        self.assertAlmostEqual(duration, 1 / 1.035, places=3)
+        with wave.open(io.BytesIO(data), 'rb') as audio:
+            self.assertEqual((audio.getnchannels(), audio.getframerate(), audio.getsampwidth()), (1, 24000, 2))
 
 
-class Brain(unittest.TestCase):
-    def test_names_and_greetings(self):
-        from core.brain import named, GREETING, Brain
-        self.assertTrue(named('hey bitch what time is it')); self.assertFalse(named('the bit chart'))
-        self.assertTrue(GREETING.match('Hey BITCH!')); self.assertFalse(GREETING.match('hey, set a timer'))
-        self.assertEqual(Brain().tidy('*waves* Hi! [happy] 🎉 there'), 'Hi! there')
+class AlignmentTests(unittest.TestCase):
+    def test_alignment_supports_camera_offset_yaw_pitch_and_legacy_profiles(self):
+        self.assertAlmostEqual(aim_at(0.5, 0.5, [[0.2, -0.35], [0.6, 0.0], [0.8, 0.43]])[0], -0.0875)
+        self.assertAlmostEqual(aim_at(0.6, 0.5, [[0.8, -0.35], [0.5, 0.0], [0.2, 0.43]])[0], -0.116667, places=5)
+        self.assertEqual(aim_at(0.5, 0.3, [[0.2, -0.3, 0.4, -0.7], [0.5, -0.09, 0.3, -0.65],
+                                           [0.75, 0.2, 0.35, -0.69]]), (-0.09, -0.65))
 
-    def test_overheard_talk_is_ignored(self):
-        from core.brain import Brain
-        b = Brain()
-        self.assertFalse(b.engaged('Ryan, do you want to see my companion app?'))
-        self.assertFalse(b.engaged('Now go join.'))
-        self.assertTrue(b.engaged('hey bitch, what time is it'))
-        self.assertTrue(b.engaged("yes it's me", {'name': 'Brandon'})); self.assertFalse(b.engaged("Actually, what's it called?", {'name': 'Brandon'}))
-        b.last_spoke = __import__('time').time(); self.assertTrue(b.engaged('yeah, tell me more'))
+    def test_alignment_requires_settled_aim_and_saves_tracking_with_points(self):
+        sight = Sight()
+        camera = Device('testcam', 'Camera', ('eyes',))
+        with patch.object(hub, 'selected', return_value=camera), patch.object(hub, 'get', return_value=SimpleNamespace(online=True)), patch.object(config, 'update') as save:
+            sight.calibration('start', 'desk')
+            with self.assertRaisesRegex(ValueError, 'still moving'):
+                sight.calibration('sample', 'desk', 0)
+            sight.target_source = camera.id
+            for x, base, pitch in [(0.25, -0.3, -0.62), (0.50, 0, -0.7), (0.75, 0.32, -0.82)]:
+                sight.calibration('aim', 'desk', base, pitch)
+                sight.setup['settled'] = True
+                now = time.monotonic()
+                sight.sample_window.clear()
+                sight.sample_window.extend((x, 0.4, now) for _ in range(4))
+                sight.calibration('sample', 'desk', base, pitch)
+                if base == -0.3:
+                    with self.assertRaisesRegex(ValueError, 'Move sideways'):
+                        sight.calibration('sample', 'desk', base, pitch)
+            result = sight.calibration('save', 'desk', track=True)
+            self.assertEqual(result[0], [0.25, -0.3, 0.4, -0.62])
+            self.assertTrue(save.call_args.args[0]['idle'])
 
-    def test_home_city_must_be_said(self):
-        from core import tools
-        self.assertEqual(tools.run('set_home', {'city': 'unknown'}, {'text': 'Bringo.', 'mode': 'ambient'})[1], 'Not set: ask the person which city they live in.')
-
-
-class Hardware(unittest.TestCase):
-    def test_face_draws_without_a_screen(self):
-        import face
-        f = face.Face()
-        self.assertFalse(f.ok)
-        for feel in ('happy', 'sad', 'sleepy'):
-            f.feel(feel); f.draw(1000.0)
-        self.assertTrue(any(f.c.buf))                                    # something was drawn
-        f.sleep(True); [f.draw(1000.0 + k * 0.05) for k in range(30)]
-        path = os.path.join(SCRATCH, 'face.png'); f.c.png(path)
-        self.assertTrue(open(path, 'rb').read().startswith(b'\x89PNG'))
-
-    def test_robot_driver_adopts_new_hardware(self):
-        from core.devices.robot import Robot
-        r = Robot('127.0.0.1'); r._ears = lambda: None
-        r._alive(True, {'caps': ['move', 'speak', 'face', 'ears']})
-        self.assertEqual(r.caps, {'body', 'voice', 'face', 'ears'}); self.assertTrue(r.can_move)
-        r._alive(True, {'caps': ['speak']})
-        self.assertEqual(r.caps, {'body', 'voice'}); self.assertFalse(r.can_move)
-
-
-def free(port):
-    with socket.socket() as s: return s.connect_ex(('127.0.0.1', port)) != 0
+    def test_attention_holds_through_brief_occlusion_and_does_not_chase_largest_box(self):
+        tracker = Attention()
+        left = (0.2, 0.3, 0.15, 0.24)
+        right = (0.65, 0.25, 0.21, 0.31)
+        self.assertIsNone(tracker.update([left], 0)[1])
+        self.assertEqual(tracker.update([left], 0.3)[1], 1)
+        self.assertEqual(tracker.update([right], 0.5)[1], 1)
+        self.assertEqual(tracker.update([left, right], 0.8)[1], 1)
+        for time_stamp in np.arange(1.0, 8.31, 0.2):
+            tracker.update([left, right], time_stamp)
+        self.assertEqual(tracker.update([left, right], 8.5)[1], 2)
 
 
-PORT = 8790                                                          # next to the real BITCH (8780), never on top of it
+class MotionTests(unittest.TestCase):
+    def test_attention_leads_with_the_neck_and_eases_into_a_turn(self):
+        desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0,
+                               S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
+        motion = pi.Motion(desk)
+        motion.started = True
+        bases, necks = [], []
+        for tick in range(100):
+            motion.step('watch', 0.23, -0.62, tick * 0.02, 0.02)
+            bases.append(desk.cur[0])
+            necks.append(desk.cur[2])
+        self.assertEqual(bases[4], 0)
+        self.assertGreater(necks[4], pi.REST[2])
+        velocity = np.diff([0, *bases]) / 0.02
+        self.assertLessEqual(max(velocity), 0.581)
+        self.assertLessEqual(max(abs(np.diff(velocity[:35]))), 0.032)
+        self.assertAlmostEqual(bases[45], 0.23, delta=0.03)
+        self.assertAlmostEqual(bases[-1], 0.23, delta=0.009)
+        motion.step('watch', 0.42, -0.62, 2, 0.02)
+        self.assertGreater(desk.cur[0], bases[-1])
 
 
-@unittest.skipUnless(free(PORT) and free(8765) and free(11500), 'a test BITCH, the robot or the fake brain is already running on this Mac')
-class EndToEnd(unittest.TestCase):
-    """Fake brain + fake robot + BITCH, then a pretend phone chats with it."""
+    def test_reply_accent_keeps_gaze_separate_and_moves_the_body(self):
+        def performance(voice_accent):
+            desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.,
+                                   S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
+            motion = pi.Motion(desk)
+            motion.started = True
+            for tick in range(90):
+                motion.step('speak-gentle', 0., -.67, tick * .02, .02, .65, voice_accent)
+            return desk.cur
 
-    @classmethod
-    def setUpClass(cls):
-        py = sys.executable; env = dict(os.environ, OLLAMA_URL='http://127.0.0.1:11500', HOME=os.path.join(SCRATCH, 'pi'), BITCH_PORT=str(PORT))
-        os.makedirs(env['HOME'], exist_ok=True)
-        cls.procs = [subprocess.Popen([py, 'testing/fake_ollama.py', '11500'], cwd=ROOT, stdout=subprocess.DEVNULL),
-                     subprocess.Popen([py, '-c', 'from brain import *; listen()'], cwd=ROOT, env=dict(env, PYTHONPATH='testing/fakes:.'),
-                                      stdout=open(os.path.join(SCRATCH, 'pi.log'), 'w'), stderr=subprocess.STDOUT),
-                     subprocess.Popen([py, '-m', 'core', '--quiet', '--no-mic', '--no-camera', '--no-browser', '--pi', '127.0.0.1'], cwd=ROOT,
-                                      env=dict(env, HOME=os.path.expanduser('~')), stdout=open(os.path.join(SCRATCH, 'core.log'), 'w'), stderr=subprocess.STDOUT)]
-        for _ in range(60):
-            try: urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/hello', timeout=1); break
-            except Exception: time.sleep(0.5)
-        time.sleep(4)
-
-    @classmethod
-    def tearDownClass(cls):
-        for p in cls.procs: p.terminate(); p.wait(5)      # only the test's own processes
-
-    def chat(self, *lines, wait=6):
-        out = subprocess.run([sys.executable, 'testing/phone.py', 'say', *lines, '--wait', str(wait), '--url', f'ws://127.0.0.1:{PORT}/link'], cwd=ROOT, capture_output=True, text=True, timeout=120)
-        return out.stdout
-
-    def test_conversation_tools_and_robot(self):
-        self.assertIn("You're home!", self.chat('hey bitch', wait=32))         # the one-time welcome after the upgrade (spoken by the robot)
-        log = self.chat('set a 1 minute timer', 'remember that my sister is Chloe', 'do a robot sneeze', wait=4)
-        self.assertIn('Timer started', log)
-        life = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/life').read())
-        self.assertTrue(any(t['kind'] == 'timer' for t in life['tasks']))
-        mem = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{PORT}/api/memories').read())
-        self.assertTrue(any('Chloe' in m['text'] for m in mem))
-        time.sleep(4)
-        self.assertIn('move: test', open(os.path.join(SCRATCH, 'pi.log')).read())       # the robot played the invented move
-
-    def test_pairing_is_required_off_the_mac(self):
-        ip = subprocess.run(['ipconfig', 'getifaddr', 'en0'], capture_output=True, text=True).stdout.strip()
-        if not ip: self.skipTest('no Wi-Fi address')
-        with self.assertRaises(urllib.error.HTTPError) as e: urllib.request.urlopen(f'http://{ip}:{PORT}/api/memories')
-        self.assertEqual(e.exception.code, 401)
+        raised = performance(.12)
+        dipped = performance(-.12)
+        self.assertGreater(raised[2] - dipped[2], .12)
+        self.assertGreater(abs(raised[3] - dipped[3]), .08)
+        self.assertGreater(abs(raised[1] - dipped[1]), .02)
+        self.assertLess(abs(raised[0] - dipped[0]), .002)
 
 
-if __name__ == '__main__':
-    unittest.main()
+class CharacterTests(unittest.TestCase):
+    def test_idle_gesture_moves_distinct_joints_and_returns_to_the_gaze(self):
+        desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0,
+                               S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
+        motion = pi.Motion(desk)
+        motion.started = True
+        motion.mode = 'watch'
+        motion.next_beat = 99.0
+        motion.idle_beat = (pi.BEATS['curious'], 0.0, 1)
+        poses = []
+        for index in range(165):
+            motion.step('watch', 0.0, -0.8, index * 0.02, 0.02)
+            poses.append(desk.cur[:])
+        self.assertLess(min(pose[1] for pose in poses), -0.807)
+        self.assertGreater(max(pose[1] for pose in poses), -0.783)
+        self.assertGreater(max(pose[3] for pose in poses), 0.06)
+        self.assertAlmostEqual(poses[-1][3], 0, delta=.008)
+
+    def test_an_idle_glance_does_not_cancel_itself(self):
+        desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0,
+                               S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
+        motion = pi.Motion(desk)
+        motion.started = True
+        motion.mode = 'watch'
+        motion.next_beat = 99.0
+        motion.idle_beat = (pi.BEATS['glance'], 0.0, 1)
+        motion.idle_anchor = (0.0, -0.8)
+        for index in range(61):
+            motion.step('watch', 0.0, -0.8, index * 0.02, 0.02)
+        self.assertGreater(desk.cur[0], 0.1)
+        self.assertIsNotNone(motion.idle_beat)
+        motion.step('watch', 0.30, -0.8, 1.23, 0.02)
+        self.assertIsNone(motion.idle_beat)
+
+    def test_profiles_match_confidently_and_allow_forgetting(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(config, 'HOME', Path(directory)):
+            profiles = People()
+            profiles.save({'First': {'voice': [[1.0, 0.0]]}, 'Second': {'voice': [[0.0, 1.0]]}})
+            self.assertEqual(profiles.match('voice', [.99, .01]), 'First')
+            self.assertIsNone(profiles.match('voice', [.71, .70]))
+            self.assertEqual(profiles.path.stat().st_mode & 0o777, 0o600)
+            profiles.remove('First')
+            self.assertIsNone(profiles.match('voice', [.99, .01]))
+
+
+class JointAttentionTests(unittest.TestCase):
+    def test_geometric_point_projects_beyond_the_hand(self):
+        from core.pointing import pointing_region
+        landmarks = [SimpleNamespace(x=0, y=0, visibility=0, presence=0) for _ in range(33)]
+        for index, x, y in ((11, .27, .47), (13, .36, .44), (15, .46, .42), (19, .50, .41)):
+            landmarks[index] = SimpleNamespace(x=x, y=y, visibility=.95, presence=.96)
+        target = pointing_region(landmarks, 4/3)
+        self.assertGreater(target[0], .61)
+        self.assertLess(target[1], .42)
+        landmarks[15].visibility = .2
+        self.assertIsNone(pointing_region(landmarks, 4/3))
+
+    def test_gestures_must_be_stable_near_the_addressed_speech(self):
+        from core.pointing import Pointing
+        pointer = Pointing()
+        for timestamp in (10.0, 10.13, 10.26, 10.39):
+            pointer.observe('wide', timestamp, (.71, .40, 1., 0.))
+        self.assertEqual(pointer.during('wide', (9.8, 10.5), 12.3), (.71, .40))
+        self.assertIsNone(pointer.during('other', (9.8, 10.5), 12.3))
+        self.assertIsNone(pointer.during('wide', (13., 13.8), 14.))
+        for timestamp in (10.60, 10.73, 10.86, 10.99):
+            pointer.observe('wide', timestamp, (.25, .40, -1., 0.))
+        self.assertIsNone(pointer.during('wide', (9.8, 11.0), 12.4))
+
+    def test_addressed_gaze_reports_uncertainty_and_keeps_camera_provenance(self):
+        brain = Brain()
+        fake = SimpleNamespace(
+            direction_scene=lambda: ('phone', 50., b'jpg', None, 1),
+            pointing=SimpleNamespace(ready=True, during=lambda *args: (.7, .4)),
+        )
+        fake.direct = Mock(return_value='accepted')
+        with patch.object(hub, 'sight', fake):
+            self.assertTrue(brain.submit('Hey BITCH, look there.', 'mic', 48., speech_end=49.))
+            self.assertEqual(brain.reply('Look there.', 'mic'), 'Right there?')
+            fake.direct.assert_called_once_with('phone', 50., (.7, .4), 'point')
+            with patch.object(gaze, 'locate', return_value=('several', None)):
+                self.assertIn('Which one?', brain.reply('Look at the mug.', 'mic'))
+            fake.direct.assert_called_once()
+        self.assertEqual(gaze.request('Could you look towards the blue mug?'), ('object', 'the blue mug'))
+        self.assertIsNone(gaze.request('What’s that?'))
+
+    def test_object_coordinates_must_be_plausible(self):
+        with patch.object(gaze.llm, 'chat', return_value='{"status":"one","box":[650,300,810,560]}'):
+            self.assertEqual(gaze.locate(b'jpg', 'blue cup'), ('one', (.73, .43)))
+        with patch.object(gaze.llm, 'chat', return_value='{"status":"one","box":[0,0,1000,1000]}'):
+            self.assertEqual(gaze.locate(b'jpg', 'blue cup'), ('missing', None))
+
+
+class InteractionTests(unittest.TestCase):
+    def test_head_mirror_needs_sustained_tilt_and_rearms_on_neutral(self):
+        gesture = HeadGesture()
+        tilted = [0, 0, 0, 0, 8, 10, 30, 18]
+        neutral = [0, 0, 0, 0, 8, 10, 30, 10]
+        for now in (1, 1.1, 1.3):
+            gesture.observe(3, tilted, now, True)
+        self.assertIsNone(gesture.mode)
+        gesture.observe(3, tilted, 1.5, True)
+        self.assertEqual(gesture.mode, 'mirror-left')
+        until = gesture.until
+        gesture.observe(3, tilted, 15, True)
+        self.assertEqual(until, gesture.until)
+        gesture.observe(3, neutral, 15.2, True)
+        gesture.observe(3, tilted, 16, False)
+        gesture.observe(3, tilted, 16.5, False)
+        self.assertEqual(gesture.mode, 'mirror-right')
+        gesture.observe(4, None, 17)
+        self.assertIsNone(gesture.mode)
+
+    def test_mic_gate_and_turn_phase_through_mid_sentence_expiry(self):
+        brain, hearing = Brain(), Hearing()
+        hearing.whisper_ready = hearing.detector_ready = True
+        now = time.monotonic()
+        with patch.object(hub, 'brain', brain), patch.object(hub, 'accepts', return_value=True):
+            brain.busy.set()
+            hearing.feed('desk', np.zeros(512))
+            self.assertTrue(hearing.audio.empty())
+            brain.busy.clear()
+            brain.followup = ('desk', now-.1)
+            hearing.capture = ('desk', brain.revision, now-1., now)
+            self.assertEqual(hearing.phase(), 'Listening')
+            hearing.capture = ('desk', brain.revision, now, now)
+            self.assertEqual(hearing.phase(), 'Checking for name')
+            brain.revision += 1
+            self.assertIsNone(hearing.phase())
+
+    def test_visual_questions_refresh_image_without_storing_frames(self):
+        brain = Brain()
+        with patch.object(hub, 'sight') as sight, patch('core.brain.llm.chat', return_value='A mug.') as chat:
+            sight.current_scene.side_effect = [(b'one', 1), (b'two', 1), (None, None)]
+            brain.reply('What am I holding?', 'desk')
+            first = chat.call_args.args[0][-1]['images']
+            brain.reply('And now?', 'desk')
+            self.assertNotEqual(first, chat.call_args.args[0][-1]['images'])
+            self.assertIn('camera', brain.reply('What do you see?', 'desk'))
+            self.assertEqual(chat.call_count, 2)
+            self.assertFalse(any('images' in item for turns in brain.history.values() for item in turns))
+
+
+class ConnectionTests(unittest.TestCase):
+    def test_pairs_over_https_and_rejects_unnamed_clients(self):
+        from fastapi.testclient import TestClient
+        from core.server import app
+
+        with patch.object(hub, 'brain', Brain()), patch.object(hub, 'hearing', SimpleNamespace(ready=False)):
+            with TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)) as local:
+                code = local.get('/api/pair-code').json()['code']
+                self.assertEqual(local.post('/api/settings', json={'idle': False},
+                                            headers={'Origin': 'https://elsewhere.invalid'}).status_code, 403)
+            with TestClient(app, base_url='https://host.local:8781', client=('192.168.1.22', 50000)) as phone:
+                self.assertEqual(phone.get('/api/state').status_code, 401)
+                self.assertEqual(phone.post('/api/pair', json={'code': code}).status_code, 200)
+                state = phone.get('/api/state')
+                self.assertEqual(state.status_code, 200)
+                self.assertNotIn('robot_key', state.json()['settings'])
+                with phone.websocket_connect('wss://host.local:8781/link/' + 'a' * 32) as link:
+                    link.send_text('ears,eyes')
+                    self.assertTrue(link.receive_json()['device'].startswith('web-'))
+                self.assertEqual(phone.post('/api/settings', json={'robot_key': 'someone'}).status_code, 400)
+
+
+class PiProtocolTests(unittest.TestCase):
+    def test_paired_protocol_motion_idle_and_local_inbox(self):
+        with tempfile.TemporaryDirectory() as folder, socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+            reservation.close()
+            root = Path(__file__).resolve().parent.parent
+            states = Path(folder) / 'servo.log'
+            home = Path(folder) / 'pi'
+            env = dict(os.environ, HOME=folder, BITCH_PI_HOME=str(home), FAKE_SERVO_LOG=str(states),
+                       PYTHONPATH=str(root / 'testing' / 'fakes'))
+            process = subprocess.Popen([sys.executable, '-c', f'import brain; brain.PORT={port}; brain.listen()'],
+                                       cwd=root, env=env, stdout=subprocess.DEVNULL)
+            def cleanup():
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+
+            self.addCleanup(cleanup)
+            for _ in range(40):
+                try:
+                    with socket.create_connection(('127.0.0.1', port), 0.1):
+                        break
+                except OSError:
+                    time.sleep(0.1)
+            key = (home / 'robot.key').read_text()
+            self.assertRegex(key, re.compile(r'^[a-zA-Z0-9_-]+$'))
+
+            def request(path, data=None, paired=True):
+                headers = {'Authorization': f'Bearer {key}'} if paired else {}
+                req = urllib.request.Request(f'http://127.0.0.1:{port}' + path,
+                                             data=json.dumps(data).encode() if data is not None else None, headers=headers)
+                try:
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        return response.status, json.load(response)
+                except urllib.error.HTTPError as error:
+                    return error.code, json.load(error)
+
+            self.assertEqual(request('/ping', paired=False)[0], 401)
+            self.assertEqual(request('/ping')[1]['protocol'], 1)
+            self.assertEqual(request('/ping')[1]['performance'], 2)
+            self.assertTrue(request('/ping')[1]['joint_attention'])
+            self.assertEqual(request('/look', {'mode': 'speak-upbeat', 'accent': 2})[0], 400)
+            self.assertEqual(request('/hear?text=dance')[0], 404)
+            self.assertFalse(states.exists())
+            self.assertEqual(request('/look', {'mode': 'watch', 'base': float('nan')})[0], 400)
+            self.assertEqual(request('/look', {'mode': 'look-target', 'base': 9})[0], 200)
+            time.sleep(2.7)
+            self.assertAlmostEqual(request('/look', {'mode': 'park'})[1]['base'], 0.55, delta=0.02)
+            self.assertTrue(states.exists())
+            record = {'name': 'agent', 'id': 'b' * 32, 'prompt': 'Read the calendar.'}
+            self.assertEqual(request('/macro', record)[0], 200)
+            self.assertEqual(request('/macro', record)[0], 200)
+            self.assertEqual(request('/macro', {**record, 'prompt': 'Different'})[0], 400)
+            jobs = list((home / 'macros').glob('*.json'))
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(json.loads(jobs[0].read_text())['prompt'], record['prompt'])
+            cleanup()
+
+    def test_rejects_arbitrary_macro_names_and_paths(self):
+        with self.assertRaises(ValueError):
+            macros.enqueue({'id': 'a' * 32, 'name': 'shell', 'prompt': 'anything'})
+        with self.assertRaises(ValueError):
+            macros.job_path('../../settings')

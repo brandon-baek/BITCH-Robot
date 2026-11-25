@@ -1,9 +1,9 @@
 """BITCH's own window on the Mac, and its menu bar item.
 
-Closing the window only hides it: BITCH keeps living (your phone, reminders and greetings keep working).
+Closing the window hides it while the desk companion keeps listening.
 The BITCH item in the menu bar opens the window again or quits BITCH for real.
 """
-import os, threading
+import os
 from . import config
 
 _keep = []          # Objective-C objects that must stay alive
@@ -12,7 +12,7 @@ _keep = []          # Objective-C objects that must stay alive
 def run(url, on_quit=None):
     """Open the window and the menu bar item, then run the Mac's event loop (blocks)."""
     import webview
-    win = webview.create_window('BITCH', url, width=1320, height=900, min_size=(380, 600), background_color='#DFE4E8')
+    win = webview.create_window('BITCH', url, width=1000, height=760, min_size=(360, 520), background_color='#151717')
 
     def closing():
         try:
@@ -41,11 +41,14 @@ def menubar(win, on_quit=None):
 
         def muteBitch_(self, sender):
             from .hub import hub
-            config.set('muted', not config.get('muted')); hub.interrupt(); hub.ui({'type': 'settings', 'settings': config.all()})
+            muted = not config.get('muted')
+            config.update({'muted': muted})
+            if muted:
+                hub.brain.stop()
 
         def camBitch_(self, sender):
-            from .hub import hub
-            config.set('camera_on', not config.get('camera_on')); hub.ui({'type': 'settings', 'settings': config.all()})
+            source = 'mac-camera' if config.get('camera_source') == 'off' else 'off'
+            config.update({'camera_source': source})
 
         def quitBitch_(self, sender):
             if on_quit: on_quit()

@@ -1,6 +1,6 @@
 """A home-made certificate so your phone can use BITCH securely (https) on your Wi-Fi.
 
-Phones only allow the microphone, camera and notifications on secure pages. BITCH makes its own little
+Phones allow the microphone and camera on secure pages. BITCH makes its own little
 certificate authority ("BITCH Home") once; you install it on your phone one time (the app shows how), and from
 then on https://<your Mac>.local:8781 is trusted. Everything stays on your own network.
 """

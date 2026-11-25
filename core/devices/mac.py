@@ -1,153 +1,130 @@
-"""The Mac's own senses and speaker: its microphone (ears), its camera (eyes) and its speaker (a backup voice).
+"""The Mac's audio/video devices, including locally attached USB devices."""
+import os
+import subprocess
+import tempfile
+import threading
+import time
 
-macOS asks once for camera and microphone access. Until you click Allow, these keep retrying quietly,
-so BITCH starts seeing and hearing the moment you allow it.
-"""
-import os, subprocess, tempfile, threading, time
 from .base import Device
 from .. import config
 
-os.environ.setdefault('OPENCV_AVFOUNDATION_SKIP_AUTH', '1')   # we ask for permission ourselves (see ask_permission)
-
-
-def permission(kind):
-    """'yes', 'no', 'ask' (not decided yet) or 'unknown' for 'camera' / 'mic'."""
-    try:
-        import AVFoundation as AV
-        st = AV.AVCaptureDevice.authorizationStatusForMediaType_(AV.AVMediaTypeVideo if kind == 'camera' else AV.AVMediaTypeAudio)
-        return {0: 'ask', 1: 'no', 2: 'no', 3: 'yes'}.get(int(st), 'unknown')
-    except Exception:
-        return 'unknown'
-
 
 def ask_permission(kind):
-    """Show macOS's 'BITCH would like to access the camera/microphone' prompt (once)."""
     try:
-        import AVFoundation as AV
-        if permission(kind) == 'ask':
-            AV.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
-                AV.AVMediaTypeVideo if kind == 'camera' else AV.AVMediaTypeAudio, lambda ok: None)
-    except Exception:
+        import AVFoundation as av
+
+        media = av.AVMediaTypeVideo if kind == 'camera' else av.AVMediaTypeAudio
+        if av.AVCaptureDevice.authorizationStatusForMediaType_(media) == 0:
+            av.AVCaptureDevice.requestAccessForMediaType_completionHandler_(media, lambda _: None)
+    except ImportError:
         pass
 
 
 class MacSpeaker(Device):
-    kind = 'mac'
-    priority = 1      # the robot's speaker wins when the robot is on
+    def __init__(self):
+        super().__init__('mac-speaker', 'Mac speaker', ('voice',))
+        self.lock = threading.Lock()
+        self.player = None
 
-    def __init__(s):
-        super().__init__('mac-speaker', "Mac's speaker", caps=('voice',), place='desk')
-        s.p = None; s.detail = 'Used when the robot is off'
+    def speak(self, wav):
+        with self.lock:
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as file:
+                    path = file.name
+                    file.write(wav)
+                if self.player and self.player.poll() is None:
+                    self.player.terminate()
+                self.player = player = subprocess.Popen(['afplay', path])
+            except OSError as error:
+                if 'path' in locals():
+                    os.unlink(path)
+                self.hub.note('speaker', f'Mac playback failed: {error}')
+                return False
+        def cleanup():
+            player.wait()
+            os.unlink(path)
+        threading.Thread(target=cleanup, daemon=True).start()
+        return True
 
-    def speak(s, wav, seconds, text='', emotion='neutral', move='none'):
-        s.hush()
-        f = tempfile.NamedTemporaryFile(suffix='.wav', delete=False); f.write(wav); f.close()
-        s.p = subprocess.Popen(['afplay', f.name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        threading.Timer(seconds + 5, lambda: os.path.exists(f.name) and os.remove(f.name)).start()
+    def playing(self):
+        with self.lock:
+            return bool(self.player and self.player.poll() is None)
 
-    def hush(s):
-        if s.p and s.p.poll() is None:
-            try: s.p.terminate()
-            except Exception: pass
+    def hush(self):
+        with self.lock:
+            if self.player and self.player.poll() is None:
+                self.player.terminate()
 
 
 class MacMic(Device):
-    kind = 'mac'
+    def __init__(self, source=None):
+        super().__init__('mac-mic', 'Mac microphone', ('ears',), 'Waiting for input')
+        self.source = source
 
-    def __init__(s):
-        super().__init__('mac-mic', "Mac's microphone", caps=('ears',), place='desk')
+    def start(self):
+        threading.Thread(target=self.capture, daemon=True).start()
 
-    def start(s):
-        threading.Thread(target=s._run, daemon=True).start()
+    def capture(self):
+        import numpy as np
+        import sounddevice as sd
 
-    def _run(s):
-        import numpy as np, sounddevice as sd
+        def receive(data, frames, t, status):
+            samples = data[:, 0]
+            if rate != 16000:
+                samples = np.interp(points[:round(frames * 16000 / rate)], np.arange(frames), samples)
+            self.hub.hearing.feed(self.id, samples.astype(np.float32, copy=True))
+
         while True:
-            if permission('mic') == 'no':
-                s.detail = 'Not allowed: System Settings > Privacy & Security > Microphone > BITCH'; s._changed(); time.sleep(10); continue
+            if not self.hub.accepts(self.id, 'ears'):
+                self.detail = 'Standby'
+                time.sleep(0.4)
+                continue
             try:
-                quiet = [0]
-                def cb(data, frames, t, status):
-                    x = data[:, 0].copy()
-                    quiet[0] = quiet[0] + 1 if not x.any() else 0
-                    if s.active('ears') and s.hub and s.hub.hearing: s.hub.hearing.feed(s.id, x)
-                with sd.InputStream(samplerate=16000, channels=1, blocksize=512, dtype='float32', callback=cb):
-                    s.detail = 'Listening'; s._changed()
-                    while quiet[0] < 16000 // 512 * 20:          # 20 s of perfect silence usually means no permission yet
-                        time.sleep(0.5)
-                s.detail = 'Waiting for microphone permission'; s._changed()
-            except Exception as e:
-                s.detail = f'Microphone unavailable ({e})'; s._changed()
-            time.sleep(5)
-
-    def _changed(s):
-        if s.hub: s.hub.devices_changed()
+                rate = sd.query_devices(self.source, 'input')['default_samplerate']
+                block = round(rate / 50)
+                points = np.arange(round(block * 16000 / rate)) * rate / 16000
+                with sd.InputStream(device=self.source, samplerate=rate, channels=1, blocksize=block, callback=receive):
+                    self.detail = 'Open · ' + f'{rate / 1000:g} kHz'
+                    while self.hub.accepts(self.id, 'ears'):
+                        time.sleep(0.3)
+            except Exception as error:
+                self.detail = f'Microphone unavailable: {error}'
+                time.sleep(2)
 
 
 class MacCamera(Device):
-    kind = 'mac'
+    def __init__(self, source):
+        super().__init__('mac-camera', 'Mac camera', ('eyes',), 'Waiting for input')
+        self.source = source
 
-    def __init__(s, source='0'):
-        super().__init__('mac-camera', "Mac's camera", caps=('eyes',), place='desk')
-        s.source = source
-        s.latest = None            # newest frame (for snapshots)
+    def start(self):
+        threading.Thread(target=self.capture, daemon=True).start()
 
-    def start(s):
-        threading.Thread(target=s._run, daemon=True).start()
-
-    def snapshot(s, timeout=4.0):
+    def capture(self):
         import cv2
-        if s.latest is None: return None
-        ok, jp = cv2.imencode('.jpg', s.latest, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        return jp.tobytes() if ok else None
 
-    def _run(s):
-        import cv2
-        video = not str(s.source).isdigit()
-        asked = 0
+        source = int(self.source) if self.source.isdigit() else self.source
         while True:
-            if not config.get('camera_on'):
-                s.detail = 'Camera paused'; s.latest = None; s._changed(); time.sleep(1); continue
-            p = 'yes' if video else permission('camera')
-            if p == 'no':
-                s.detail = 'Not allowed: System Settings > Privacy & Security > Camera > BITCH'; s._changed(); time.sleep(10); continue
-            if p == 'ask':                                   # opening it now would only give black frames
-                if time.time() - asked > 120: ask_permission('camera'); asked = time.time()
-                s.detail = 'Waiting for you to click Allow (camera) on the Mac'; s._changed(); time.sleep(2); continue
-            idx = int(s.source) if not video else None
-            cam = cv2.VideoCapture(s.source if video else idx)
-            if not cam.isOpened():
-                s.detail = 'Waiting for the camera (click Allow if the Mac asks)'; s._changed(); time.sleep(5); continue
-            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280); cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720); cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            fps = cam.get(cv2.CAP_PROP_FPS) or 30
-            got = [time.time(), 0]; stop = [False]
-
-            def read():                                    # reading can hang on some cameras, so it gets its own thread
-                bad = 0
-                while not stop[0]:
-                    ok, fr = cam.read()
+            if not self.hub.accepts(self.id, 'eyes'):
+                self.detail = 'Standby'
+                time.sleep(0.4)
+                continue
+            camera = cv2.VideoCapture(source)
+            try:
+                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                while self.hub.accepts(self.id, 'eyes'):
+                    ok, frame = camera.read()
                     if not ok:
-                        if video: cam.set(cv2.CAP_PROP_POS_FRAMES, 0); continue      # test videos loop
-                        bad += 1; time.sleep(0.05)
-                        if bad > 60: break
-                        continue
-                    if not config.get('camera_on'): break
-                    bad = 0; s.latest = fr; got[0] = time.time(); got[1] += 1
-                    if s.active('eyes') and s.hub and s.hub.sight: s.hub.sight.frame(s.id, fr)
-                    if video: time.sleep(1 / min(30, fps))
-                stop[0] = True
-            threading.Thread(target=read, daemon=True).start()
-            s.detail = f'Opening camera {idx}' if not video else f'Playing test video {os.path.basename(str(s.source))}'; s._changed()
-            while not stop[0]:
-                time.sleep(1)
-                if got[1] and s.detail.startswith('Opening'): s.detail = 'Watching'; s._changed()
-                if time.time() - got[0] > 6 and config.get('camera_on'):     # no picture: this isn't the right camera
-                    s.detail = f'No picture from camera {idx}; trying another'; s._changed(); break
-            stop[0] = True
-            try: cam.release()
-            except Exception: pass
-            if not video and not got[1]: s.source = str((idx + 1) % 3)      # try cameras 0, 1, 2 in turn
-            time.sleep(2)
-
-    def _changed(s):
-        if s.hub: s.hub.devices_changed()
+                        if isinstance(source, str) and camera.set(cv2.CAP_PROP_POS_FRAMES, 0):
+                            time.sleep(0.1)
+                            ok, frame = camera.read()
+                        if not ok:
+                            self.detail = 'No picture · check camera and permission'
+                            break
+                    self.detail = 'Sending picture'
+                    self.hub.sight.feed(self.id, frame)
+                    time.sleep(0.06)
+            finally:
+                camera.release()
+            time.sleep(1)

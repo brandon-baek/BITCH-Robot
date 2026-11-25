@@ -1,130 +1,268 @@
-"""BITCH's voice: turns text into sound and plays it on the right device.
+"""Natural speech with a small, deterministic metallic layer."""
+from contextlib import contextmanager
+import io
+import subprocess
+import time
+import tempfile
+import threading
+import wave
 
-Words come from Kokoro (natural, on-device) or the Mac's built-in voice, then get a small-creature pitch and a
-touch of robot grit. 'babble' is the creature language from sounds.py. Long replies start playing after the
-first sentence while the rest is still being made.
-"""
-import io, os, random, re, subprocess, sys, tempfile, threading, time, wave
-from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+
 from . import config
 from .hub import hub
 
-sys.path.insert(0, config.ROOT)
-import sounds   # noqa: E402  (the robot's creature voice, shared with the Pi)
+SR = 24000
+playback = None
+last_played = {}
+STEP = .04
+DELIVERY = {
+    'neutral': (1.0, .105, 0.),
+    'warm': (.9, .09, .018),
+    'gentle': (.66, .065, -.032),
+    'upbeat': (1.18, .13, .04),
+    'emphatic': (1.25, .145, .015),
+    'playful': (1.14, .12, .028),
+}
+pipeline = None
+pipeline_lock = threading.Lock()
 
-SR = 22050
-_kok = [None]; _klock = threading.Lock()
-_pool = ThreadPoolExecutor(1)
+
+def synthesize(text):
+    global pipeline
+    with pipeline_lock:
+        if pipeline is None:
+            try:
+                from kokoro import KPipeline
+                pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+            except Exception:
+                pipeline = False
+        if pipeline:
+            try:
+                parts = [np.asarray(audio, dtype=np.float32).reshape(-1)
+                         for _, _, audio in pipeline(text, voice=config.get('kokoro_voice'), speed=1.0)]
+                if parts:
+                    return np.concatenate(parts), SR
+            except Exception:
+                pipeline = False
+    with tempfile.TemporaryDirectory() as directory:
+        path = directory + '/reply.wav'
+        subprocess.run(['say', '-v', config.get('mac_voice'), '-r', '185', '-o', path,
+                        '--file-format=WAVE', '--data-format=LEI16@24000', '--', text],
+                       timeout=25, check=True, capture_output=True)
+        with wave.open(path, 'rb') as audio:
+            samples = np.frombuffer(audio.readframes(audio.getnframes()), '<i2').astype(np.float32) / 32768
+            return samples, audio.getframerate()
+
+
+def render(text, ready_cue=False):
+    audio, rate = synthesize(text)
+    if not len(audio):
+        raise ValueError('speech synthesis returned no audio')
+    # Retain the clean voice and its prosody. Add a quiet metallic signal and one very short reflection.
+    count = max(1, round(len(audio) * SR / (rate * 1.035)))
+    clean = np.interp(np.linspace(0, len(audio) - 1, count), np.arange(len(audio)), audio)
+    signal = clean * (0.93 + 0.07 * np.sin(2 * np.pi * 75 * np.arange(count) / SR))
+    delay = round(0.004 * SR)
+    signal[delay:] += 0.055 * clean[:-delay]
+    signal *= 0.9 / max(float(np.abs(signal).max()), 0.2)
+    if ready_cue:
+        signal = np.concatenate((signal, np.zeros(round(SR * 0.12)), cue()))
+    return encode(signal)
+
+
+def note(hz, seconds, volume=.27):
+    t = np.arange(round(SR * seconds)) / SR
+    return volume * np.sin(np.pi * t / seconds) ** 2 * np.sin(2 * np.pi * hz * t)
+
+
+def cue():
+    return np.concatenate((note(620, .105), np.zeros(round(SR * .035)), note(870, .16)))
+
+
+def wait_sound(index):
+    if index == 0:
+        return np.concatenate((note(485, .10, .19), note(690, .11, .18)))
+    if index == 1:
+        return np.concatenate((note(360, .14, .17), note(500, .15, .16)))
+    return note(430, .22, .16)
+
+
+def encode(signal):
+    # An amplitude taper gives the lower half of the slider useful room-volume control.
+    gain = (config.get('volume') / 100) ** 1.65
+    result = io.BytesIO()
+    with wave.open(result, 'wb') as file:
+        file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
+        file.writeframes((signal * gain * 32767).astype('<i2').tobytes())
+    return result.getvalue(), len(signal) / SR
 
 
 def warm():
-    """Load the word voice in the background so the first reply isn't slow."""
-    def go():
-        try: render('Hi!', 'happy')
-        except Exception as e: hub.note(f'word voice not ready: {e}')
-    threading.Thread(target=go, daemon=True).start()
+    def load():
+        try:
+            render('Hello there.')
+        except Exception as error:
+            hub.note('voice', f'Speech synthesis unavailable: {error}')
+
+    threading.Thread(target=load, daemon=True).start()
 
 
-def tts(text):
-    with _klock:
-        if _kok[0] is None:
-            try:
-                from kokoro import KPipeline
-                _kok[0] = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
-            except Exception as e:
-                _kok[0] = False; hub.note(f"using the Mac's voice for words (Kokoro: {e})", problem=False)
-        if _kok[0]:
-            parts = [a for _, _, a in _kok[0](text, voice=config.get('kokoro_voice'), speed=1.0)]
-            a = np.concatenate([np.asarray(p, dtype=np.float32).reshape(-1) for p in parts]) if parts else np.zeros(2400, np.float32)
-            return a, 24000
-    f = tempfile.NamedTemporaryFile(suffix='.wav', delete=False); f.close()
-    subprocess.run(['say', '-v', config.get('mac_voice'), '-r', '185', '-o', f.name, '--file-format=WAVE', '--data-format=LEI16@22050', text],
-                   check=True, capture_output=True)
-    with wave.open(f.name) as w: a = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
-    os.remove(f.name)
-    return a, 22050
+def preroll(pcm):
+    # The speaker's Bluetooth amp wakes more reliably on a signal than on digital silence.
+    t = np.arange(round(SR * 2.45)) / SR
+    pulse = .68 + .32 * np.sin(2 * np.pi * 2.3 * t)
+    fade = np.minimum(1., np.minimum(t, t[-1] - t) * 25)
+    level = .06 * (config.get('volume') / 100) ** 1.65
+    lead = np.asarray(32767 * level * fade * pulse * np.sin(2 * np.pi * 195 * t), dtype='<i2')
+    return lead.tobytes() + pcm, len(t) / SR
 
 
-CHIRP = {'happy': 'happy', 'excited': 'excited', 'sad': 'sad', 'love': 'love', 'curious': 'curious', 'confused': 'question',
-         'scared': 'whimper', 'proud': 'tada', 'angry': 'grumble'}
+def motion_track(pcm):
+    """Return the syllable envelope and spaced pitch accents from the rendered speech."""
+    signal = np.frombuffer(pcm, '<i2').astype(np.float32)
+    width = round(STEP * SR)
+    chunks = np.pad(signal, (0, (-len(signal)) % width)).reshape(-1, width)
+    rms = np.sqrt(np.mean(chunks**2, axis=1))
+    level = np.clip((rms / max(float(np.percentile(rms, 90)), float(rms.max()) * .35, 1.) - .10) / .9, 0, 1)
+    nod = np.zeros(len(level))
+    peaks = []
+    for i in range(1, len(level) - 1):
+        if level[i] >= .38 and level[i-1] < level[i] >= level[i+1]:
+            if peaks and i - peaks[-1] < 7:
+                # Make one readable nod for a group of closely spaced syllables.
+                if level[i] > level[peaks[-1]] + .11 and i + 1 < len(level):
+                    peaks[-1] = i
+            else:
+                peaks.append(i)
+    for i in peaks:
+        begins_phrase = i < 7 or max(level[max(0, i-10):max(1, i-3)], default=0.) < .25
+        strength = min(1.12, .55 + .43 * level[i] + .14 * begins_phrase)
+        for offset, value in enumerate((.26, .65, .25, -.45, -1., -.85, -.42, .08), -2):
+            if 0 <= i + offset < len(nod):
+                nod[i + offset] += value * strength
+    return level, nod
 
 
-def words(text, emotion, chirp=True):
-    a, sr = tts(text)
-    R = float(config.get('robotness'))
-    up = 1 + 0.22 * R * {'excited': 1.3, 'happy': 1.15, 'scared': 1.3, 'sad': 0.7, 'sleepy': 0.6, 'angry': 0.6}.get(emotion, 1.0)
-    n = int(len(a) * SR / (sr / up)); y = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a)   # small-creature pitch
-    y = y / (np.abs(y).max() + 1e-6)
-    if R > 0:
-        y = np.tanh((1 + 1.2 * R) * y) / np.tanh(1 + 1.2 * R)                       # warm grit
-        t = np.arange(len(y)) / SR
-        m = 0.38 * R; y = y * (1 - m) + y * np.sin(2 * np.pi * 70 * t) * m          # ring modulator: the metallic robot sound
-        d = int(0.0045 * SR); y[d:] = y[d:] + 0.35 * R * y[:-d]                     # short echo: a tinny little tin-can body
-        y = y / (np.abs(y).max() + 1e-6)
-        q = int(64 - 40 * R); y = np.round(y * q) / q                               # digital edge
-    head = []
-    if R > 0.3 and random.random() < 0.5:                                          # a little beep before it talks, sometimes
-        head = [0.4 * v for v in sounds.V[random.choice(['blip', 'doubleblip', 'beepboop'])]()] + [0.0] * int(0.05 * SR)
-    tail = []
-    c = CHIRP.get(emotion)
-    if chirp and c and R > 0.15 and random.random() < 0.6: tail = [0.55 * v for v in sounds.V[c]()]
-    return head + list(y) + [0.0] * int(0.07 * SR) + tail
+def articulation():
+    current = playback
+    if current is None:
+        return 0., False, 0.
+    started, level, nod, lead, motion_start, motion_end, cue_at, delivery = current
+    elapsed = time.monotonic() - started - lead
+    chirping = cue_at is not None and cue_at <= elapsed < cue_at + .31
+    if not motion_start <= elapsed < motion_end:
+        return 0., chirping, 0.
+    sample = (elapsed - motion_start) / STEP
+    index = min(int(sample), len(level)-1)
+    following = min(index+1, len(level)-1)
+    fraction = sample-int(sample)
+    strength, amplitude, posture = DELIVERY[delivery]
+    energy = level[index]*(1-fraction) + level[following]*fraction
+    pitch = nod[index]*(1-fraction) + nod[following]*fraction
+    return min(1., float(energy)*strength), chirping, posture + amplitude*float(pitch)
 
 
-def render(text, emotion='neutral', chirp=True):
-    """Text -> (WAV bytes, seconds)."""
-    s = None
-    if config.get('voice') == 'words':
-        try: s = words(text, emotion, chirp)
-        except Exception as e: hub.note(f'word voice failed, babbling this time ({e})')
-    if s is None: s = sounds._fx(sounds.speak_audio(text, emotion)[0])
-    a = np.asarray(s, dtype=np.float32); a = np.clip(a * (0.9 / max(1e-6, float(np.abs(a).max()))), -1, 1)
-    b = io.BytesIO()
-    with wave.open(b, 'wb') as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR); w.writeframes((a * 32000).astype('<i2').tobytes())
-    return b.getvalue(), len(a) / SR
+@contextmanager
+def thinking(stop, *, greeting):
+    """Play sparse cues during generation; finish the active cue before speech starts."""
+    done = threading.Event()
+
+    def sound():
+        try:
+            previous = 0.
+            schedule = (0., 3.4, 7.6) if greeting else (.85, 3.9, 8.1)
+            for index, when in enumerate(schedule):
+                if done.wait(max(0., when - previous)) or stop.is_set():
+                    break
+                started = time.monotonic()
+                play(*encode(wait_sound(index if greeting else index+1)), stop, interim=True)
+                previous = when + time.monotonic() - started
+        except (OSError, ValueError, wave.Error) as error:
+            hub.note('speaker', f'Cue failed: {error}')
+
+    speaker = hub.selected('voice')
+    # Fast turns can skip the feedback worker when muted or running without output.
+    worker = None
+    if speaker and not config.get('muted') and config.get('volume'):
+        worker = threading.Thread(target=sound, daemon=True)
+        worker.start()
+    try:
+        yield
+    finally:
+        done.set()
+        if worker:
+            worker.join()
 
 
-def chunks(text):
-    """First sentence on its own (so BITCH starts talking quickly), then the rest in bigger pieces."""
-    ss = [x.strip() for x in re.split(r'(?<=[.!?])\s+', text.strip()) if x.strip()]
-    if len(ss) <= 1: return ss
-    out = [ss[0]]; cur = ''
-    for x in ss[1:]:
-        if cur and len(cur) + len(x) > 220: out.append(cur); cur = x
-        else: cur = (cur + ' ' + x).strip()
-    if cur: out.append(cur)
-    return out
+def say(text, stop, *, ready_cue=False, delivery='neutral'):
+    if config.get('muted') or not config.get('volume'):
+        return
+    wav, duration = render(text, ready_cue=ready_cue) if text else encode(cue())
+    play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery)
 
 
-_say_lock = threading.Lock()
-
-
-def say(text, emotion='neutral', move='none', origin=None, speak=True):
-    """Say something: voice on the right device, body language on the robot, BITCH's face in the app.
-    Blocks until it has finished talking (or was interrupted)."""
-    text = (text or '').strip()
-    targets = hub.voices_for(origin, speak) if text and not config.get('muted') else []
-    bodies = [b for b in hub.bodies() if b not in targets]
-    hub.ui({'type': 'express', 'emotion': emotion, 'move': move, 'text': text})
-    for b in bodies: b.gesture(emotion, move)
-    if not targets: return True
-    with _say_lock:
-        hub.interrupted = False
-        parts = chunks(text)
-        nxt = _pool.submit(render, parts[0], emotion, len(parts) == 1)
-        for i in range(len(parts)):
-            wav, secs = nxt.result()
-            if i + 1 < len(parts): nxt = _pool.submit(render, parts[i + 1], emotion, i + 2 == len(parts))
-            if hub.interrupted: break
-            hub.set_status('speaking')
-            hub.speaking_until = time.time() + secs + 0.35
-            last = i + 1 == len(parts)
-            for d in targets: d.speak(wav, secs, parts[i], emotion, move if last else 'none')
-            hub.ui({'type': 'talking', 'seconds': secs})
-            while time.time() < hub.speaking_until and not hub.interrupted: time.sleep(0.03)
-        done = not hub.interrupted
-        hub.speaking_until = 0
-        if hub.status == 'speaking': hub.set_status('asleep' if hub.asleep else 'listening')
-        return done
+def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False):
+    global playback
+    speaker = hub.selected('voice')
+    if stop.is_set() or config.get('muted') or not config.get('volume'):
+        return
+    if not speaker:
+        if not interim:
+            hub.note('speaker', 'No speaker available. Choose Auto or Mac speaker in Connections.')
+        return
+    with wave.open(io.BytesIO(wav)) as file:
+        pcm = file.readframes(file.getnframes())
+    lead = 0.
+    output = wav
+    if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20:
+        frames, lead = preroll(pcm)
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as file:
+            file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
+            file.writeframes(frames)
+        output = buffer.getvalue()
+    if text:
+        hub.status = 'Speaking'
+    start = time.monotonic()
+    if not speaker.speak(output):
+        if stop.is_set():
+            return
+        if config.get('speaker_source') != 'auto' or speaker.id != 'robot':
+            hub.note('speaker', 'The selected speaker could not play the reply.')
+            return
+        speaker = hub.get('mac-speaker')
+        lead = 0.
+        start = time.monotonic()
+        if not speaker or not speaker.speak(wav):
+            hub.note('speaker', 'The Pi could not play the reply.')
+            return
+    if stop.is_set():
+        speaker.hush()
+        return
+    hub.note('speaker', None)
+    cue_at = max(0., duration-.30) if ready_cue or interim else None
+    if interim:
+        cue_at = 0.
+    speech_end = max(0., duration-.42) if text and ready_cue else duration if text else 0.
+    if speech_end > 0:
+        envelope, nod = motion_track(pcm[:round(speech_end*SR)*2])
+    else:
+        envelope = nod = ()
+    playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery
+    try:
+        while not stop.wait(.06):
+            playing = speaker.playing()
+            elapsed = time.monotonic() - start
+            if playing is False or playing is None and elapsed >= duration + lead + .65:
+                break
+            if elapsed > duration + lead + 5:
+                speaker.hush()
+                break
+        if stop.is_set():
+            speaker.hush()
+    finally:
+        playback = None
+        last_played[speaker] = time.monotonic()
+    if not interim:
+        time.sleep(.26 if ready_cue else .43)

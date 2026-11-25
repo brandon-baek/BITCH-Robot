@@ -1,71 +1,73 @@
 # BITCH
 
-A cardboard, lamp-style desk robot with googly eyes, and the AI that lives in it. Raspberry Pi 4, four MG90S servos
-on a PCA9685 board, a JBL speaker, and a brain that runs on your Mac (free and on-device: Whisper, Qwen in Ollama, Kokoro).
+A cardboard desk robot with four servos, a Raspberry Pi and a JBL speaker. The Mac runs speech recognition, conversation and anonymous face tracking. A paired phone or computer can supply the mic, camera or both.
 
-You talk to BITCH at the desk, or from your phone anywhere in the house. It remembers what you tell it, sets timers
-and reminders, keeps lists, checks the weather, looks things up, sees through the camera, greets you by name,
-speaks up on its own now and then, and when you ask for a move it has never done, it invents one.
+## Run it
 
-## Start it
+1. On the Mac, run `bash ~/BITCH-Robot/mac/setup.sh` once, then open **BITCH** from Applications. Allow the microphone and camera if prompted. The same controls are available at `http://127.0.0.1:8780` while it runs.
+2. On the Pi, stop the old listener and run `python3 brain.py` from the updated checkout. In another Pi terminal, run `python3 brain.py --key`.
+   Use `python3 brain.py --no-motion` to test pairing, audio and desktop handoff with the servo driver disabled.
+3. On the Mac, open **Connections → Connect the Raspberry Pi**, enter the Pi's name or IPv4 address and paste the key. Use the Pi and Mac on a trusted local network. The Pi checks for the connected JBL Flip 3 PipeWire output. To use a different output, set BITCH_PI_SPEAKER to its PipeWire description or to `default` in the Pi service environment. **Auto** chooses it when available and otherwise uses the Mac speaker.
 
-**Mac, once** (Ollama app installed and opened):
-```
-git -C ~/BITCH-Robot pull 2>/dev/null || git clone https://github.com/brandon-baek/BITCH-Robot ~/BITCH-Robot; bash ~/BITCH-Robot/mac/setup.sh
-```
-**Mac, every time:** open **BITCH** from Applications (or Spotlight). Allow the camera and microphone the first time.
-Closing its window only hides it; BITCH keeps living. Use the BITCH item in the menu bar to open the window again or quit.
+Say **“Hey BITCH, what’s the time?”** or **“Hey BITCH, why do cats knead blankets?”**. A short tone acknowledges the name on its own. The rising two-note cue opens your next turn for 24 seconds on the same microphone. A natural goodbye or closing acknowledgment can end the session immediately. The screen shows when BITCH is waiting for speech, hearing you, thinking, or speaking. Say **“stop listening”** or let the conversation time out to return to the wake word. A name mentioned in the middle of a sentence does not wake it.
 
-**Pi, every time:** `python3 -c "from brain import *; listen()"`
-**Pi, after an update:** `bash ~/BITCH-Robot/update.sh`
+Idle motion holds attention through brief gaps and leaves space between gestures. BITCH has different poses for doing a double take, listening, thinking, speaking, getting curious, looking aside, and scanning an empty room. Each gesture has a lead-in, a hold and a return. Quick tracking still follows you when you move. Switch **Idle motion** off to park the body. **Voice volume** adjusts the speaker output. **Mute voice** keeps replies on the screen. Existing settings and the old local database stay on disk. The active companion only reads the pairing records in that database.
 
-## Your phone
-1. Same Wi-Fi as the Mac. Open `http://<your Mac's name>.local:8780` (the BITCH window shows the exact address under **More**).
-2. Type the 6-digit pairing code from **More** on the Mac. Phones only pair once.
-3. For voice, the camera and notifications, follow **More › This phone** once: install BITCH's home certificate, then use
-   the `https://…:8781` address and add it to your Home Screen.
+## Use an external microphone or camera
 
-## Things to say
-"Hey BITCH, set a 10 minute timer" · "remind me at 7 to call mum" · "every weekday at 8 tell me the weather" ·
-"add eggs to the shopping list" · "remember that my sister is Chloe" · "what am I holding?" · "do the chicken dance" ·
-"good night"
+Plug a USB device into the Mac and select it as the macOS input, or use **Connections → Use this browser’s devices** to choose the exact input. A browser keeps sharing while its page is open and selected. Microphones and cameras each have their own source selector, so they can come from different devices.
 
-## How it fits together
-```
- phone app      Mac (mic, camera, speaker)      robot (body, JBL)      new hardware later
-     \                    |                          |                        /
-      '----------- device link: each device says what it can do ----------'
-                                  |
-            core (on the Mac):  senses -> mind -> outputs
-                                memory, mood, routines, initiative
-```
-Every sense and output is a **device** with capabilities: `ears`, `eyes`, `keys` (senses) and `voice`, `body`, `face`,
-`notify` (outputs). Adding a mic, camera or OLED to the robot means writing one small driver in `core/devices/`.
+For another device on the same Wi-Fi, use **Connections → Pair a phone or another computer** on the Mac. Open the address shown there, install and trust the BITCH Home certificate, and use the secure link. Enter the pairing code shown on the Mac and choose **Use microphone**, **Use camera**, or both. Keep the page in the foreground on phones. The same pairing works in the Pi’s desktop browser for a camera or mic plugged into the Pi.
 
-| Where | What |
-|---|---|
-| `core/` | BITCH's mind, runs on the Mac: `python -m core` |
-| `core/devices/` | One driver per kind of device: `robot.py` (the Pi), `mac.py` (Mac mic, camera, speaker), `web.py` (phones and the app) |
-| `core/brain.py`, `persona.md` | How it thinks and who it is |
-| `core/tools.py` | What it can do (timers, reminders, lists, weather, look-ups, camera, routines) |
-| `core/moves.py` | Its body language, and how it invents new moves |
-| `core/life.py` | Mood, schedule, greetings, speaking up on its own, memories and diary |
-| `core/memory.py` | Everything it remembers, in `~/.bitch/bitch.db` |
-| `app/` | The app for your phone and the Mac window |
-| `brain.py` | On the Pi: listens to the Mac and moves the servos (also plays invented moves) |
-| `face.py`, `hardware.py` | On the Pi: the OLED googly-eye face, and finding hardware plugged into the robot (screen, USB mic, camera) |
-| `desk.py`, `shows.py`, `sounds.py`, `music.py` | On the Pi: servos, performances, voice and music |
-| `control.py`, `tests.py` | On the Pi: keyboard driving, joint tests |
-| `testing/` | Tests that need no hardware: `~/dc-venv/bin/python -m unittest testing.test_bitch` |
+For the native Mac capture, use `~/dc-venv/bin/python -m sounddevice` to list microphone indices and start the companion with `~/dc-venv/bin/python -m core --mic N --camera N` to pick specific devices.
 
-Servo channels on the PCA9685: 0 base, 1 arm, 2 neck, 3 head.
+## Align the camera and body
 
-## Hardware on the robot itself
-Plug it in and restart listen mode; the Mac picks it up by itself (see **More › Devices**).
-- **OLED face** (I2C: SDA pin 3, SCL pin 5, RES pin 7): `pip install adafruit-circuitpython-ssd1306 --break-system-packages`,
-  then `python3 face.py` to see every feeling. BITCH's eyes then blink, look around, talk and sleep on the screen.
-- **USB microphone**: BITCH hears through the robot instead of the Mac (no setup).
-- Check what the robot finds: `python3 hardware.py`
+**What BITCH sees** shows the live image, anonymous person boxes and which one the robot is following. The Body readout distinguishes idle off, scanning, following and Pi connection problems. It shows the requested turn next to the last commanded position from the Pi.
 
-## On the Pi without the Mac
-Run a show: `python3 -c "from shows import *; showtime()"` · Drive with the keyboard: `python3 -c "from control import *; drive()"`
+1. Fix the camera in place and choose **Align camera to robot** under the feed.
+2. Stand at your usual distance on the robot’s left. Aim **Turn** and **Head pitch** at your face, hold still and capture. Repeat from the center and right.
+3. Select **Save & start tracking** for an immediate check, or **Save only** to keep the current idle setting. Old horizontal alignments still work. Repeat after moving the camera or changing your usual distance substantially.
+
+The alignment maps what the camera sees at three working positions to this robot’s yaw and pitch. At substantially different distances, a camera far to the side can still introduce parallax. For individual servo trim, stop the Pi listener and run `python3 center.py calibrate`.
+
+### Movement references
+
+- Apple's [ELEGNT paper](https://arxiv.org/html/2501.12493v1) motivated a short head cue before the base turns and restrained motion during interaction.
+- Disney's [Realistic and Interactive Robot Gaze](https://la.disneyresearch.com/publication/realistic-and-interactive-robot-gaze/) informed holding a target through short gaps, reducing abrupt switches and periodically shifting attention.
+- Disney's [Olaf](https://arxiv.org/html/2512.16705v1), [BDX](https://la.disneyresearch.com/publication/design-and-control-of-a-bipedal-robotic-character/) and [Vibration-Minimizing Motion Retargeting](https://la.disneyresearch.com/publication/publication-process-vibration-minimizing-motion-retargeting-for-robotic-characters/) motivated authored poses, gentle transitions, and rate and acceleration limits for this lightweight body.
+
+## Recognize people
+
+On the Mac, open **Connections → Recognize people**. Type a name and choose **Learn face** or **Learn voice**. Enroll only someone who agrees.
+
+- For a face, stand alone in the camera view and turn your head a little as six samples are captured.
+- For a voice, say three different sentences, around three seconds each, with a short pause after each one. You can enroll both under the same name.
+
+A known face can appear by name in the Mac preview and get a quiet double take. A confident voice match can carry the speaker’s name and turn context into the conversation. Unknown or ambiguous matches are left unnamed. The saved profiles are local face and voice embeddings. Use **Forget** to remove both. Recognition does not authenticate commands.
+
+## Desktop agent handoff
+
+Say **“BITCH, ask ChatGPT to draft a summary of my notes.”** The Mac sends the prompt to a local inbox on the Pi. The language model never generates or invokes macros.
+
+In the Pi’s desktop terminal, `python3 macros.py list` shows pending requests. `python3 macros.py prepare ID` copies a prompt using `wl-copy` on Wayland or `xclip` on X11. Add `--desktop-id APP_ID` to launch an installed app through `gtk-launch`. Paste the prompt into the desktop agent and send it there. Remove the request with `python3 macros.py done ID` after handling it. Run `python3 macros.py watch --desktop-id APP_ID` in the Pi’s desktop session to open the app and stage new prompts as they arrive, one at a time.
+
+The Pi writes versioned JSON records under `~/.bitch-pi/macros/` for a future connector to consume. No ChatGPT or calendar credentials are needed. The existing local Ollama model handles ordinary conversation.
+
+## Verify locally
+
+Run `~/dc-venv/bin/python -m unittest testing.test_bitch -v` for wake, conversation, alignment, pairing, the macro inbox and the Pi protocol with a fake servo board.
+
+### Live character and conversation
+
+The shows and camera tracker use the same four-joint Actor. A new face can get a double take, a missing face gets a brief search near its last position, and quiet periods make space for peeks and stretches. A listening lean holds through a pause, and a sustained head tilt from the focused person can get a delayed echo. While speaking, the head follows phrase accents and the arm moves with the slower changes in vocal energy. The reply’s delivery shapes the larger gesture, including a closing dip on a farewell. Parking and alignment have no idle offset.
+
+A brief chirp acknowledges a wake with a question. Longer waits can add a quiet thinking sound. The two rising notes invite a follow-up. After the Pi speaker has been idle, a short, low-volume signal opens the Bluetooth audio path before the cue or first word. The app shows **I’m listening** during an open utterance and **Got it. One moment…** during transcription. Recording is gated through playback completion and a short echo tail. **Test speaker** plays a brief check through the displayed output. In **Auto**, disconnecting the Pi speaker allows the Mac to take over.
+
+Ask “Hey BITCH, what am I holding?” to send one fresh frame from the selected camera to the local Qwen 3.5 4B vision model. Short visual follow-ups get a new frame. Camera images are kept out of conversation history. Face tracking continues independently of visual question answering.
+
+## Look where I’m pointing
+
+Say **“Hey BITCH, look there”** while holding one arm out toward the target. Keep your shoulder, elbow, wrist and hand in the camera frame for a moment. The preview circles the region it picked. **“Look at the blue mug”** looks for a named object. **“What am I pointing at?”** can ask whether a visible object in that region is the one you meant. Camera alignment works best when the target is near the calibration distance. Run `bash mac/setup.sh` on the Mac to install pointing support.
+
+The [character motion and shared attention notes](docs/character-motion.md) describe the research, the choices carried into the robot, and how to evaluate the result.

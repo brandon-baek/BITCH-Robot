@@ -1,2 +1,5 @@
 __pycache__/
 *.onnx
+*.task
+.DS_Store
+*.part

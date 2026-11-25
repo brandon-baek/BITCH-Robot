@@ -1,10 +1,13 @@
 mlx-whisper
 sounddevice
 numpy
-opencv-python
+opencv-contrib-python
+mediapipe>=0.10.21,<0.11
 silero-vad
 pywebview
 pyobjc-framework-AVFoundation
 fastapi
 uvicorn[standard]
-pywebpush
+cryptography
+httpx
+sherpa-onnx>=2.0.3
