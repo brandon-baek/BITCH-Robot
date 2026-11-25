@@ -3,21 +3,32 @@ from time import sleep
 from math import sin
 import time as _time
 kit=ServoKit(channels=16)
+import json as _j, os as _o
+_TF=_o.path.expanduser('~/.desk_trim.json')
+def _trim_load():
+    try: t=_j.load(open(_TF))
+    except Exception: t={}
+    return [float(x) for x in t.get('trim',[0,0,0,0])], float(t.get('base_speed',1.0))
+TRIM,BASE_SPEED=_trim_load()       # TRIM: where "center" really is for each joint (from: python3 ~/center.py calibrate)
+def save_trim():
+    try: _j.dump({'trim':[round(x,3) for x in TRIM],'base_speed':BASE_SPEED},open(_TF,'w'))
+    except Exception: pass
 class _Servo:
     def __init__(s,ch,lo,hi):
-        s.c=kit.servo[ch]; s.lo,s.hi=lo,hi; s.wide=False; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
+        s.ch=ch; s.c=kit.servo[ch]; s.lo,s.hi=lo,hi; s.wide=False; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
     def us(s,u):
         """set an exact pulse in microseconds (500-2500), beyond the normal range"""
         if not s.wide: s.c.set_pulse_width_range(500,2500); s.wide=True
+        u+=TRIM[s.ch]*(s.hi-s.lo)/2
         s.c.angle=max(0,min(180,(u-500)/2000*180))
     @property
     def value(s):
         a=s.c.angle
-        return None if a is None else a/90-1
+        return None if a is None else a/90-1-TRIM[s.ch]
     @value.setter
     def value(s,v):
         if s.wide: s.c.set_pulse_width_range(s.lo,s.hi); s.wide=False
-        s.c.angle=(max(-1,min(1,v))+1)*90
+        s.c.angle=(max(-1,min(1,v+TRIM[s.ch]))+1)*90
     def detach(s): s.c.angle=None
 REST=[0.0,-0.8,-0.8,0.0]
 S=[_Servo(0,500,2500)]+[_Servo(i,1000,2000) for i in (1,2,3)]
@@ -43,6 +54,7 @@ def go(t,d,e='smooth'):
     mv=[abs(t[i]-cur[i])>0.001 for i in range(4)]
     for i in range(4):
         if mv[i] and not on[i]: S[i].value=cur[i]; on[i]=True
+    if BASE_SPEED<1 and mv[0]: d=max(d,abs(t[0]-cur[0])/(2.5*BASE_SPEED)/SPEED)   # gentle base: never faster than the limit
     st=cur[:]; n=max(1,int(d*SPEED/0.02)); nxt=_time.monotonic()
     for k in range(1,n+1):
         f=_ease(k/n,e)
@@ -166,7 +178,8 @@ class Actor:
             for i in range(4):
                 k=s.K[i]*s.stiff; c=s.C[i]*s.stiff**0.5
                 acc=k*(s.tgt[i]+idle[i]-s.x[i])-c*s.v[i]
-                s.v[i]=max(-5,min(5,s.v[i]+acc*dt)); s.x[i]+=s.v[i]*dt
+                vm=5*BASE_SPEED if i==0 else 5
+                s.v[i]=max(-vm,min(vm,s.v[i]+acc*dt)); s.x[i]+=s.v[i]*dt
                 s.x[i]=max(s.LO[i],min(s.HI[i],s.x[i]))
                 val=max(s.LO[i],min(s.HI[i],s.x[i]+add[i]))
                 cur[i]=val; S[i].value=val
