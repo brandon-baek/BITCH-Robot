@@ -110,6 +110,14 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(brain.reply('Thanks. One more thing, does that work on the Mac?', 'desk'), 'Yes.')
         self.assertFalse(brain.close_turn)
 
+    def test_conversation_grounds_object_handling_and_drops_model_parroting(self):
+        brain = Brain()
+        with patch('core.brain.llm.chat') as generate:
+            self.assertIn('don’t have hands', brain.reply('Did you pick up the mug?', 'desk'))
+            generate.assert_not_called()
+            generate.return_value = '{"say":"What did you just say?","turn":"continue"}'
+            self.assertEqual(brain.reply('What did you just say?', 'desk'), 'I lost my train of thought. Say that again?')
+
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
         brain = Brain()
         brain.busy.set()

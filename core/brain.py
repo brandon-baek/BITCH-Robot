@@ -60,6 +60,9 @@ EMOTIONS = [('proud', r'\b(?:good (?:job|robot)|proud of you|nailed it)\b'),
             ('sad', r"\b(?:feel sad|bad day|miss (?:him|her|them)|i.m sad)\b"),
             ('scared', r"^(?:boo|you scared me)[!. ]*$")]
 FACE_CHECK = re.compile(r"\b(?:(?:recognize|recognise|remember|identify) (?:me|my face)|who am I|know who I am)\b", re.I)
+HANDLE_OBJECT = re.compile(
+    r"^(?:(?:can|could|would|will|did) you\s+)?(?:please\s+)?(?:pick up|grab|carry|lift|hand me)\s+"
+    r"(?:a|an|the|that|this|my|your|it)\b", re.I)
 TURN_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -453,6 +456,8 @@ class Brain:
         look = gaze.request(text)
         if look:
             return self.look_reply(*look)
+        if HANDLE_OBJECT.match(text):
+            return 'I can look at it. I don’t have hands to pick it up.'
         if VOICE_CHECK.search(text):
             if self.speaker_evidence == 'voice':
                 return f'Yeah, I recognize your voice, {self.speaker}.'
@@ -571,7 +576,8 @@ class Brain:
                 return 'I lost my train of thought. Say that again?'
         reply = re.sub(r'<think>.*?</think>|\*[^*\n]+\*|\[[^]\n]+\]', '', reply, flags=re.S)
         reply = re.sub(r'\s+', ' ', reply).strip(' `"')
-        if not reply:
+        echoed_request = len(text.split()) >= 4 and reply.casefold().rstrip('?.!') == text.casefold().rstrip('?.!')
+        if not reply or echoed_request:
             return 'I lost my train of thought. Say that again?'
         if len(reply) > 560:
             reply = reply[:557].rsplit(' ', 1)[0].rstrip(',.?!:;') + '…'
