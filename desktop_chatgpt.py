@@ -150,7 +150,7 @@ def send_button(document, atspi):
     return next((node for node in nodes(document)
                  if node.get_role() == atspi.Role.PUSH_BUTTON
                  and (node.get_attributes().get('id') == 'composer-submit-button'
-                      or node.get_name() == 'Send prompt')
+                      or node.get_name() in ('Send', 'Send prompt'))
                  and node.get_state_set().contains(atspi.StateType.ENABLED)), None)
 
 
@@ -236,8 +236,10 @@ def fill(prompt, *, send=False):
                 context.iteration(False)
             try:
                 target = find_composer(Atspi, marker)
-                if target is not None and not composer_text(target[2], Atspi).strip():
-                    return target
+                if target is not None:
+                    current = normalized(composer_text(target[2], Atspi))
+                    if not current or send and current == normalized(prompt):
+                        return target
             except GLib.Error:
                 pass
             time.sleep(.3)
@@ -254,7 +256,8 @@ def fill(prompt, *, send=False):
     if target is None:
         return {'state': 'ready'} if send else False
     window, address, composer = target
-    if composer_text(composer, Atspi).strip():
+    current = normalized(composer_text(composer, Atspi))
+    if current and (not send or current != normalized(prompt)):
         return {'state': 'ready'} if send else False
     if not (composer.get_state_set().contains(Atspi.StateType.FOCUSED)
             or composer.get_component_iface().grab_focus()):
@@ -263,34 +266,11 @@ def fill(prompt, *, send=False):
     if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
             and matches_address(text_of(address), marker)
             and composer.get_state_set().contains(Atspi.StateType.FOCUSED)
-            and not composer_text(composer, Atspi).strip()):
+            and normalized(composer_text(composer, Atspi)) == current):
         return {'state': 'ready'} if send else False
-    pasted = False
-    with subprocess.Popen([copy, '--foreground', '--type', 'text/plain'], stdin=subprocess.PIPE) as clipboard:
-        try:
-            clipboard.stdin.write(prompt.encode('utf-8'))
-            clipboard.stdin.close()
-            time.sleep(.16)
-            if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
-                    and matches_address(text_of(address), marker)
-                    and composer.get_state_set().contains(Atspi.StateType.FOCUSED)):
-                return {'state': 'ready'} if send else False
-            subprocess.run([keys, '-M', 'ctrl', '-s', '80', '-k', 'v', '-s', '80', '-m', 'ctrl'],
-                           check=True, timeout=2)
-            for _ in range(12):
-                time.sleep(.15)
-                while context.pending():
-                    context.iteration(False)
-                if normalized(composer_text(composer, Atspi)) == normalized(prompt):
-                    pasted = True
-                    break
-        finally:
-            if clipboard.poll() is None:
-                clipboard.terminate()
-                try:
-                    clipboard.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    clipboard.kill()
+    pasted = bool(current)
+    if not pasted:
+        pasted = paste(prompt, window, address, composer, marker, copy, keys, Atspi, context)
     if not send:
         return pasted
     if not pasted:
@@ -301,8 +281,8 @@ def fill(prompt, *, send=False):
             or normalized(composer_text(composer, Atspi)) != normalized(prompt)):
         return {'state': 'ready', 'drafted': True}
     document = page[2]
-    if any(node.get_role() == Atspi.Role.PUSH_BUTTON and node.get_name().lower() in ('log in', 'sign up')
-           for node in nodes(document)):
+    if not any(node.get_role() == Atspi.Role.PUSH_BUTTON and node.get_name() == 'Open profile menu'
+               for node in nodes(document)):
         return {'state': 'ready', 'drafted': True}
     button = send_button(document, Atspi)
     if button is None:
@@ -310,6 +290,34 @@ def fill(prompt, *, send=False):
     if not button.do_action(0):
         return {'state': 'send_unverified'}
     return wait_response(prompt, Atspi, context, (GLib.Error, OSError, subprocess.SubprocessError, ValueError))
+
+
+def paste(prompt, window, address, composer, marker, copy, keys, atspi, context):
+    with subprocess.Popen([copy, '--foreground', '--type', 'text/plain'], stdin=subprocess.PIPE) as clipboard:
+        try:
+            clipboard.stdin.write(prompt.encode('utf-8'))
+            clipboard.stdin.close()
+            time.sleep(.16)
+            if not (window.get_state_set().contains(atspi.StateType.ACTIVE)
+                    and matches_address(text_of(address), marker)
+                    and composer.get_state_set().contains(atspi.StateType.FOCUSED)):
+                return False
+            subprocess.run([keys, '-M', 'ctrl', '-s', '80', '-k', 'v', '-s', '80', '-m', 'ctrl'],
+                           check=True, timeout=2)
+            for _ in range(12):
+                time.sleep(.15)
+                while context.pending():
+                    context.iteration(False)
+                if normalized(composer_text(composer, atspi)) == normalized(prompt):
+                    return True
+            return False
+        finally:
+            if clipboard.poll() is None:
+                clipboard.terminate()
+                try:
+                    clipboard.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    clipboard.kill()
 
 
 if __name__ == '__main__':
