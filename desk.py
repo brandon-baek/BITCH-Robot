@@ -14,23 +14,25 @@ def save_trim():
     try: _j.dump({'trim':[round(x,3) for x in TRIM],'base_speed':BASE_SPEED},open(_TF,'w'))
     except Exception: pass
 class _Servo:
+    """value -1..1 maps onto lo..hi microseconds around this joint's calibrated center.
+    Values a little past -1/1 are allowed (REACH) for joints that can physically go further."""
     def __init__(s,ch,lo,hi):
-        s.ch=ch; s.c=kit.servo[ch]; s.lo,s.hi=lo,hi; s.wide=False; s.c.set_pulse_width_range(lo,hi); s.c.actuation_range=180
+        s.ch=ch; s.c=kit.servo[ch]; s.lo,s.hi=lo,hi; s.wide=True; s.c.set_pulse_width_range(500,2500); s.c.actuation_range=180
     def us(s,u):
-        """set an exact pulse in microseconds (500-2500), beyond the normal range"""
-        if not s.wide: s.c.set_pulse_width_range(500,2500); s.wide=True
+        """set an exact pulse in microseconds (500-2500)"""
         u+=TRIM[s.ch]*(s.hi-s.lo)/2
         s.c.angle=max(0,min(180,(u-500)/2000*180))
     @property
     def value(s):
         a=s.c.angle
-        return None if a is None else a/90-1-TRIM[s.ch]
+        return None if a is None else ((a/180*2000+500)-1500)/((s.hi-s.lo)/2)-TRIM[s.ch]
     @value.setter
     def value(s,v):
-        if s.wide: s.c.set_pulse_width_range(s.lo,s.hi); s.wide=False
-        s.c.angle=(max(-1,min(1,v+TRIM[s.ch]))+1)*90
+        lo,hi=REACH[s.ch]; v=max(lo,min(hi,v))
+        s.us(1500+v*(s.hi-s.lo)/2)
     def detach(s): s.c.angle=None
 REST=[0.0,-0.8,-0.8,0.0]
+REACH=[(-1,1),(-1.5,1.5),(-1,1),(-1,1)]      # arm can lean back past -1 (and lie down past +1)
 S=[_Servo(0,500,2500)]+[_Servo(i,1000,2000) for i in (1,2,3)]
 cur=REST[:]; on=[False]*4
 NAMES=['base','arm','neck','head']
@@ -59,7 +61,7 @@ def go(t,d,e='smooth'):
     for k in range(1,n+1):
         f=_ease(k/n,e)
         for i in range(4):
-            if mv[i]: cur[i]=max(-1,min(1,st[i]+(t[i]-st[i])*f)); S[i].value=cur[i]
+            if mv[i]: cur[i]=max(REACH[i][0],min(REACH[i][1],st[i]+(t[i]-st[i])*f)); S[i].value=cur[i]
         nxt+=0.02; sleep(max(0,nxt-_time.monotonic()))
 def relax(*js):
     for i in (js or range(4)): S[i].detach(); on[i]=False
@@ -148,7 +150,7 @@ def bedtime(side=0.95, arm=1.0, tuck=-0.9, deep=2350):
 class Actor:
     """Spring-driven puppet: set targets, then wait() while springs carry the motion."""
     K=[55.0,30.0,65.0,95.0]; C=[11.0,10.0,11.5,10.0]
-    LO=[-0.9,-0.95,-1.0,-0.85]; HI=[0.9,-0.15,-0.1,0.85]
+    LO=[-0.9,-1.3,-1.0,-0.85]; HI=[0.9,-0.15,-0.1,0.85]
     def __init__(s,wake=True):
         if wake: wakeup()
         power_all()

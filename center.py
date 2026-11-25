@@ -30,7 +30,7 @@ if words[0]=='calibrate':
                 print(f'\r   {desk.NAMES[i]:5} (S{i+1})  center offset {desk.TRIM[i]:+.3f}    ',end='',flush=True)
                 k=f.read(1)
                 step={'a':-0.01,'d':0.01,'A':-0.05,'D':0.05}.get(k)
-                if step: desk.TRIM[i]=max(-0.5,min(0.5,desk.TRIM[i]+step)); desk.S[i].value=0
+                if step: desk.TRIM[i]=max(-0.9,min(0.9,desk.TRIM[i]+step)); desk.S[i].value=0
                 elif k=='r': desk.TRIM[i]=t0; desk.S[i].value=0
                 elif k in '\r\n': desk.save_trim(); print(' saved'); break
                 elif k=='q': desk.TRIM[i]=t0; print(' kept old'); raise KeyboardInterrupt
