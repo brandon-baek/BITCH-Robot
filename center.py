@@ -6,7 +6,7 @@
   python3 ~/center.py 1 3             by number (1 base, 2 arm, 3 neck, 4 head)
 Add  go  at the end to let go right away instead of holding until you press Enter.
 
-  python3 ~/center.py calibrate         fix crooked centers, joint by joint (or: calibrate base neck)
+  python3 ~/center.py calibrate         fix a crooked rest pose, joint by joint (or: calibrate base neck)
   python3 ~/center.py basespeed 0.6     gentler base turns in every show (1 = full speed)
   python3 ~/center.py reset             forget the calibration"""
 import sys, desk
@@ -21,17 +21,17 @@ if words[0]=='calibrate':
     import termios, tty
     js=[ALIAS[w] for w in words[1:] if w in ALIAS] or [1,2,3,0]
     f=open('/dev/tty'); fd=f.fileno(); old=termios.tcgetattr(fd)
-    print('\nFor each joint: a/d nudge (A/D bigger), r undo all, Enter = this is straight, next joint. q quits without saving this joint.')
+    print('\nEach joint goes to its normal REST spot (arm and neck lean back a little on purpose).\nOnly fix crookedness: a/d nudge (A/D bigger), r undo, Enter = looks like a proper rest, next joint. q quits.')
     try:
         tty.setcbreak(fd)
         for i in js:
-            t0=desk.TRIM[i]; desk.S[i].value=0; desk.on[i]=True; desk.cur[i]=0
+            t0=desk.TRIM[i]; R=desk.REST[i]; desk.S[i].value=R; desk.on[i]=True; desk.cur[i]=R
             while True:
                 print(f'\r   {desk.NAMES[i]:5} (S{i+1})  center offset {desk.TRIM[i]:+.3f}    ',end='',flush=True)
                 k=f.read(1)
                 step={'a':-0.01,'d':0.01,'A':-0.05,'D':0.05}.get(k)
-                if step: desk.TRIM[i]=max(-0.9,min(0.9,desk.TRIM[i]+step)); desk.S[i].value=0
-                elif k=='r': desk.TRIM[i]=t0; desk.S[i].value=0
+                if step: desk.TRIM[i]=max(-0.35,min(0.35,desk.TRIM[i]+step)); desk.S[i].value=R
+                elif k=='r': desk.TRIM[i]=t0; desk.S[i].value=R
                 elif k in '\r\n': desk.save_trim(); print(' saved'); break
                 elif k=='q': desk.TRIM[i]=t0; print(' kept old'); raise KeyboardInterrupt
     except KeyboardInterrupt: pass
