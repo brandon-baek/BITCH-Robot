@@ -128,6 +128,24 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(phrases.feed(partial + r' also freezes at zero\u002e","turn":"continue"}')[0],
                          ['It also freezes at zero.'])
 
+    def test_compact_turn_streams_expression_before_the_closure_field(self):
+        brain = Brain()
+        stream = SimpleNamespace(parts=[])
+        stream.offer = lambda phrase, delivery, **kwargs: stream.parts.append((phrase, delivery))
+        partial = '{"v":"a","say":"Oh, come on! A fern beat me.'
+
+        def generate(messages, *, schema, model, on_delta, stop):
+            self.assertEqual(schema['required'], ['v', 'say', 'end'])
+            on_delta(partial)
+            self.assertEqual(stream.parts, [('Oh, come on!', 'emphatic')])
+            return partial + '","end":false}'
+
+        with patch('core.brain.llm.chat', side_effect=generate):
+            self.assertEqual(brain.reply('A plant won the staring contest.', 'desk', stream=stream),
+                             'Oh, come on! A fern beat me.')
+        self.assertEqual(brain.performance, 'annoyed')
+        self.assertFalse(brain.close_turn)
+
     def test_streaming_reply_can_stop_before_playing_a_queued_phrase(self):
         import threading
 

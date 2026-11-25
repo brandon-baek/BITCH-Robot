@@ -57,7 +57,7 @@ def main():
     hub.hearing.start()
     hub.sight.start()
     server.start()
-    llm.warm()
+    llm.warm(hub.brain.spoken_system())
     if not args.quiet:
         voice.warm()
 

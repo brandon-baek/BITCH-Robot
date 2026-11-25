@@ -38,8 +38,8 @@ class Phrases:
             tail = text[self.offset:]
             # Wait for whitespace after punctuation to avoid cutting a number or abbreviation.
             end = next((m.end() for m in SENTENCE.finditer(tail)
-                        if m.end() >= 22 and not ABBREVIATION.search(tail[:m.end()])), 0)
-            if not end and len(tail) >= 86:
+                        if m.end() >= 10 and not ABBREVIATION.search(tail[:m.end()])), 0)
+            if not end and len(tail) >= 62:
                 end = next((m.end() for m in CLAUSE.finditer(tail)
                             if 44 <= m.end() <= 90 and tail[m.end():m.end()+1] == ' '), 0)
             if not end and complete:
