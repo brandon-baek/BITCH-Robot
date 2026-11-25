@@ -17,9 +17,9 @@ def draft(prompt):
         return False
     try:
         result = subprocess.run(
-            [service, '--user', '--quiet', '--wait', '--pipe', '--collect', '--property=RuntimeMaxSec=25s',
+            [service, '--user', '--quiet', '--wait', '--pipe', '--collect', '--property=RuntimeMaxSec=41s',
              sys.executable, str(Path(__file__).resolve())],
-            input=prompt, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=28,
+            input=prompt, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=44,
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -60,11 +60,24 @@ def composer_text(composer, atspi):
 def matches_address(address, marker):
     # Chromium normally hides the scheme in the accessibility value of the address bar.
     address = address.strip()
-    if address.startswith(('chatgpt.com/', 'chatgpt.com#')):
+    if address == 'chatgpt.com' or address.startswith(('chatgpt.com/', 'chatgpt.com#')):
         address = 'https://' + address
     url = urlsplit(address)
     return url.scheme == 'https' and url.netloc == 'chatgpt.com' and url.path in ('', '/') and (
         not url.query and url.fragment == marker)
+
+
+def select_open_chat(atspi):
+    for app in children(atspi.get_desktop(0)):
+        if app.get_name().casefold() not in ('chromium', 'google chrome'):
+            continue
+        for window in children(app):
+            if not window.get_state_set().contains(atspi.StateType.ACTIVE):
+                continue
+            for node in nodes(window):
+                if node.get_role() == atspi.Role.PAGE_TAB and node.get_name() == 'ChatGPT':
+                    return node.do_action(0)
+    return False
 
 
 def find_composer(atspi, marker):
@@ -108,23 +121,34 @@ def fill(prompt):
     keys = shutil.which('wtype')
     if not chromium or not copy or not keys:
         return False
-    marker = 'bitch-draft-' + uuid4().hex[:12]
     if Atspi.init() not in (0, 1):
         return False
     Atspi.set_timeout(900, 900)
-    subprocess.run(['systemd-run', '--user', '--quiet', '--collect', '/usr/bin/env', '-u', 'NO_AT_BRIDGE',
-                    chromium, '--force-renderer-accessibility', '--new-window', HOME_PAGE + '#' + marker],
-                   timeout=4, check=True)
-    end = time.monotonic() + 18
-    while time.monotonic() < end:
-        try:
-            target = find_composer(Atspi, marker)
-        except GLib.Error:
-            target = None
-        if target is not None:
-            break
-        time.sleep(.3)
-    else:
+    context = GLib.MainContext.default()
+
+    def wait_composer(marker, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            while context.pending():
+                context.iteration(False)
+            try:
+                target = find_composer(Atspi, marker)
+                if target is not None and not composer_text(target[2], Atspi).strip():
+                    return target
+            except GLib.Error:
+                pass
+            time.sleep(.3)
+        return None
+
+    marker = ''
+    target = wait_composer(marker, 2.4) if select_open_chat(Atspi) else None
+    if target is None:
+        marker = 'bitch-draft-' + uuid4().hex[:12]
+        subprocess.run(['systemd-run', '--user', '--quiet', '--collect', '/usr/bin/env', '-u', 'NO_AT_BRIDGE',
+                        chromium, '--force-renderer-accessibility', '--new-window', HOME_PAGE + '#' + marker],
+                       timeout=4, check=True)
+        target = wait_composer(marker, 30)
+    if target is None:
         return False
     window, address, composer = target
     if composer_text(composer, Atspi).strip():
@@ -151,6 +175,8 @@ def fill(prompt):
                            check=True, timeout=2)
             for _ in range(12):
                 time.sleep(.15)
+                while context.pending():
+                    context.iteration(False)
                 if ' '.join(composer_text(composer, Atspi).split()) == ' '.join(prompt.split()):
                     return True
             return False

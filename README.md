@@ -94,7 +94,7 @@ Say **“BITCH, invent a routine called Victory Lap that bows, chirps twice, the
 
 ## ChatGPT inbox
 
-On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. **Draft in ChatGPT** opens the standard site in Chromium and fills a fresh composer with the request, prefaced by an introduction from BITCH on the account holder’s behalf. Review and send it there. Paste the answer into the inbox and ask **“What did ChatGPT say?”** to hear it back. **Show formatted prompt** provides a copyable draft if desktop automation is unavailable.
+On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. **Draft in ChatGPT** fills an empty new-chat composer on the standard site in Chromium, prefaced by an introduction from BITCH on the account holder’s behalf. Review and send it there. Paste the answer into the inbox and ask **“What did ChatGPT say?”** to hear it back. **Show formatted prompt** provides a copyable draft if desktop automation is unavailable.
 
 The draft macro uses the Pi’s Wayland desktop, Chromium, `at-spi2-core`, `gir1.2-atspi-2.0`, `wl-clipboard`, and `wtype`. If Chromium was already running without AT-SPI support, reopen it from the Pi desktop with `env -u NO_AT_BRIDGE chromium --force-renderer-accessibility --restore-last-session`.
 
