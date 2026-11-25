@@ -76,7 +76,7 @@ async function refresh() {
     : phase === 'Listening' ? 'Go on. A pause is fine.'
     : phase === 'Understanding' ? 'Finishing your sentence on the Mac…'
     : listening ? (state.hearing_speech ? 'Hearing you…' : 'Keep talking without repeating the name · ' + Math.ceil(state.followup_seconds) + 's')
-    : state.status === 'Speaking' ? 'Listen for the soft tone before your next turn.'
+    : state.status === 'Speaking' ? 'Say “wait” or “hold on” to cut in.'
     : settings.muted || settings.volume === 0 ? 'Voice muted. Replies appear here.'
     : 'Say the name to open a conversation.';
   $('meter').value = state.status === 'Speaking' || !micDevice ? 0 : Math.min(1, state.level);
@@ -87,7 +87,7 @@ async function refresh() {
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
   $('robot_key').placeholder = settings.robot_paired ? 'Key saved' : '';
-  for (const key of ['idle', 'muted']) $(key).checked = settings[key];
+  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins']) $(key).checked = settings[key];
   if (document.activeElement !== $('volume')) {
     $('volume').value = settings.volume;
     $('volumeValue').value = settings.volume + '%';
@@ -384,7 +384,7 @@ async function calibrate(step, track = false) {
 }
 
 action('speakerTest', 'click', () => api('test-speaker', {}));
-for (const key of ['idle', 'muted', 'mic_source', 'camera_source', 'speaker_source']) {
+for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'mic_source', 'camera_source', 'speaker_source']) {
   action(key, 'change', e => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     settingsVersion++;

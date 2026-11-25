@@ -23,7 +23,7 @@ os.environ['BITCH_HOME'] = SCRATCH.name
 os.environ['BITCH_PI_HOME'] = SCRATCH.name
 
 import brain as pi
-from core import config, gaze, voice
+from core import config, gaze, memory, voice
 from core.brain import Brain
 from core.devices.base import Device
 from core.hub import hub
@@ -72,7 +72,7 @@ class WakeTests(unittest.TestCase):
         with patch.object(hub, 'get', return_value=robot), patch('core.brain.llm.chat', return_value='*waves* Got it.') as model:
             self.assertEqual(brain.reply('Could an agent help?', 'desk'), 'Got it.')
             self.assertEqual(saved, [])
-            self.assertIn('Queued', brain.reply('Could you ask Chat GPT to draft a summary.', 'desk'))
+            self.assertIn('I queued', brain.reply('Could you ask Chat GPT to draft a summary.', 'desk'))
             self.assertEqual(saved[0][1:], ('agent', 'draft a summary.'))
             model.assert_called_once()
 
@@ -108,6 +108,34 @@ class WakeTests(unittest.TestCase):
         with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):
             self.assertEqual(brain.reply('Thanks. One more thing, does that work on the Mac?', 'desk'), 'Yes.')
         self.assertFalse(brain.close_turn)
+
+    def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
+        brain = Brain()
+        brain.busy.set()
+        brain.active_source = 'desk'
+        brain.spoken_reply = 'Hold on to the rail.'
+        with patch.object(hub, 'status', 'Speaking'), patch.object(hub, 'sight', None):
+            self.assertFalse(brain.interrupt('desk', 'Hold on.'))
+            self.assertFalse(brain.interrupt('other', 'Wait.'))
+            self.assertTrue(brain.interrupt('desk', 'Wait. The blue one is mine.'))
+            self.assertTrue(brain.hush.is_set())
+            self.assertTrue(brain.addressed('The blue one is mine.', 'desk', time.monotonic()))
+            self.assertFalse(brain.addressed('The blue one is mine.', 'other', time.monotonic()))
+
+    def test_saved_notes_are_voice_scoped(self):
+        brain = Brain()
+        try:
+            brain.speaker = 'Local memory fixture'
+            brain.speaker_evidence = 'face'
+            self.assertIn('recognize', brain.reply('Remember that my bike is lime green.', 'desk'))
+            brain.speaker_evidence = 'voice'
+            self.assertEqual(brain.reply('Remember that my bike is lime green.', 'desk'), 'I’ll remember that.')
+            self.assertIn('lime green', brain.reply('What do you remember?', 'desk'))
+            self.assertFalse(memory.recall('Someone else'))
+            self.assertEqual(brain.reply('Forget my bike.', 'desk'), 'I’ve forgotten it.')
+            self.assertFalse(memory.recall(brain.speaker))
+        finally:
+            memory.forget('Local memory fixture', 'everything')
 
     def test_first_turn_distinguishes_face_and_voice_evidence(self):
         brain = Brain()
@@ -277,6 +305,16 @@ class CharacterTests(unittest.TestCase):
 
 
 class JointAttentionTests(unittest.TestCase):
+    def test_finger_follow_is_distinct_from_a_point_request(self):
+        from core.pointing import index_tip
+        self.assertEqual(gaze.request('Could you follow my finger around?'), ('follow', None))
+        self.assertEqual(gaze.request('Stop following my finger.'), ('stop-follow', None))
+        hand = [SimpleNamespace(x=.5, y=.6, z=0.) for _ in range(21)]
+        for index, y in ((5, .54), (6, .48), (7, .41), (8, .33)):
+            hand[index].y = y
+        self.assertEqual(index_tip([hand]), (.5, .33))
+        self.assertIsNone(index_tip([hand, hand]))
+
     def test_geometric_point_projects_beyond_the_hand(self):
         from core.pointing import pointing_region
         landmarks = [SimpleNamespace(x=0, y=0, visibility=0, presence=0) for _ in range(33)]

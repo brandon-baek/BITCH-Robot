@@ -41,6 +41,16 @@ if [ ! -s "$POSE_MODEL" ]; then
   fi
 fi
 
+HAND_MODEL=hand_landmarker.task
+if [ ! -s "$HAND_MODEL" ]; then
+  if curl -fsSL -o "$HAND_MODEL.part" "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/$HAND_MODEL" &&
+     printf '%s  %s\n' fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1 "$HAND_MODEL.part" | shasum -a 256 -c; then
+    mv "$HAND_MODEL.part" "$HAND_MODEL"
+  else
+    echo "!! Finger tracking model unavailable"
+  fi
+fi
+
 
 if command -v ollama >/dev/null; then
   echo "-> downloading the local conversation model"

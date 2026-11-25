@@ -16,6 +16,8 @@ class Robot(Device):
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.connection_error = ''
         self.audio_monitor = False
+        self.audio_warm = False
+        self.warming_since = None
         self.expressive = False
         self.performance = False
         self.motion_enabled = False
@@ -66,6 +68,23 @@ class Robot(Device):
                 self.detail += f' ({self.connection_error})'
             if self.online and not result.get('motion', True):
                 self.detail += ' · motion off on Pi'
+            keep = (self.online and result.get('audio_keepalive') and self.active('voice')
+                    and self.hub.selected('voice') is self and config.get('keep_audio') and not config.get('muted')
+                    and config.get('volume'))
+            if keep:
+                if self.post('keepalive', {'volume': config.get('volume') / 100}):
+                    now = time.monotonic()
+                    if self.warming_since is None:
+                        self.warming_since = now
+                    self.audio_warm = bool(result.get('audio_warm') and now - self.warming_since >= 5)
+                else:
+                    self.audio_warm = False
+                    self.warming_since = None
+            else:
+                if self.warming_since is not None and self.online:
+                    self.post('keepalive', {'volume': 0})
+                self.audio_warm = False
+                self.warming_since = None
             time.sleep(2)
 
     def look(self, mode, base=0, neck=-0.8, energy=0., accent=0.):

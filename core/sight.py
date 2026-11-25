@@ -7,7 +7,7 @@ import time
 
 import cv2
 
-from . import config, voice
+from . import config, gaze, voice
 from .hub import hub
 from .people import people
 from .pointing import MODEL as POINTING_MODEL, Pointing
@@ -155,12 +155,14 @@ class Sight:
         self.gesture = HeadGesture()
         self.pointing = Pointing()
         self.direction = None
+        self.finger = None
 
     def start(self):
         model = config.ROOT / 'mac' / POINTING_MODEL
         threading.Thread(target=self.pointing.run, args=(model,), daemon=True).start()
         threading.Thread(target=self.detect, daemon=True).start()
         threading.Thread(target=self.guide, daemon=True).start()
+        threading.Thread(target=self.check_ins, daemon=True).start()
 
     def feed(self, source, image):
         with self.lock:
@@ -305,9 +307,23 @@ class Sight:
             self.direction = camera, point, now + (5.0 if kind == 'describe' else 3.6)
         return 'accepted'
 
+    def follow_finger(self, camera, received):
+        robot = hub.get('robot')
+        with self.lock:
+            now = time.monotonic()
+            if (not robot or not robot.online or not robot.motion_enabled or now-received > .65
+                    or self.setup and now < self.setup['until']):
+                return 'unavailable'
+            if not self.pointing.start_hand(camera, now+25):
+                return 'unavailable'
+            self.direction = None
+            self.finger = camera, now+25
+            return 'accepted'
+
     def clear_direction(self):
         with self.lock:
-            self.direction = None
+            self.direction = self.finger = None
+        self.pointing.start_hand(None, 0.)
 
     def current_scene(self):
         with self.lock:
@@ -327,6 +343,40 @@ class Sight:
                     break
                 self.frame_ready.wait(deadline - now)
         return None
+
+    def check_ins(self):
+        person = None
+        present_since = 0.
+        last_attempt = time.monotonic()
+        phrases = {'reading': 'Taking a reading break, or should I leave you to it?',
+                   'desk project': 'How’s the desk project going?'}
+        while True:
+            time.sleep(5)
+            brain, hearing = hub.brain, hub.hearing
+            now = time.monotonic()
+            if not (config.get('check_ins') and not config.get('muted') and config.get('volume')
+                    and hub.selected('voice') and brain and hearing and hearing.ready):
+                person = None
+                continue
+            name = self.solo_recognized()
+            if name != person:
+                person, present_since = name, now
+            if not name or now-present_since < 90 or now-last_attempt < 900 or now-brain.last_interaction < 900:
+                continue
+            if brain.busy.is_set() or brain.followup_seconds() or hearing.capture or now-hearing.activity_at < 5:
+                continue
+            source = hub.selected('ears')
+            image, people_in_view = self.current_scene()
+            if not source or image is None or people_in_view != 1:
+                continue
+            last_attempt = now
+            try:
+                phrase = phrases.get(gaze.visible_activity(image))
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+            if (phrase and self.solo_recognized() == name and brain.last_interaction <= now
+                    and not hearing.capture and time.monotonic()-hearing.activity_at >= 5):
+                brain.check_in(phrase, source.id)
 
     def guide(self):
         last_camera = None
@@ -362,10 +412,17 @@ class Sight:
             with self.lock:
                 setup = self.setup
                 direction = self.direction
+                finger = self.finger
+                following_finger = bool(finger and camera and camera.id == finger[0] and now < finger[1]
+                                        and not (setup and now < setup['until']))
+                if finger and not following_finger:
+                    self.finger = None
                 cue = (direction[1] if direction and camera and camera.id == direction[0]
                        and now < direction[2] else None)
                 if direction and cue is None:
                     self.direction = None
+                if following_finger:
+                    cue = self.pointing.fingertip(camera.id, now)
                 aligned_source = camera and camera.id == self.target_source
                 preview = setup and camera and setup['camera'] == camera.id and now < setup['until']
                 target = self.target if aligned_source and self.target and now - self.target[0] < 0.9 else None
@@ -410,7 +467,7 @@ class Sight:
                 base, neck = aim_at(*cue, calibration)
                 mode = 'look-target' if robot.joint_attention else 'watch'
                 result = robot.look(mode, base, neck)
-                drive = {'mode': 'Looking where you asked' if result else 'Pi did not accept gaze'}
+                drive = {'mode': ('Following your finger' if following_finger else 'Looking where you asked') if result else 'Pi did not accept gaze'}
                 if result:
                     drive['point'] = [round(value, 3) for value in cue]
             elif social:

@@ -155,6 +155,7 @@ def state(req: Request):
     data['output'] = output.name if output else None
     data['model'] = config.get('chat_model')
     data['ears_ready'] = hub.hearing.ready
+    data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
     data['pointing_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'ready', False))
     if owner == 'local':
         data['people'] = people.state()
@@ -167,7 +168,7 @@ async def settings(req: Request):
     owner = authorize(req)
     data = await payload(req)
     for key, value in data.items():
-        if key in ('idle', 'muted') and type(value) is bool:
+        if key in ('idle', 'muted', 'keep_audio', 'check_ins') and type(value) is bool:
             continue
         if key == 'volume' and type(value) is int and 0 <= value <= 100:
             continue

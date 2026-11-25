@@ -73,3 +73,15 @@ Say **“Hey BITCH, look there”** while holding one arm out toward the target.
 The [character motion and shared attention notes](docs/character-motion.md) describe the research, the choices carried into the robot, and how to evaluate the result.
 
 If you run Ollama on a different local port, set `ollama_url` in the Mac companion’s `~/.bitch/settings.json` or pass `OLLAMA_URL` when launching it. On macOS, a model directory outside iCloud Drive keeps model files available for local inference.
+
+## Interruptions, names and check-ins
+
+While BITCH is speaking, open with **“Wait”** or **“Hold on”** and keep speaking. The companion probes for that cue, cancels the current reply, and sends the rest of your sentence into the next turn. Use **Stop speech** to end the conversation from the screen. Speaker bleed and room noise can affect spoken interruptions.
+
+Say **“Remember that my bike is lime green”**, **“What do you remember?”**, or **“Forget my bike.”** Saved notes persist on the Mac and are scoped to a recognized voice. Only explicitly requested notes get saved.
+
+Say **“Follow my finger around”** and show one extended index finger. The robot follows it for up to 25 seconds while it stays in view. Say **“Stop following”** to end early. The companion uses a local hand model whose weights are installed by `mac/setup.sh`.
+
+**Keep Pi audio awake** keeps a very quiet PipeWire stream open while the companion is using the Pi speaker. The stream expires when the companion disconnects. It can play an occasional low chime between replies. **Occasional visual check-ins** lets the companion start a short conversation after a long quiet period if it sees one recognized person clearly reading or doing a desk project. It classifies a frame locally and keeps no activity log.
+
+**Ask ChatGPT to…** queues a prompt on the Pi for the desktop handoff. Opening or completing that request still requires the desktop workflow.

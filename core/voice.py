@@ -14,15 +14,16 @@ from .hub import hub
 
 SR = 24000
 playback = None
+echo_reference = None
 last_played = {}
 STEP = .04
 DELIVERY = {
-    'neutral': (1.0, .105, 0.),
-    'warm': (.9, .09, .018),
-    'gentle': (.66, .065, -.032),
-    'upbeat': (1.18, .13, .04),
-    'emphatic': (1.25, .145, .015),
-    'playful': (1.14, .12, .028),
+    'neutral': (1.02, .183, 0.),
+    'warm': (.96, .151, .018),
+    'gentle': (.73, .116, -.032),
+    'upbeat': (1.18, .205, .04),
+    'emphatic': (1.25, .218, .015),
+    'playful': (1.14, .19, .028),
 }
 pipeline = None
 pipeline_lock = threading.Lock()
@@ -144,6 +145,28 @@ def motion_track(pcm):
     return level, nod
 
 
+def is_echo(audio, received):
+    """Reject strong matches between recent playback PCM and mic audio."""
+    current = echo_reference
+    if not current or len(audio) < 1600:
+        return False
+    start, pcm = current
+    sample = audio[-4480:].astype(float)[::4]
+    n = len(sample)
+    index = round((received-start)*4000)
+    x = pcm[max(0,index-n-4200):max(0,index+480)]
+    if len(x) < n:
+        return False
+    sample -= np.mean(sample)
+    norm = np.linalg.norm(sample)
+    if norm < .01:
+        return False
+    correlation = np.correlate(x, sample, 'valid')
+    power = np.cumsum(np.r_[0, x*x])
+    denom = norm * np.sqrt(np.maximum(power[n:]-power[:-n], 1e-9))
+    return bool(np.max(np.abs(correlation)/denom) > .55)
+
+
 def articulation():
     current = playback
     if current is None:
@@ -203,7 +226,7 @@ def say(text, stop, *, ready_cue=False, delivery='neutral'):
 
 
 def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False):
-    global playback
+    global playback, echo_reference
     speaker = hub.selected('voice')
     if stop.is_set() or config.get('muted') or not config.get('volume'):
         return
@@ -214,14 +237,17 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
     with wave.open(io.BytesIO(wav)) as file:
         pcm = file.readframes(file.getnframes())
     lead = 0.
-    output = wav
+    # A short output tail lets the Bluetooth transport drain the final syllable.
+    tail = .44 if speaker.id == 'robot' else .12
+    frames = pcm
     if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20:
-        frames, lead = preroll(pcm)
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as file:
-            file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
-            file.writeframes(frames)
-        output = buffer.getvalue()
+        if not getattr(speaker, 'audio_warm', False):
+            frames, lead = preroll(pcm)
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as file:
+        file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
+        file.writeframes(frames + bytes(round(SR*tail)*2))
+    output = buffer.getvalue()
     if text:
         hub.status = 'Speaking'
     start = time.monotonic()
@@ -250,11 +276,16 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
     else:
         envelope = nod = ()
     playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery
+    echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
+    early = False
     try:
         while not stop.wait(.06):
             playing = speaker.playing()
             elapsed = time.monotonic() - start
-            if playing is False or playing is None and elapsed >= duration + lead + .65:
+            if playing is False:
+                early = elapsed < duration + lead - .30
+                break
+            if playing is None and elapsed >= duration + lead + tail + .65:
                 break
             if elapsed > duration + lead + 5:
                 speaker.hush()
@@ -262,7 +293,19 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         if stop.is_set():
             speaker.hush()
     finally:
-        playback = None
-        last_played[speaker] = time.monotonic()
-    if not interim:
+        playback = echo_reference = None
+        if not early:
+            last_played[speaker] = time.monotonic()
+    if early and not stop.is_set() and not interim:
+        backup = hub.get('mac-speaker') if speaker.id == 'robot' and config.get('speaker_source') == 'auto' else None
+        if backup and backup.speak(wav):
+            hub.note('speaker', 'Pi playback stopped early. Replayed the reply on the Mac speaker.')
+            playback = time.monotonic(), envelope, nod, 0., 0., speech_end, cue_at, delivery
+            echo_reference = (time.monotonic(), np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
+            if stop.wait(duration + .30):
+                backup.hush()
+            playback = echo_reference = None
+        else:
+            hub.note('speaker', 'Playback ended early. Check the speaker connection.')
+    if not interim and not stop.is_set():
         time.sleep(.26 if ready_cue else .43)

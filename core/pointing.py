@@ -6,6 +6,7 @@ import threading
 import time
 
 MODEL = 'pose_landmarker_lite.task'
+HAND_MODEL = 'hand_landmarker.task'
 LOOK_BACK = 1.35
 GESTURE_HOLD = .29
 ARMS = ((11, 13, 15, 19), (12, 14, 16, 20))
@@ -51,6 +52,21 @@ def pointing_region(landmarks, aspect):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def index_tip(hands):
+    """Accept one extended index; folded/ambiguous hands leave the target unset."""
+    if len(hands) != 1:
+        return None
+    hand = hands[0]
+    def distance(a, b):
+        return math.dist((hand[a].x, hand[a].y, hand[a].z), (hand[b].x, hand[b].y, hand[b].z))
+    if distance(8, 0) < 1.17 * distance(6, 0) or distance(8, 5) < .86 * (distance(5, 6)+distance(6, 7)+distance(7, 8)):
+        return None
+    if sum(distance(tip, 0) > 1.12 * distance(tip-2, 0) for tip in (12, 16, 20)) > 1:
+        return None
+    tip = hand[8]
+    return (tip.x, tip.y) if .025 < tip.x < .975 and .025 < tip.y < .975 else None
+
+
 class Pointing:
     def __init__(self):
         self.pending = None
@@ -58,6 +74,9 @@ class Pointing:
         self.lock = threading.Lock()
         self.samples = deque(maxlen=95)
         self.ready = False
+        self.hand_ready = False
+        self.hand_request = None
+        self.hand_target = None
 
     def feed(self, source, received, frame):
         with self.lock:
@@ -91,6 +110,17 @@ class Pointing:
             return candidates[-1]
         return None
 
+    def start_hand(self, source, deadline):
+        with self.lock:
+            self.hand_request = (source, deadline)
+            self.hand_target = None
+        return self.hand_ready
+
+    def fingertip(self, source, now):
+        with self.lock:
+            result = self.hand_target
+            return result[2] if result and result[0] == source and now-result[1] <= .50 else None
+
     def run(self, model):
         from .hub import hub
         if not model.is_file():
@@ -103,13 +133,26 @@ class Pointing:
             options = vision.PoseLandmarkerOptions(
                 BaseOptions(model_asset_path=str(model)), running_mode=vision.RunningMode.VIDEO,
                 num_poses=2, min_pose_detection_confidence=.60)
-            with vision.PoseLandmarker.create_from_options(options) as detector:
+            import contextlib
+            with contextlib.ExitStack() as resources:
+                detector = resources.enter_context(vision.PoseLandmarker.create_from_options(options))
+                hand_path = model.with_name(HAND_MODEL)
+                hand_detector = None
+                if hand_path.is_file():
+                    try:
+                        hand_detector = resources.enter_context(vision.HandLandmarker.create_from_options(
+                            vision.HandLandmarkerOptions(BaseOptions(model_asset_path=str(hand_path)),
+                                                         running_mode=vision.RunningMode.VIDEO, num_hands=2)))
+                        self.hand_ready = True
+                    except (OSError, RuntimeError, ValueError) as error:
+                        hub.note('hand', f'Finger tracking unavailable: {error}')
                 self.ready = True
                 last = 0.
                 while True:
                     self.frames.wait()
                     with self.lock:
                         item = self.pending
+                        requested = self.hand_request
                         self.frames.clear()
                     source, received, frame = item
                     if received - last < .115 or time.monotonic()-received > .50:
@@ -121,6 +164,16 @@ class Pointing:
                     poses = detector.detect_for_video(image, int(received*1000)).pose_landmarks
                     region = pointing_region(poses[0], width/height) if len(poses) == 1 else None
                     self.observe(source, received, region)
+                    if hand_detector and requested and requested[0] == source and received < requested[1]:
+                        hands = hand_detector.detect_for_video(image, int(received*1000))
+                        tip = index_tip(hands.hand_landmarks) if len(poses) <= 1 else None
+                        if tip:
+                            last_tip = self.fingertip(source, received)
+                            if last_tip:
+                                tip = tuple(a*.57+b*.43 for a, b in zip(tip, last_tip))
+                            with self.lock:
+                                if self.hand_request == requested:
+                                    self.hand_target = (source, received, tip)
         except (OSError, ImportError, RuntimeError, ValueError) as error:
             self.ready = False
             hub.note('pointing', f'Pointing recognition unavailable: {error}')

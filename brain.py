@@ -9,6 +9,7 @@ import os
 import random
 from pathlib import Path
 import secrets
+import struct
 import signal
 import shutil
 import subprocess
@@ -305,6 +306,9 @@ class Body:
         self.audio = shutil.which('pw-play') or shutil.which('paplay') or shutil.which('aplay')
         self.position = (0.0, REST[2])
         self.player = None
+        self.ambient_until = 0.
+        self.ambient_volume = 0.
+        self.ambient_process = None
         self.audio_file = None
         self.sink = None
         self.audio_label = 'Checking speaker'
@@ -333,6 +337,79 @@ class Body:
         except (OSError, subprocess.SubprocessError, ValueError, KeyError):
             pass
         self.sink, self.audio_label = None, target + ' disconnected'
+
+    def keepalive(self, volume):
+        with self.lock:
+            self.ambient_until = time.monotonic() + 8 if volume else 0.
+            self.ambient_volume = volume
+
+    def ambient_audio(self):
+        command = shutil.which('pw-cat')
+        if not command:
+            return
+        frequency, block = 200, 1200
+        phases = [math.sin(math.tau * frequency * i / 24000) for i in range(block)]
+        pulse_at = time.monotonic()+90
+        pulse_left = 0
+        previous_sink = None
+        while True:
+            now = time.monotonic()
+            with self.lock:
+                sink, process = self.sink, self.ambient_process
+                volume = self.ambient_volume if now < self.ambient_until else 0.
+                speaking = self.player and self.player.poll() is None
+            if process and (not volume or sink is None or sink != previous_sink or process.poll() is not None):
+                self.end_ambient(process)
+                process = None
+            if volume and sink is not None and not process:
+                try:
+                    args = [command, '--playback', '--rate=24000', '--channels=1', '--format=s16', '--latency=100ms']
+                    if sink:
+                        args.extend(['--target', sink])
+                    process = subprocess.Popen([*args, '-'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL, bufsize=0)
+                    os.set_blocking(process.stdin.fileno(), False)
+                    with self.lock:
+                        self.ambient_process = process
+                    previous_sink = sink
+                    pulse_at = now+90
+                except OSError:
+                    time.sleep(1)
+                    continue
+            if process:
+                if now >= pulse_at and not speaking:
+                    pulse_left = 5
+                    pulse_at = now + random.uniform(90, 180)
+                if speaking:
+                    pulse_left = 0
+                gain = volume ** 1.65
+                data = struct.pack('<1200h', *(round(13*gain*sample) for sample in phases))
+                if pulse_left:
+                    elapsed = (5-pulse_left)*block
+                    pitch = 415 if pulse_left >= 3 else 580
+                    data = struct.pack('<1200h', *(round(800*gain*math.sin(math.pi*(elapsed+i)/(block*5))**2
+                        * math.sin(math.tau*pitch*i/24000)) for i in range(block)))
+                    pulse_left -= 1
+                try:
+                    os.write(process.stdin.fileno(), data)
+                except BlockingIOError:
+                    pass
+                except (OSError, ValueError):
+                    self.end_ambient(process)
+            time.sleep(max(.005, .05 - (time.monotonic()-now)))
+
+    def end_ambient(self, process):
+        with self.lock:
+            if self.ambient_process is process:
+                self.ambient_process = None
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        process.stdin.close()
 
     def set_look(self, look, energy=0., accent=0.):
         with self.lock:
@@ -409,6 +486,7 @@ class Body:
                 time.sleep(max(0., .02 - (time.monotonic() - now)))
         finally:
             self.stop()
+            self.keepalive(0)
             if motion and motion.started:
                 motion.desk.relax()
 
@@ -442,8 +520,10 @@ def listen(motion_enabled=True):
             if self.authorized():
                 if self.path == '/ping':
                     body.refresh_output()
+                    ambient = body.ambient_process
                     self.respond(200, {'audio': body.sink is not None, 'audio_route': body.audio_label,
-                                       'playback_monitor': True, 'character': True, 'performance': 2, 'joint_attention': True,
+                                       'playback_monitor': True, 'character': True, 'performance': 2, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
+                                       'audio_warm': bool(ambient and ambient.poll() is None),
                                        'motion': body.motion_enabled, 'protocol': 1})
                 elif self.path == '/playback':
                     with body.lock:
@@ -455,7 +535,7 @@ def listen(motion_enabled=True):
         def do_POST(self):
             if not self.authorized():
                 return
-            if self.path not in ('/look', '/speak', '/stop', '/macro'):
+            if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive'):
                 self.respond(404, {'error': 'unknown command'})
                 return
             try:
@@ -487,6 +567,11 @@ def listen(motion_enabled=True):
                             self.respond(200, {'ok': True, 'base': base, 'neck': neck,
                                                'beat': body.beat, 'pose': body.pose})
                         return
+                    elif self.path == '/keepalive':
+                        volume = float(item.get('volume', 0))
+                        if not math.isfinite(volume) or not 0 <= volume <= 1:
+                            raise ValueError('invalid keepalive volume')
+                        body.keepalive(volume)
                     elif self.path == '/stop':
                         body.stop()
                     else:
@@ -500,6 +585,7 @@ def listen(motion_enabled=True):
     with ThreadingHTTPServer(('0.0.0.0', PORT), Handler) as server:
         print(f'BITCH Pi ready on port {PORT}. Run python3 brain.py --key to pair it.', flush=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=body.ambient_audio, daemon=True).start()
         try:
             body.run()
         except KeyboardInterrupt:

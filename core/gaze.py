@@ -23,6 +23,10 @@ LOCATE = {
 
 
 def request(text):
+    if re.fullmatch(r"(?:(?:can|could|would) you )?(?:please )?(?:follow|track) my (?:index )?finger(?: around)?[.!?]*", text, re.I):
+        return 'follow', None
+    if re.fullmatch(r"(?:stop|quit) (?:following|tracking)(?: my finger)?[.!?]*", text, re.I):
+        return 'stop-follow', None
     if POINT_QUESTION.fullmatch(text):
         return 'describe', None
     if POINT_COMMAND.fullmatch(text):
@@ -84,3 +88,22 @@ def describe(image, point):
         {'role': 'user', 'content': 'What am I pointing at?', 'images': [base64.b64encode(encoded).decode('ascii')]},
     ]
     return llm.chat(messages, max_tokens=48, model='qwen3.5:4b-q4_K_M', timeout=8).strip()
+
+
+CHECKIN = {
+    'type': 'object',
+    'properties': {'activity': {'type': 'string', 'enum': ['reading', 'desk project', 'unclear']}},
+    'required': ['activity'],
+}
+
+
+def visible_activity(image):
+    messages = [
+        {'role': 'system', 'content': 'Classify only visible evidence in this image. Use reading when the person '
+         'is visibly looking at an open book or printed pages. Use desk project when the person is visibly handling '
+         'a tool or assembling an object. If any evidence is missing or uncertain, use unclear.'},
+        {'role': 'user', 'content': 'What activity is visibly happening?',
+         'images': [base64.b64encode(image).decode('ascii')]},
+    ]
+    result = json.loads(llm.chat(messages, max_tokens=35, schema=CHECKIN, model='qwen3.5:4b-q4_K_M', timeout=8))
+    return result.get('activity')
