@@ -82,7 +82,8 @@ def find_composer(atspi, marker):
             for node in nodes(document):
                 if (node.get_role() in (atspi.Role.ENTRY, atspi.Role.TEXT, atspi.Role.PARAGRAPH)
                         and node.get_state_set().contains(atspi.StateType.EDITABLE)
-                        and node.get_attributes().get('id') == 'prompt-textarea'):
+                        and node.get_name() == 'Ask ChatGPT'
+                        and node.get_attributes().get('id') != 'pending-home-input'):
                     return window, address, node
     return None
 
