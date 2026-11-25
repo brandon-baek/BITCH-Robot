@@ -29,7 +29,10 @@ pipeline = None
 pipeline_lock = threading.Lock()
 
 
-def synthesize(text):
+VOICE_RATE = {'gentle': .93, 'emphatic': 1.07, 'upbeat': 1.06, 'playful': 1.045}
+
+
+def synthesize(text, speed=1.):
     global pipeline
     with pipeline_lock:
         if pipeline is None:
@@ -41,14 +44,14 @@ def synthesize(text):
         if pipeline:
             try:
                 parts = [np.asarray(audio, dtype=np.float32).reshape(-1)
-                         for _, _, audio in pipeline(text, voice=config.get('kokoro_voice'), speed=1.0)]
+                         for _, _, audio in pipeline(text, voice=config.get('kokoro_voice'), speed=speed)]
                 if parts:
                     return np.concatenate(parts), SR
             except Exception:
                 pipeline = False
     with tempfile.TemporaryDirectory() as directory:
         path = directory + '/reply.wav'
-        subprocess.run(['say', '-v', config.get('mac_voice'), '-r', '185', '-o', path,
+        subprocess.run(['say', '-v', config.get('mac_voice'), '-r', str(round(185*speed)), '-o', path,
                         '--file-format=WAVE', '--data-format=LEI16@24000', '--', text],
                        timeout=25, check=True, capture_output=True)
         with wave.open(path, 'rb') as audio:
@@ -56,8 +59,8 @@ def synthesize(text):
             return samples, audio.getframerate()
 
 
-def render(text, ready_cue=False):
-    audio, rate = synthesize(text)
+def render(text, ready_cue=False, delivery='neutral'):
+    audio, rate = synthesize(text, VOICE_RATE.get(delivery, 1.))
     if not len(audio):
         raise ValueError('speech synthesis returned no audio')
     # Retain the clean voice and its prosody. Add a quiet metallic signal and one very short reflection.
@@ -146,25 +149,30 @@ def motion_track(pcm):
 
 
 def is_echo(audio, received):
-    """Reject strong matches between recent playback PCM and mic audio."""
+    """Look for delayed playback in several voiced blocks of microphone audio."""
     current = echo_reference
     if not current or len(audio) < 1600:
         return False
     start, pcm = current
-    sample = audio[-4480:].astype(float)[::4]
-    n = len(sample)
+    samples = audio[-12800:].astype(float)[::4]
     index = round((received-start)*4000)
-    x = pcm[max(0,index-n-4200):max(0,index+480)]
-    if len(x) < n:
-        return False
-    sample -= np.mean(sample)
-    norm = np.linalg.norm(sample)
-    if norm < .01:
-        return False
-    correlation = np.correlate(x, sample, 'valid')
-    power = np.cumsum(np.r_[0, x*x])
-    denom = norm * np.sqrt(np.maximum(power[n:]-power[:-n], 1e-9))
-    return bool(np.max(np.abs(correlation)/denom) > .55)
+    matches = []
+    for end in range(len(samples), 479, -480):
+        sample = samples[end-480:end].copy()
+        sample -= np.mean(sample)
+        norm = np.linalg.norm(sample)
+        if norm < .02:
+            continue
+        center = index - len(samples) + end
+        x = pcm[max(0, center-9200):max(0, center+960)]
+        if len(x) < len(sample):
+            continue
+        corr = np.correlate(x, sample, 'valid')
+        power = np.cumsum(np.r_[0, x*x])
+        n = len(sample)
+        denom = norm * np.sqrt(np.maximum(power[n:]-power[:-n], 1e-9))
+        matches.append(float(np.max(np.abs(corr)/denom)))
+    return bool(matches and (matches[0] > .72 or sum(score > .55 for score in matches[:4]) >= 2))
 
 
 def articulation():
@@ -218,10 +226,19 @@ def thinking(stop, *, greeting):
             worker.join()
 
 
+def laugh(stop):
+    if stop.is_set() or config.get('muted') or not config.get('volume'):
+        return
+    # These soft pulses and the animated shoulder bounce share the same audio clock.
+    bursts = [note(hz, .14, .18) + note(hz*2, .14, .065) for hz in (310, 277, 238)]
+    breath = np.concatenate([np.r_[burst, np.zeros(round(SR*.065))] for burst in bursts])
+    play(*encode(breath), stop, text=True, delivery='playful', interim=True)
+
+
 def say(text, stop, *, ready_cue=False, delivery='neutral'):
     if config.get('muted') or not config.get('volume'):
         return
-    wav, duration = render(text, ready_cue=ready_cue) if text else encode(cue())
+    wav, duration = render(text, ready_cue=ready_cue, delivery=delivery) if text else encode(cue())
     play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery)
 
 
@@ -267,16 +284,14 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         speaker.hush()
         return
     hub.note('speaker', None)
-    cue_at = max(0., duration-.30) if ready_cue or interim else None
-    if interim:
-        cue_at = 0.
+    cue_at = max(0., duration-.30) if ready_cue else 0. if interim and not text else None
     speech_end = max(0., duration-.42) if text and ready_cue else duration if text else 0.
     if speech_end > 0:
         envelope, nod = motion_track(pcm[:round(speech_end*SR)*2])
     else:
         envelope = nod = ()
     playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery
-    echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
+    echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float))
     early = False
     try:
         while not stop.wait(.06):

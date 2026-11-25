@@ -183,21 +183,22 @@ def hello():
     say('happy wiggle!'); A.shake('h',0.35,3,1.2).shake('b',0.15,3,1.2).wait(1.5)
     A.end()
 
-def disco(bpm=112):
-    say('DANCE PARTY'); A=Actor(); beat=60/bpm
-    music('dance')
-    say('getting into the groove'); A.idle_amt=0.3
+def disco(bpm=112, *, stage=None):
+    actor, announce, score = (stage.actor, stage.say, stage.music) if stage else (Actor, say, music)
+    announce('DANCE PARTY'); A=actor(); beat=60/bpm
+    score('dance')
+    announce('getting into the groove'); A.idle_amt=0.3
     for k in range(8): A.to(n=-0.55 if k%2 else -0.85,stiff=2).wait(beat)
-    say('side to side')
+    announce('side to side')
     for k in range(8): s=1 if k%2 else -1; A.to(b=0.3*s,h=-0.3*s,stiff=1.8).wait(beat)
-    say('the robot (snap!)')
+    announce('the robot (snap!)')
     poses=[(0.4,-0.5,-0.5,0.4),(-0.4,-0.5,-0.5,-0.4),(0.4,-0.85,-0.9,-0.3),(-0.4,-0.85,-0.9,0.3)]
     for k in range(8): b,a,n,h=poses[k%4]; A.to(b,a,n,h,stiff=3.5).sfx('blip').wait(beat)
-    say('head bang!')
+    announce('head bang!')
     A.to(b=0,a=-0.6,h=0,stiff=2).wait(beat)
     for k in range(8): A.to(n=-0.3 if k%2 else -0.9,stiff=3).wait(beat/2)
-    say('spin!'); A.sfx('excited'); A.to(b=0.85,stiff=1.2).wait(beat*2).to(b=-0.85).wait(beat*3).to(b=0).wait(beat*2)
-    say('...and FREEZE!'); A.to(b=0.25,a=-0.4,n=-0.3,h=0.55,stiff=4).wait(0.2); A.idle_amt=0; A.wait(2.2); A.idle_amt=1
+    announce('spin!'); A.sfx('excited'); A.to(b=0.85,stiff=1.2).wait(beat*2).to(b=-0.85).wait(beat*3).to(b=0).wait(beat*2)
+    announce('...and FREEZE!'); A.to(b=0.25,a=-0.4,n=-0.3,h=0.55,stiff=4).wait(0.2); A.idle_amt=0; A.wait(2.2); A.idle_amt=1
     A.end()
 
 def peekaboo():
@@ -256,61 +257,62 @@ def showtime():
     say('*** SHOWTIME: THE FULL SHOW ***')
     hello(); disco(); peekaboo(); spooked(); emotions(); sleepy()
 
-def disco_pro():
+def disco_pro(*, stage=None):
     """~70 s, beat-locked to an original 120 BPM disco track:
     intro, groove, build, drop, slow-mo breakdown, finale and a final pose on the last chord."""
     from math import sin
-    say('*** DISCO INFERNO ***'); A=Actor(); beat=0.5
+    actor, announce, score = (stage.actor, stage.say, stage.music) if stage else (Actor, say, music)
+    announce('*** DISCO INFERNO ***'); A=actor(); beat=0.5
     def B(n): A.wait(beat*n)
-    music('disco'); A.wait(0.15)                       # let the speaker catch up
-    say('intro: finding the beat'); A.idle_amt=0.2
+    score('disco'); A.wait(0.15)                       # let the speaker catch up
+    announce('intro: finding the beat'); A.idle_amt=0.2
     for k in range(8): A.to(n=-0.6 if k%2==0 else -0.82,stiff=2.2); B(1)
     for k in range(4):
         s=1 if k%2==0 else -1
         A.to(b=0.25*s,h=-0.2*s,n=-0.6,stiff=1.6); B(1); A.to(n=-0.82); B(1)
-    say('groove: sway and bounce')
+    announce('groove: sway and bounce')
     for k in range(8):
         s=1 if (k//2)%2==0 else -1
         A.to(b=0.35*s,h=-0.3*s,n=-0.55 if k%2 else -0.85,a=-0.6 if k%2==0 else -0.75,stiff=1.8); B(1)
-    say('the ripple')
+    announce('the ripple')
     for k in range(4):
         s=1 if k%2==0 else -1
         A.to(b=0.4*s,stiff=2.6); B(0.25); A.to(a=-0.55,stiff=2.6); B(0.25)
         A.to(n=-0.5,stiff=2.6); B(0.25); A.to(h=0.45*s,stiff=2.6); B(0.25)
         A.to(a=-0.8,n=-0.8,stiff=1.6); B(1)
-    say('the point!')
+    announce('the point!')
     for s in (1,-1):
         A.to(b=0.55*s,a=-0.35,n=-0.4,h=0.5*s,stiff=3).sfx('blip'); B(2)
         A.to(b=0,a=-0.8,n=-0.85,h=0,stiff=2); B(2)
-    say('pop and lock')
+    announce('pop and lock')
     poses=[(0.4,-0.5,-0.5,0.45),(-0.4,-0.5,-0.5,-0.45),(0.45,-0.85,-0.95,-0.3),(-0.45,-0.85,-0.95,0.3),
            (0,-0.4,-0.35,0),(0,-0.9,-0.95,0),(0.3,-0.6,-0.7,0.6),(-0.3,-0.6,-0.7,-0.6)]
     for b_,a_,n_,h_ in poses: A.to(b_,a_,n_,h_,stiff=5).sfx('blip'); B(1)
-    say('the build... here it comes')
+    announce('the build... here it comes')
     for k in range(4): A.to(b=0.15*k,n=-0.55 if k%2==0 else -0.8,a=-0.75,stiff=2.5); B(1)
     for k in range(8): A.to(n=-0.6 if k%2==0 else -0.8,stiff=3); B(0.5)
     for k in range(16): A.to(n=-0.68 if k%2==0 else -0.8,stiff=4); B(0.25)
     A.to(b=0.7,a=-0.95,n=-1.0,h=0.3,stiff=0.6).shake('h',0.06,10,3.4); B(3.5)
     A.idle_amt=0; A.to(stiff=4); B(0.5)
-    say('DROP!'); A.idle_amt=0.2; A.sfx('excited')
+    announce('DROP!'); A.idle_amt=0.2; A.sfx('excited')
     for k in range(8):
         s=1 if k%2==0 else -1
         A.to(b=0.45*s,n=-0.3,a=-0.55,stiff=4); B(0.5); A.to(n=-0.95,stiff=4); B(0.5)
-    say('spin!')
+    announce('spin!')
     for k in range(4):
         A.to(b=0.85 if k%2==0 else -0.85,h=0.3*(-1 if k%2==0 else 1),a=-0.7,n=-0.7,stiff=1.7).sfx('whirr'); B(2)
-    say('robot mode')
+    announce('robot mode')
     for b_,a_,n_,h_ in poses[::-1]: A.to(b_,a_,n_,h_,stiff=5).sfx('blip'); B(1)
-    say('the wave')
+    announce('the wave')
     for k in range(16):
         p=k*0.8
         A.to(b=0.5*sin(p),a=-0.6+0.2*sin(p-1),n=-0.6+0.3*sin(p-2),h=0.5*sin(p-3),stiff=2.6); B(0.5)
-    say('breakdown: slow motion'); A.idle_amt=0.5
+    announce('breakdown: slow motion'); A.idle_amt=0.5
     A.to(b=-0.6,a=-0.4,n=-0.5,h=-0.4,stiff=0.35); B(4)
     A.to(b=0.6,a=-0.85,n=-0.9,h=0.4); B(4)
     A.to(b=0,a=-0.6,n=-0.6,h=0); B(4)
     A.to(a=-0.95,n=-1.0,h=0.2,stiff=0.5); B(3); A.sfx('powerup'); B(1)
-    say('FINALE!'); A.idle_amt=0.2; A.sfx('happy')
+    announce('FINALE!'); A.idle_amt=0.2; A.sfx('happy')
     for k in range(16):
         s=1 if (k//2)%2==0 else -1
         A.to(b=0.45*s,n=-0.4 if k%2 else -0.85,h=0.35*s*(1 if k%2 else -1),a=-0.6,stiff=3.5); B(0.5)
@@ -321,34 +323,36 @@ def disco_pro():
         b_,a_,n_,h_=poses[k%8]; A.to(b_,a_,n_,h_,stiff=5)
         if k%2==0: A.sfx('blip')
         B(0.5)
-    say('...and POSE!'); A.idle_amt=0
+    announce('...and POSE!'); A.idle_amt=0
     A.to(b=0.3,a=-0.35,n=-0.35,h=0.55,stiff=5).sfx('tada'); B(5)
     A.idle_amt=1; A.end()
 
-def opera():
+def opera(*, stage=None):
     """the robot sings an original aria in its own voice: gestures follow every note"""
     import music as _m
-    say('*** AN EVENING AT THE OPERA ***'); A=Actor(); chatter(False)
-    music('opera'); t0=A.T+0.15; A.wait(0.15)
+    actor, announce, score = (stage.actor, stage.say, stage.music) if stage else (Actor, say, music)
+    announce('*** AN EVENING AT THE OPERA ***'); A=actor()
+    if stage is None: chatter(False)
+    score('opera'); t0=A.T+0.15; A.wait(0.15)
     def until(t): A.wait(max(0,t0+t-A.T))
-    say('the orchestra begins...'); A.idle_amt=0.3
+    announce('the orchestra begins...'); A.idle_amt=0.3
     A.to(n=-0.95,h=0,stiff=0.6); until(1.6)
-    say('*ahem*'); A.sfx('process'); A.to(n=-0.7,stiff=2).shake('n',0.05,6,0.4); until(2.6)
+    announce('*ahem*'); A.sfx('process'); A.to(n=-0.7,stiff=2).shake('n',0.05,6,0.4); until(2.6)
     A.to(a=-0.75,n=-0.6,h=0,stiff=0.8); until(3.8)
     lo,hi=380,672; side=1
     for i,(t,d,pts,vw,vib) in enumerate(_m.OPERA):
         until(t-0.1)
-        if i in (0,5,10,13): say(['first verse','second verse','building...','THE HIGH NOTE!'][[0,5,10,13].index(i)])
+        if i in (0,5,10,13): announce(['first verse','second verse','building...','THE HIGH NOTE!'][[0,5,10,13].index(i)])
         f=max(pts); r=(f-lo)/(hi-lo)
         side=-side if d>1.5 else side
         A.to(b=0.25*side*(0.5+r),a=-0.9+0.55*r,n=-0.85+0.35*r,h=0.25*side*r,stiff=0.9 if d>1.5 else 1.4)
         if d>=1.5: A.shake('h',0.04+0.06*r,5.5,d)
         if i==13: A.to(b=0,a=-0.3,n=-0.45,h=0.2,stiff=0.5).shake('n',0.05,6,d)
         if i==14:
-            say('...the dramatic finish'); A.to(b=-0.2,a=-0.95,n=-1.0,h=0.45,stiff=0.35)
+            announce('...the dramatic finish'); A.to(b=-0.2,a=-0.95,n=-1.0,h=0.45,stiff=0.35)
     until(_m.OPERA_END)
-    say('*holds the pose*'); A.idle_amt=0; until(31.4)
-    say('applause! bows'); A.idle_amt=0.4; A.sfx('love')
+    announce('*holds the pose*'); A.idle_amt=0; until(31.4)
+    announce('applause! bows'); A.idle_amt=0.4; A.sfx('love')
     A.to(b=0,a=-0.3,n=-0.2,h=0,stiff=0.8); until(33.0)
     A.to(a=-0.8,n=-0.8,stiff=0.8); until(34.2)
     A.to(b=0.4,a=-0.35,n=-0.25,stiff=0.9); until(35.4)

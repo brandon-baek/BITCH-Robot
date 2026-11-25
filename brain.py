@@ -17,8 +17,10 @@ import tempfile
 import threading
 import time
 import wave
+from urllib.parse import parse_qs, urlsplit
 
 import macros
+import stage
 from actor import Actor
 
 PORT = 8765
@@ -79,6 +81,13 @@ BEATS = {
                        (.56, .03, .20, .13, -.08), (1.12, 0, .17, .06, .06)),
     'speak-playful': ((0, .025, -.09, .045, .33), (.28, .10, .17, -.065, -.43),
                       (.65, .04, .27, .14, .13), (1.24, 0, .12, .065, .24)),
+    'speak-annoyed': ((0, 0, -.095, .04, -.13), (.16, .04, .27, -.12, .33),
+                      (.41, .015, .19, -.03, .24), (.85, -.07, .16, .11, -.25), (1.4, 0, .1, .02, -.12)),
+    'speak-amused': ((0, 0, -.04, .045, .16), (.21, 0, .23, -.11, -.31),
+                     (.43, .03, -.04, .12, .18), (.69, .015, .25, -.08, -.24),
+                     (1.03, 0, .15, .055, -.12)),
+    'speak-surprised': ((0, 0, -.20, -.075, -.31), (.19, 0, .05, .17, .33),
+                        (.52, 0, .24, .10, -.18), (1.18, 0, .12, .055, .08)),
     'speak-farewell': ((0, 0, .13, .08, .2), (.27, 0, .24, -.09, -.27),
                        (.66, 0, .14, .12, .23), (1.12, .055, -.08, .015, .15),
                        (1.65, .11, -.10, -.085, -.11)),
@@ -93,11 +102,11 @@ IDLE_BEATS = ('curious', 'glance', 'shy', 'stretch', 'peek')
 ROOM_BEATS = ('survey', 'stretch', 'glance', 'sad', 'peek')
 SOFTNESS = {'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
             'happy': 1.85, 'recognize': 1.85, 'notice': 1.8, 'double-take': 1.88,
-            'speak-gentle': .82, 'speak-farewell': 1.15, 'speak-upbeat': 2.1,
+            'speak-annoyed': 2.05, 'speak-amused': 2.17, 'speak-surprised': 2.12, 'speak-gentle': .82, 'speak-farewell': 1.15, 'speak-upbeat': 2.1,
             'speak-emphatic': 1.85, 'speak-playful': 1.78, 'speaking': 1.58}
 # Separate quick head accents from the heavier arm's slower weight transfer.
 SPEECH_WEIGHT = {'speak-gentle': .68, 'speak-upbeat': 1.2, 'speak-emphatic': 1.16,
-                 'speak-playful': 1.12, 'speak-farewell': .8}
+                 'speak-annoyed': 1.15, 'speak-amused': 1.25, 'speak-surprised': 1.18, 'speak-playful': 1.12, 'speak-farewell': .8}
 
 
 def pose_at(frames, elapsed):
@@ -169,9 +178,9 @@ class Motion:
         self.restoring = abs(REST[1] - desk.cur[1]) > 0.02
         self.started = True
 
-    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0):
+    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None):
         if not self.started:
-            if mode == 'park':
+            if mode == 'park' and score_frame is None:
                 return
             self.start()
         desk = self.desk
@@ -182,6 +191,14 @@ class Motion:
         actor.high = (BASE, -.42, NECK[1], .64)
         actor.speed = (.58 * min(1., max(0., desk.BASE_SPEED)), .68, .85, 1.65)
         actor.accel = (1.55, 2.1, 3.5, 7.4)
+        if score_frame is not None:
+            pose, stiffness, idle = score_frame
+            actor.idle_amt = idle * .35
+            actor.to(*pose, stiff=stiffness)
+            actor.step(min(.02, dt))
+            self.mode, self.beat = 'show', 'Performing'
+            self.restoring = False
+            return
         following = mode == 'watch' or mode in SOCIAL
         changed = mode != self.mode
         if changed and (mode == 'look-target' or self.mode == 'look-target'):
@@ -315,6 +332,8 @@ class Body:
         self.beat = 'park'
         self.energy = self.accent = 0.
         self.pose = list(REST)
+        self.show = None
+        self.show_result = None
         self.refresh_output()
 
     def refresh_output(self):
@@ -420,7 +439,74 @@ class Body:
 
     def stop(self):
         with self.lock:
+            if self.show:
+                self.show_result = {'id': self.show['id'], 'state': 'stopped'}
+            self.show = None
             self._stop()
+
+    def begin_show(self, item):
+        name, token = item.get('name'), item.get('id')
+        volume = item.get('volume', 0)
+        if not isinstance(token, str) or len(token) != 32 or any(c not in '0123456789abcdef' for c in token):
+            raise ValueError('invalid performance id')
+        if type(volume) not in (float, int) or not math.isfinite(volume) or not 0 <= volume <= 1:
+            raise ValueError('invalid performance volume')
+        if name == 'routine':
+            score = stage.routine(item.get('steps'))
+        elif isinstance(name, str) and name in stage.SHOWS:
+            score = None
+        else:
+            raise ValueError('unknown performance')
+        with self.lock:
+            if not self.motion_enabled:
+                return {'state': 'unavailable', 'reason': 'Motion is off on the Pi.'}
+            if self.show_result and self.show_result['id'] == token:
+                return {'state': 'queued', 'id': token}
+            if self.show:
+                return {'state': 'unavailable', 'reason': 'A performance is already running.'}
+            if volume and name in stage.SHOWS and self.sink is None:
+                return {'state': 'unavailable', 'reason': 'The Pi speaker is disconnected.'}
+            active = {'id': token, 'name': name, 'start': None}
+            self.show = active
+            self.show_result = {'id': token, 'state': 'preparing'}
+        threading.Thread(target=self.prepare_show, args=(active, score, volume), daemon=True).start()
+        return {'state': 'queued', 'id': token}
+
+    def prepare_show(self, active, score, volume):
+        track = None
+        try:
+            score = score or stage.legacy_show(active['name'])
+            lead, duration = .43, score.duration
+            with self.lock:
+                sink = self.sink
+                if not self.ambient_process or self.ambient_process.poll() is not None:
+                    lead = 1.65
+            if volume and sink is not None and (score.song or score.cues):
+                track = tempfile.NamedTemporaryFile(suffix='.wav')
+                with stage.render_lock:
+                    duration = stage.write_soundtrack(score, track, volume, lead)
+                track.flush()
+            with self.lock:
+                if self.show is not active:
+                    return
+                self._stop()
+                if track:
+                    args = [self.audio, '--target', sink] if sink else [self.audio]
+                    self.player = subprocess.Popen([*args, track.name], stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.DEVNULL)
+                    self.audio_file, track = track, None
+                now = time.monotonic()
+                active.update(score=score, start=now+lead if self.player else now, duration=duration)
+                self.show_result = {'id': active['id'], 'state': 'playing'}
+        except (OSError, ValueError, TypeError, wave.Error) as error:
+            print(f'Unable to prepare performance: {error}', flush=True)
+            with self.lock:
+                if self.show is active:
+                    self.show_result = {'id': active['id'], 'state': 'failed'}
+                    self.show = None
+        finally:
+            if track:
+                track.close()
 
     def _stop(self):
         if self.player and self.player.poll() is None:
@@ -443,6 +529,8 @@ class Body:
         if not self.audio or self.sink is None:
             return False
         with self.lock:
+            if self.show:
+                return False
             self._stop()
             file = tempfile.NamedTemporaryFile(suffix='.wav')
             try:
@@ -471,13 +559,27 @@ class Body:
                     energy, accent = self.energy, self.accent
                     look = self.look if now - self.look_at < 3 else ('park', 0, -0.8)
                     if self.player and self.player.poll() is not None:
+                        if self.show and self.player.returncode:
+                            self.show_result = {'id': self.show['id'], 'state': 'failed'}
+                            self.show = None
                         self._stop()
-                if self.motion_enabled and motion is None and look[0] != 'park':
+                    current = self.show
+                    frame = None
+                    if current and current['start'] is not None:
+                        elapsed = now - current['start']
+                        score = current['score']
+                        if elapsed >= current['duration']:
+                            self.show_result = {'id': current['id'], 'state': 'finished'}
+                            self.show = None
+                            self._stop()
+                        else:
+                            frame = score.at(min(elapsed, score.duration)) if elapsed >= 0 else (REST, .65, .25)
+                if self.motion_enabled and motion is None and (frame is not None or look[0] != 'park'):
                     import desk
 
                     motion = Motion(desk)
                 if motion:
-                    motion.step(*look, now, min(0.05, now - last), energy, accent)
+                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame)
                     with self.lock:
                         self.position = (motion.desk.cur[0], motion.desk.cur[2])
                         self.beat = motion.beat
@@ -516,15 +618,47 @@ def listen(motion_enabled=True):
             self.respond(401, {'error': 'pair the Pi first'})
             return False
 
+        def local_inbox(self):
+            return self.client_address[0] == '127.0.0.1' and self.headers.get('Host') in (
+                f'localhost:{PORT}', f'127.0.0.1:{PORT}')
+
+        def inbox(self):
+            data = macros.inbox_html().encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self):
+            if self.path == '/inbox':
+                if self.local_inbox():
+                    self.inbox()
+                else:
+                    self.send_error(403)
+                return
             if self.authorized():
+                url = urlsplit(self.path)
+                if url.path == '/macro/status':
+                    try:
+                        request_id = parse_qs(url.query).get('id', [''])[0]
+                        self.respond(200, macros.handoff_status(request_id))
+                    except (ValueError, FileNotFoundError):
+                        self.respond(404, {'error': 'no such request'})
+                    return
                 if self.path == '/ping':
                     body.refresh_output()
                     ambient = body.ambient_process
                     self.respond(200, {'audio': body.sink is not None, 'audio_route': body.audio_label,
-                                       'playback_monitor': True, 'character': True, 'performance': 2, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
+                                       'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
+                                       'handoff': 2, 'shows': 1, 'show_active': bool(body.show),
                                        'motion': body.motion_enabled, 'protocol': 1})
+                elif self.path == '/show':
+                    with body.lock:
+                        self.respond(200, body.show_result or {'state': 'idle'})
                 elif self.path == '/playback':
                     with body.lock:
                         active = bool(body.player and body.player.poll() is None)
@@ -533,9 +667,27 @@ def listen(motion_enabled=True):
                     self.respond(404, {'error': 'unknown command'})
 
         def do_POST(self):
+            if self.path == '/inbox':
+                origin = 'http://' + self.headers.get('Host', '')
+                if not self.local_inbox() or self.headers.get('Origin') != origin:
+                    self.send_error(403)
+                    return
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 150000:
+                        raise ValueError('invalid form length')
+                    fields = parse_qs(self.rfile.read(length).decode(), max_num_fields=5)
+                    macros.update_handoff(fields['id'][0], fields['action'][0], fields.get('answer', [''])[0])
+                except (ValueError, KeyError, OSError) as error:
+                    self.send_error(400, str(error))
+                    return
+                self.send_response(303)
+                self.send_header('Location', '/inbox')
+                self.end_headers()
+                return
             if not self.authorized():
                 return
-            if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive'):
+            if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive', '/show'):
                 self.respond(404, {'error': 'unknown command'})
                 return
             try:
@@ -574,6 +726,9 @@ def listen(motion_enabled=True):
                         body.keepalive(volume)
                     elif self.path == '/stop':
                         body.stop()
+                    elif self.path == '/show':
+                        self.respond(200, body.begin_show(item))
+                        return
                     else:
                         macros.enqueue(item)
                 self.respond(200, {'ok': True})

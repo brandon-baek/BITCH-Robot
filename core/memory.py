@@ -62,3 +62,25 @@ def relevant(owner, query):
     }
     matching = [(len(words & set(re.findall(r"[a-z]{3,}", note.lower()))), note) for note in recall(owner)]
     return [note for score, note in sorted(matching, reverse=True) if score][:4]
+
+
+_PRIVATE = re.compile(r"\b(?:password|passcode|pin code|api key|account number|social security|credit card|"
+                      r"diagnos\w*|allerg\w*|medication|prescription|bank|salary|lawsuit|home address)\b", re.I)
+_PREFERENCE = re.compile(r"\b(?:i (?:definitely |usually |really )?(?:prefer|like|love|hate|dislike|always use)|"
+                         r"my (?:favorite|favourite|ongoing|default)|i(?:'|’)m (?:building|working on|learning)|"
+                         r"(?:keep|hold) that (?:in mind|for later)|(?:might|will) ask you again)\b", re.I)
+
+
+_CLEAR_PREFERENCE = re.compile(r"^I (?:definitely |usually )?prefer [^.?!]+[.]?$", re.I)
+
+
+def remember_in_context(owner, text, suggestion):
+    if not suggestion and _CLEAR_PREFERENCE.fullmatch(text.strip()):
+        suggestion = text.strip()
+    if not isinstance(suggestion, str) or not suggestion or len(suggestion) > 180:
+        return False
+    if '?' in text or _PRIVATE.search(text + ' ' + suggestion) or not _PREFERENCE.search(text):
+        return False
+    words = lambda line: set(re.findall(r"[a-z]{3,}", line.casefold()))
+    proposed = words(suggestion) - {'prefer', 'like', 'love', 'favorite', 'favourite', 'building', 'working', 'learning'}
+    return bool(proposed and len(proposed - words(text)) <= 1 and remember(owner, suggestion))

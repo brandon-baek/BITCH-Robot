@@ -76,12 +76,24 @@ If you run Ollama on a different local port, set `ollama_url` in the Mac compani
 
 ## Interruptions, names and check-ins
 
-While BITCH is speaking, open with **“Wait”** or **“Hold on”** and keep speaking. The companion probes for that cue, cancels the current reply, and sends the rest of your sentence into the next turn. Use **Stop speech** to end the conversation from the screen. Speaker bleed and room noise can affect spoken interruptions.
+While BITCH is speaking, start your correction naturally, such as **“Actually, the blue one is mine”** or **“Wait, I meant tomorrow.”** An enrolled speaker can cut in with other phrasing. BITCH checks microphone audio and its transcription against what it was just saying. Once it yields, keep speaking so it gets the rest of your sentence in the next turn. Use **Stop speech** to end the conversation or a performance from the screen.
 
-Say **“Remember that my bike is lime green”**, **“What do you remember?”**, or **“Forget my bike.”** Saved notes persist on the Mac and are scoped to a recognized voice. Only explicitly requested notes get saved.
+Say **“Remember that my bike is lime green”**, **“What do you remember?”**, or **“Forget my bike.”** Saved notes persist on the Mac and are scoped to a recognized voice. **Remember natural preferences** also lets BITCH retain clearly stated lasting details without a “remember” command.
 
 Say **“Follow my finger around”** and show one extended index finger. The robot follows it for up to 25 seconds while it stays in view. Say **“Stop following”** to end early. The companion uses a local hand model whose weights are installed by `mac/setup.sh`.
 
 **Keep Pi audio awake** keeps a very quiet PipeWire stream open while the companion is using the Pi speaker. The stream expires when the companion disconnects. It can play an occasional low chime between replies. **Occasional visual check-ins** lets the companion start a short conversation after a long quiet period if it sees one recognized person clearly reading or doing a desk project. It classifies a frame locally and keeps no activity log.
 
 **Ask ChatGPT to…** queues a prompt on the Pi for the desktop handoff. Opening or completing that request still requires the desktop workflow.
+
+## Performances and new routines
+
+Say **“BITCH, dance,” “BITCH, do the disco,”** or **“BITCH, sing something.”** The Pi plays the original score and choreography through the same spring controller and joint limits it uses for conversation. **“Stop the show”** stops the track and returns control to the normal motion system.
+
+Say **“BITCH, invent a routine called Victory Lap that bows, chirps twice, then sways.”** BITCH turns the request into a short sequence of gestures, holds, and chirps. Use **“BITCH, do Victory Lap”** to play it again. Named routines persist on the Mac. A routine can also choose steps based on whether the camera sees a person when it starts. Add new primitives in `stage.py` and expose their supported arguments in the planner. If a spoken request depends on an unavailable capability, BITCH asks for a different routine.
+
+## ChatGPT inbox
+
+On the Pi desktop, open `http://127.0.0.1:8765/inbox`. Say **“Ask ChatGPT to…”** to queue a prompt. Prepare it in the inbox, open ChatGPT, and review and send the prompt. Paste the answer into the inbox to return it to BITCH, then ask **“What did ChatGPT say?”**. The Pi desktop inbox stays on loopback, and the paired Mac uses the request ID to fetch an answer. The desktop copy-and-send step gives you control of what goes to ChatGPT.
+
+While BITCH is replying, cut in with a short sentence such as **“Actually, I meant the blue one.”** The microphone compares the interruption against playback before forwarding it to the next turn. In **Connections**, **Learn my preferences** lets BITCH keep durable preferences or project details that a recognized speaker says in ordinary conversation. Use **“You can forget about…”** to remove a saved detail.

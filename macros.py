@@ -1,5 +1,6 @@
 """Local, durable requests for a human or future desktop connector on the Pi."""
 import argparse
+from html import escape
 from datetime import datetime, timezone
 import json
 import os
@@ -8,10 +9,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
 QUEUE = HOME / 'macros'
+handoff_lock = threading.Lock()
 ID = re.compile(r'[0-9a-f]{32}')
 
 
@@ -66,7 +69,7 @@ def prepare_desktop(path, desktop_id):
 def watch_desktop(desktop_id):
     print('Watching for agent requests. Press Ctrl+C to stop.', flush=True)
     while True:
-        jobs = pending()
+        jobs = [job for job in pending() if handoff_status(job.stem)['state'] == 'queued']
         if not jobs:
             time.sleep(1)
             continue
@@ -76,6 +79,79 @@ def watch_desktop(desktop_id):
         while job.exists():
             time.sleep(1)
 
+
+def read_job(request_id):
+    return json.loads(job_path(request_id).read_text())
+
+
+def handoff_status(request_id):
+    record = read_job(request_id)
+    return {'state': record.get('state', 'queued'), 'answer': record.get('answer')}
+
+
+def update_handoff(request_id, action, answer=''):
+    path = job_path(request_id)
+    with handoff_lock:
+        record = read_job(request_id)
+        state = record.get('state', 'queued')
+        if state in ('returned', 'canceled'):
+            raise ValueError('This request is already closed.')
+        if action == 'prepare':
+            record['state'] = 'ready'
+        elif action == 'return':
+            answer = answer.strip()
+            if state != 'ready' or not 1 <= len(answer) <= 12000:
+                raise ValueError('Prepare the prompt first and paste an answer of up to 12,000 characters.')
+            record.update(state='returned', answer=answer)
+        elif action == 'cancel':
+            record['state'] = 'canceled'
+        else:
+            raise ValueError('Unknown handoff action.')
+        with tempfile.NamedTemporaryFile(mode='w', dir=QUEUE, encoding='utf-8', delete=False) as temporary:
+            json.dump(record, temporary, ensure_ascii=False)
+        try:
+            Path(temporary.name).replace(path)
+        finally:
+            Path(temporary.name).unlink(missing_ok=True)
+
+
+def inbox_html():
+    sections = []
+    records = []
+    for path in reversed(pending()):
+        try:
+            records.append(read_job(path.stem))
+        except FileNotFoundError:
+            continue
+    for record in sorted(records, key=lambda item: item.get('state') in ('returned', 'canceled')):
+        request_id = record['id']
+        state = record.get('state', 'queued')
+        label = {'queued': 'Queued', 'ready': 'Ready to paste', 'returned': 'Answer returned',
+                 'canceled': 'Canceled'}[state]
+        section = f'<section><h2>{label}</h2><textarea readonly rows="4" aria-label="Request">{escape(record["prompt"])}</textarea>'
+        if state in ('queued', 'ready'):
+            section += (f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
+                        '<button name="action" value="prepare">Prepare request</button> '
+                        '<button name="action" value="cancel">Cancel</button></form>')
+        if state == 'ready':
+            section += ('<p><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>. '
+                        'Copy the request above and send it in ChatGPT. Paste its answer below.</p>'
+                        f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
+                        '<label>ChatGPT answer<textarea name="answer" rows="5" maxlength="12000" required></textarea></label>'
+                        '<button name="action" value="return">Return to BITCH</button></form>')
+        elif state == 'returned':
+            section += f'<pre>{escape(record["answer"])}</pre>'
+        sections.append(section + '</section>')
+        if len(sections) == 30:
+            break
+    content = ''.join(sections) or '<p>No requests yet.</p>'
+    return ('<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>BITCH ChatGPT handoff</title><style>'
+            'body{color-scheme:light dark;font:16px system-ui;margin:2rem auto;padding:0 1rem;max-width:45rem}'
+            'textarea{display:block;box-sizing:border-box;width:100%;margin:.5rem 0;font:inherit}'
+            'section{border-top:1px solid GrayText;padding:1rem 0}pre{white-space:pre-wrap;font:inherit}'
+            '</style><h1>ChatGPT handoff</h1><p><a href="/inbox">Refresh requests</a></p>' + content)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

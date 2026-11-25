@@ -94,6 +94,7 @@ class Hearing:
             tail = audio[end:]
             for index in range(0, end, FRAME):
                 frame = audio[index:index + FRAME]
+                frame_at = received - (len(audio)-index-FRAME) / SR
                 hub.level = min(1.0, float(np.sqrt(np.mean(frame ** 2))) * 8)
                 speech = detector(torch.from_numpy(frame), SR).item() > (0.32 if clip else 0.5)
                 if not clip:
@@ -102,7 +103,7 @@ class Hearing:
                     if onset >= 3:
                         talking_over = can_interrupt
                         last_probe = 0
-                        began = received - (onset - 1) * FRAME / SR
+                        began = frame_at - (onset - 1) * FRAME / SR
                         self.activity_at = received
                         clip = list(pre)
                         voiced, quiet = onset, 0
@@ -117,8 +118,8 @@ class Hearing:
                 if talking_over and can_interrupt and probe and voiced <= 60:
                     last_probe = voiced
                     candidate = np.concatenate(clip)
-                    if not self.clips.full() and not voice.is_echo(candidate, received):
-                        self.clips.put_nowait((source, revision, received, began, 0, candidate, None, received))
+                    if not self.clips.full() and not voice.is_echo(candidate, frame_at):
+                        self.clips.put_nowait((source, revision, received, began, 0, candidate, None, frame_at))
                 # Natural mid-sentence pauses are often longer than half a second.
                 # Give a longer utterance extra room, including on the initial wake.
                 pause = 1.45 if voiced * FRAME / SR < 2.5 else 2.05
@@ -150,7 +151,8 @@ class Hearing:
                 if revision == hub.brain.revision and time.monotonic() - ended < .9 and hub.brain.can_interrupt(source):
                     try:
                         text = self.transcribe(mlx_whisper, audio)
-                        hub.brain.interrupt(source, text)
+                        _, voice_name = people.speaker(source, audio, len(audio)/SR, addressed=True)
+                        hub.brain.interrupt(source, text, voice_name=voice_name)
                     except (ValueError, RuntimeError, OSError):
                         pass
                 continue
@@ -164,7 +166,10 @@ class Hearing:
                     continue
                 text = self.transcribe(mlx_whisper, audio)
                 if hub.brain.interruption and text:
-                    from .brain import INTERRUPT
+                    from .brain import INTERRUPT, repeats_playback
+
+                    if repeats_playback(text, hub.brain.spoken_reply):
+                        continue
                     marker = INTERRUPT.match(text)
                     if marker and not text.lower().startswith('stop listening'):
                         text = text[marker.end():].strip()

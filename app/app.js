@@ -64,19 +64,20 @@ async function refresh() {
   options('speaker_source', [['auto', 'Auto · Pi, then Mac'], ['off', 'Off'], ...entries('voice')], settings.speaker_source);
   const phase = state.turn_phase;
   const listening = phase === 'Ready' || phase === 'Listening';
-  $('status').lastElementChild.textContent = phase === 'Listening' ? 'Hearing you' : phase === 'Understanding' ? 'Understanding your words' : phase === 'Checking for name' ? 'Checking for the name' : state.status;
+  $('status').lastElementChild.textContent = state.show_active ? 'Performing' : phase === 'Listening' ? 'Hearing you' : phase === 'Understanding' ? 'Understanding your words' : phase === 'Checking for name' ? 'Checking for the name' : state.status;
   $('wake').dataset.listening = String(listening);
-  $('turnHeading').textContent = phase === 'Listening' ? 'I’m listening' : phase === 'Understanding' ? 'Got it. One moment…' : listening ? (state.speaker_name ? 'Your turn, ' + state.speaker_name : 'Your turn') : ['Thinking', 'Speaking', 'Answering'].includes(state.status)
+  $('turnHeading').textContent = state.show_active ? 'Performing' : phase === 'Listening' ? 'I’m listening' : phase === 'Understanding' ? 'Got it. One moment…' : listening ? (state.speaker_name ? 'Your turn, ' + state.speaker_name : 'Your turn') : ['Thinking', 'Speaking', 'Answering'].includes(state.status)
     ? state.status + '…' : 'Say “Hey BITCH”';
   const micDevice = devices.find(device => device.id === settings.mic_source);
-  $('listenHint').textContent = settings.mic_source === 'off' ? 'Microphone off.'
+  $('listenHint').textContent = state.show_active ? 'Say “Stop the show” or tap Stop speech.'
+    : settings.mic_source === 'off' ? 'Microphone off.'
     : !micDevice ? 'Choose a connected microphone.'
     : !state.ears_ready ? 'Loading on-device speech recognition…'
     : micDevice.id === 'mac-mic' && !micDevice.detail.startsWith('Open') ? micDevice.detail
     : phase === 'Listening' ? 'Go on. A pause is fine.'
     : phase === 'Understanding' ? 'Finishing your sentence on the Mac…'
     : listening ? (state.hearing_speech ? 'Hearing you…' : 'Keep talking without repeating the name · ' + Math.ceil(state.followup_seconds) + 's')
-    : state.status === 'Speaking' ? 'Say “wait” or “hold on” to cut in.'
+    : state.status === 'Speaking' ? 'You can cut in while it’s talking.'
     : settings.muted || settings.volume === 0 ? 'Voice muted. Replies appear here.'
     : 'Say the name to open a conversation.';
   $('meter').value = state.status === 'Speaking' || !micDevice ? 0 : Math.min(1, state.level);
@@ -87,7 +88,7 @@ async function refresh() {
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
   $('robot_key').placeholder = settings.robot_paired ? 'Key saved' : '';
-  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins']) $(key).checked = settings[key];
+  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory']) $(key).checked = settings[key];
   if (document.activeElement !== $('volume')) {
     $('volume').value = settings.volume;
     $('volumeValue').value = settings.volume + '%';
@@ -384,7 +385,7 @@ async function calibrate(step, track = false) {
 }
 
 action('speakerTest', 'click', () => api('test-speaker', {}));
-for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'mic_source', 'camera_source', 'speaker_source']) {
+for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'mic_source', 'camera_source', 'speaker_source']) {
   action(key, 'change', e => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     settingsVersion++;

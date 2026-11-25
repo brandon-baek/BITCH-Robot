@@ -151,6 +151,7 @@ def state(req: Request):
     data['hearing_speech'] = bool(remaining and time.monotonic() - hub.hearing.activity_at < 0.3)
     data['settings'] = config.public()
     data['body'] = getattr(hub.sight, 'drive', {})
+    data['show_active'] = bool(getattr(hub.get('robot'), 'show_active', False))
     output = hub.selected('voice')
     data['output'] = output.name if output else None
     data['model'] = config.get('chat_model')
@@ -168,7 +169,7 @@ async def settings(req: Request):
     owner = authorize(req)
     data = await payload(req)
     for key, value in data.items():
-        if key in ('idle', 'muted', 'keep_audio', 'check_ins') and type(value) is bool:
+        if key in ('idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory') and type(value) is bool:
             continue
         if key == 'volume' and type(value) is int and 0 <= value <= 100:
             continue

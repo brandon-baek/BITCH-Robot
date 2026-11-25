@@ -12,6 +12,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import urlencode
 import urllib.error
 import urllib.request
 import wave
@@ -121,6 +122,56 @@ class WakeTests(unittest.TestCase):
             self.assertTrue(brain.hush.is_set())
             self.assertTrue(brain.addressed('The blue one is mine.', 'desk', time.monotonic()))
             self.assertFalse(brain.addressed('The blue one is mine.', 'other', time.monotonic()))
+
+    def test_natural_barge_in_rejects_echo_and_accepts_a_correction(self):
+        brain = Brain()
+        brain.busy.set()
+        brain.active_source = 'desk'
+        brain.spoken_reply = 'The white one is on the shelf.'
+        with patch.object(hub, 'status', 'Speaking'), patch.object(hub, 'sight', None):
+            self.assertFalse(brain.interrupt('desk', 'The white one is on the shelf.'))
+            self.assertTrue(brain.interrupt('desk', 'Actually the blue one is mine.'))
+
+    def test_barge_in_rejects_inexact_playback_transcript(self):
+        brain = Brain()
+        brain.busy.set()
+        brain.active_source = 'desk'
+        brain.spoken_reply = "Actually, the blue mug I mentioned earlier is still on your bookshelf."
+        with patch.object(hub, 'status', 'Speaking'), patch.object(hub, 'sight', None):
+            self.assertFalse(brain.interrupt('desk', 'Actually, that blue mug is still on your book shelf.'))
+            self.assertTrue(brain.interrupt('desk', 'Actually, could we change the subject?'))
+
+    def test_barge_in_handles_delayed_playback_with_quiet_tail(self):
+        from core import voice
+
+        rng = np.random.default_rng(27)
+        reference = rng.normal(0, 4000, 24000)
+        echo = np.repeat(reference[4000:6200], 4) / 32000
+        silence = np.zeros(2880)
+        with patch.object(voice, 'echo_reference', (40., reference)):
+            self.assertTrue(voice.is_echo(np.r_[echo, silence], 43.1))
+            self.assertFalse(voice.is_echo(rng.normal(0, .15, 12000), 43.1))
+
+    def test_generated_routine_resolves_vision_and_rejects_unknown_actions(self):
+        from core import skills
+
+        bow = {'op': 'gesture', 'style': 'bow', 'seconds': 1.4, 'when': 'always'}
+        chirp = {'op': 'chirp', 'style': 'tada', 'seconds': .6, 'when': 'person_visible'}
+        self.assertEqual(len(skills.actions([bow, chirp], True)), 2)
+        self.assertEqual(skills.actions([bow, chirp], None), [{k: v for k, v in bow.items() if k != 'when'}])
+        with self.assertRaises(ValueError):
+            skills.validate_plan([{**bow, 'style': 'raw pulse'}])
+
+    def test_context_memory_keeps_preferences_and_drops_inference_and_sensitive_data(self):
+        owner = 'Natural memory fixture'
+        try:
+            self.assertTrue(memory.remember_in_context(owner, 'I prefer black coffee.', 'I prefer black coffee'))
+            self.assertFalse(memory.remember_in_context(owner, 'I am eating dinner.', 'I like steak'))
+            self.assertFalse(memory.remember_in_context(owner, 'I prefer this password.', 'I prefer this password'))
+            self.assertFalse(memory.remember_in_context(owner, 'I prefer black coffee.', 'I prefer lemon green tea'))
+            self.assertEqual(memory.relevant(owner, 'How do I take my coffee?'), ['I prefer black coffee'])
+        finally:
+            memory.forget(owner, 'everything')
 
     def test_saved_notes_are_voice_scoped(self):
         brain = Brain()
@@ -474,7 +525,7 @@ class PiProtocolTests(unittest.TestCase):
 
             self.assertEqual(request('/ping', paired=False)[0], 401)
             self.assertEqual(request('/ping')[1]['protocol'], 1)
-            self.assertEqual(request('/ping')[1]['performance'], 2)
+            self.assertEqual(request('/ping')[1]['performance'], 3)
             self.assertTrue(request('/ping')[1]['joint_attention'])
             self.assertEqual(request('/look', {'mode': 'speak-upbeat', 'accent': 2})[0], 400)
             self.assertEqual(request('/hear?text=dance')[0], 404)
@@ -491,6 +542,43 @@ class PiProtocolTests(unittest.TestCase):
             jobs = list((home / 'macros').glob('*.json'))
             self.assertEqual(len(jobs), 1)
             self.assertEqual(json.loads(jobs[0].read_text())['prompt'], record['prompt'])
+            base = f'http://127.0.0.1:{port}'
+            path = '/macro/status?id=' + record['id']
+            self.assertEqual(request(path)[1]['state'], 'queued')
+            self.assertEqual(request(path, paired=False)[0], 401)
+            with urllib.request.urlopen(base + '/inbox', timeout=2) as response:
+                self.assertIn(b'Read the calendar.', response.read())
+            def inbox(action, origin, **extra):
+                form = urlencode({'id': record['id'], 'action': action, **extra})
+                req = urllib.request.Request(base + '/inbox', data=form.encode(), headers={'Origin': origin})
+                try:
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        return response.status
+                except urllib.error.HTTPError as error:
+                    return error.code
+            self.assertEqual(inbox('prepare', 'http://external.invalid'), 403)
+            self.assertEqual(inbox('return', base, answer='Too early.'), 400)
+            self.assertEqual(inbox('prepare', base), 200)
+            self.assertEqual(request(path)[1]['state'], 'ready')
+            self.assertEqual(inbox('return', base, answer='A test answer <with brackets>.'), 200)
+            self.assertEqual(request(path)[1], {'state': 'returned', 'answer': 'A test answer <with brackets>.'})
+            with urllib.request.urlopen(base + '/inbox', timeout=2) as response:
+                self.assertIn(b'&lt;with brackets&gt;', response.read())
+            self.assertEqual(inbox('return', base, answer='Duplicate.'), 400)
+            show = {'name': 'routine', 'id': 'e' * 32, 'volume': 0,
+                    'steps': [{'op': 'gesture', 'style': 'bow', 'seconds': 1.3}]}
+            self.assertEqual(request('/show', show, paired=False)[0], 401)
+            self.assertEqual(request('/show', {**show, 'steps': [{'op': 'shell'}]})[0], 400)
+            self.assertEqual(request('/show', show)[1]['state'], 'queued')
+            self.assertEqual(request('/show', show)[1]['state'], 'queued')
+            after = time.monotonic() + 1.
+            while time.monotonic() < after and request('/show')[1]['state'] == 'preparing':
+                time.sleep(.02)
+            self.assertEqual(request('/show')[1]['state'], 'playing')
+            self.assertTrue(request('/ping')[1]['show_active'])
+            self.assertEqual(request('/stop', {})[0], 200)
+            self.assertEqual(request('/show')[1]['state'], 'stopped')
+            self.assertFalse(request('/ping')[1]['show_active'])
             cleanup()
 
     def test_rejects_arbitrary_macro_names_and_paths(self):
