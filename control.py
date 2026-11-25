@@ -1,13 +1,13 @@
-# Drive Desk Creature live from the keyboard, like a video game.
+# Drive BITCH live from the keyboard, like a video game.
 import sys, termios, tty, select, time
 from desk import *
 KEYS={'a':(0,+1),'d':(0,-1),'w':(1,+1),'s':(1,-1),'i':(2,+1),'k':(2,-1),'j':(3,+1),'l':(3,-1)}
 SOUNDS={'1':'hello','2':'happy','3':'question','4':'sad','5':'angry','6':'giggle','7':'scream','8':'love','9':'think','0':'tada'}
 HELP="""
-  DESK CREATURE CONTROLLER
+  BITCH CONTROLLER
   A / D   turn base          W / S   lean arm
   I / K   nod head           J / L   tilt head
-  hold SHIFT for big fast moves (capital letters)
+  hold SHIFT for small precise moves (capital letters)
   Z  nod yes     X  shake no     C  happy wiggle    V  look around
   1-0  sounds: hello happy question sad angry giggle scream love think ta-da
   SPACE  back to rest      P  print pose      Q  quit (eases to rest)
@@ -15,7 +15,7 @@ HELP="""
 """
 def drive():
     f=open('/dev/tty'); fd=f.fileno(); old=termios.tcgetattr(fd)
-    A=Actor(); A.idle_amt=0.25; A.to(stiff=2.2)
+    A=Actor(); A.idle_amt=0.25; A.to(stiff=4.0)
     print(HELP,flush=True)
     tty.setcbreak(fd)
     def burst(seq):
@@ -29,9 +29,9 @@ def drive():
             for ch in keys:
                 lo=ch.lower()
                 if lo in KEYS:
-                    j,dr=KEYS[lo]; step=0.18 if ch.isupper() else 0.05
+                    j,dr=KEYS[lo]; step=0.04 if ch.isupper() else 0.2
                     A.tgt[j]=max(A.LO[j],min(A.HI[j],A.tgt[j]+dr*step))
-                    A.stiff=3.0 if ch.isupper() else 2.2
+                    A.stiff=2.2 if ch.isupper() else 4.0
                 elif ch in SOUNDS: A.sfx(SOUNDS[ch])
                 elif lo=='z':
                     n0=A.tgt[2]; A.sfx('beepboop'); burst([(dict(n=min(-0.1,n0+0.3),stiff=3.5),0.2),(dict(n=n0),0.2)]*2)
