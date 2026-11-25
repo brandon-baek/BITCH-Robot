@@ -47,7 +47,14 @@ def text_of(node):
     from gi.repository import Atspi
 
     text = node.get_text_iface()
-    return Atspi.Text.get_text(text, 0, -1) if text is not None else ''
+    value = Atspi.Text.get_text(text, 0, -1) if text is not None else ''
+    return (value or '').replace('\ufffc', ' ')
+
+
+def composer_text(composer, atspi):
+    # Chromium exposes the editor's paragraph as an embedded accessible object.
+    paragraphs = [text_of(node) for node in children(composer) if node.get_role() == atspi.Role.PARAGRAPH]
+    return '\n'.join(paragraphs) if paragraphs else text_of(composer)
 
 
 def matches_address(address, marker):
@@ -120,7 +127,7 @@ def fill(prompt):
     else:
         return False
     window, address, composer = target
-    if text_of(composer).strip():
+    if composer_text(composer, Atspi).strip():
         return False
     if not (composer.get_state_set().contains(Atspi.StateType.FOCUSED)
             or composer.get_component_iface().grab_focus()):
@@ -129,19 +136,31 @@ def fill(prompt):
     if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
             and matches_address(text_of(address), marker)
             and composer.get_state_set().contains(Atspi.StateType.FOCUSED)
-            and not text_of(composer).strip()):
+            and not composer_text(composer, Atspi).strip()):
         return False
-    subprocess.run([copy, '--paste-once', '--type', 'text/plain;charset=utf-8'], input=prompt,
-                   text=True, check=True, timeout=3)
-    if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
-            and composer.get_state_set().contains(Atspi.StateType.FOCUSED)):
-        return False
-    subprocess.run([keys, '-M', 'ctrl', '-k', 'v', '-m', 'ctrl'], check=True, timeout=2)
-    for _ in range(10):
-        time.sleep(.12)
-        if ' '.join(text_of(composer).split()) == ' '.join(prompt.split()):
-            return True
-    return False
+    with subprocess.Popen([copy, '--foreground', '--type', 'text/plain'], stdin=subprocess.PIPE) as clipboard:
+        try:
+            clipboard.stdin.write(prompt.encode('utf-8'))
+            clipboard.stdin.close()
+            time.sleep(.16)
+            if not (window.get_state_set().contains(Atspi.StateType.ACTIVE)
+                    and matches_address(text_of(address), marker)
+                    and composer.get_state_set().contains(Atspi.StateType.FOCUSED)):
+                return False
+            subprocess.run([keys, '-M', 'ctrl', '-s', '80', '-k', 'v', '-s', '80', '-m', 'ctrl'],
+                           check=True, timeout=2)
+            for _ in range(12):
+                time.sleep(.15)
+                if ' '.join(composer_text(composer, Atspi).split()) == ' '.join(prompt.split()):
+                    return True
+            return False
+        finally:
+            if clipboard.poll() is None:
+                clipboard.terminate()
+                try:
+                    clipboard.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    clipboard.kill()
 
 
 if __name__ == '__main__':

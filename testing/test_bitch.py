@@ -118,6 +118,29 @@ class WakeTests(unittest.TestCase):
             generate.return_value = '{"say":"What did you just say?","turn":"continue"}'
             self.assertEqual(brain.reply('What did you just say?', 'desk'), 'I lost my train of thought. Say that again?')
 
+    def test_streaming_phrases_read_escaped_spoken_words_and_skip_the_rest(self):
+        from core.streaming import Phrases
+
+        phrases = Phrases('Tell me a fact about water.')
+        partial = '{"delivery":"warm","performance":"none","say":"Water moves through rivers and clouds. It'
+        self.assertEqual(phrases.feed(partial), (['Water moves through rivers and clouds.'],
+                                               {'delivery': 'warm', 'performance': 'none'}))
+        self.assertEqual(phrases.feed(partial + r' also freezes at zero\u002e","turn":"continue"}')[0],
+                         ['It also freezes at zero.'])
+
+    def test_streaming_reply_can_stop_before_playing_a_queued_phrase(self):
+        import threading
+
+        stop = threading.Event()
+        spoken = []
+        stream = voice.ReplyStream(stop, lambda: None, spoken.append)
+        with patch.object(voice, 'render', return_value=(b'wav', 1.0)), patch.object(
+                voice, 'play', side_effect=lambda *args, **kwargs: stop.set()):
+            stream.offer('First sentence.', 'neutral')
+            stream.offer('Second sentence.', 'neutral')
+            stream.close()
+        self.assertEqual(spoken, ['First sentence.'])
+
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
         brain = Brain()
         brain.busy.set()
@@ -494,6 +517,15 @@ class ConnectionTests(unittest.TestCase):
 
 
 class PiProtocolTests(unittest.TestCase):
+    def test_chatgpt_macro_targets_only_the_new_chat_url(self):
+        from desktop_chatgpt import matches_address
+
+        self.assertIn('passing along their request on their behalf', macros.format_prompt('Find me a lamp.'))
+        self.assertIn('\nFind me a lamp.\n', macros.format_prompt('Find me a lamp.'))
+        self.assertTrue(matches_address('chatgpt.com/#bitch-draft-fixture', 'bitch-draft-fixture'))
+        self.assertFalse(matches_address('https://chatgpt.com/c/existing#bitch-draft-fixture', 'bitch-draft-fixture'))
+        self.assertFalse(matches_address('https://chatgpt.com.example/#bitch-draft-fixture', 'bitch-draft-fixture'))
+
     def test_paired_protocol_motion_idle_and_local_inbox(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))

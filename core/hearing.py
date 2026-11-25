@@ -1,5 +1,6 @@
 """VAD and local transcription for the single selected input."""
 from collections import deque
+from dataclasses import dataclass
 import queue
 import threading
 import time
@@ -13,6 +14,19 @@ from .people import people
 SR = 16000
 FRAME = 512
 WHISPER = 'mlx-community/whisper-large-v3-turbo'
+
+
+@dataclass
+class Clip:
+    kind: str
+    source: str
+    revision: int
+    queued: float
+    began: float
+    last_speech: float
+    audio: np.ndarray
+    speech: np.ndarray | None = None
+    voiced: float = 0.
 
 
 class Hearing:
@@ -74,6 +88,8 @@ class Hearing:
         last = 0
         talking_over = False
         last_probe = 0
+        last_speech = 0.
+        previewed = False
         while True:
             source, revision, received, samples = self.audio.get()
             if (source, revision) != identity or received - last > 0.45:
@@ -103,6 +119,7 @@ class Hearing:
                     if onset >= 3:
                         talking_over = can_interrupt
                         last_probe = 0
+                        last_speech, previewed = frame_at, False
                         began = frame_at - (onset - 1) * FRAME / SR
                         self.activity_at = received
                         clip = list(pre)
@@ -113,13 +130,20 @@ class Hearing:
                 voiced += int(speech)
                 if speech:
                     self.activity_at = received
+                    last_speech = frame_at
+                    previewed = False
                 quiet = 0 if speech else quiet + 1
                 probe = voiced - last_probe >= 12 or last_probe == 0 and voiced >= 6 and quiet == 6
                 if talking_over and can_interrupt and probe and voiced <= 60:
                     last_probe = voiced
                     candidate = np.concatenate(clip)
                     if not self.clips.full() and not voice.is_echo(candidate, frame_at):
-                        self.clips.put_nowait((source, revision, received, began, 0, candidate, None, frame_at))
+                        self.clips.put_nowait(Clip('barge', source, revision, received, began, frame_at, candidate))
+                if (not talking_over and not previewed and voiced >= 10 and quiet >= 22
+                        and not hub.brain.busy.is_set() and self.clips.empty()):
+                    previewed = True
+                    self.clips.put_nowait(Clip('preview', source, revision, time.monotonic(),
+                                                began, last_speech, np.concatenate(clip)))
                 # Natural mid-sentence pauses are often longer than half a second.
                 # Give a longer utterance extra room, including on the initial wake.
                 pause = 1.45 if voiced * FRAME / SR < 2.5 else 2.05
@@ -129,8 +153,8 @@ class Hearing:
                     if admitted and voiced >= 7 and not self.clips.full():
                         recording = np.concatenate(clip)
                         speech_end = (len(clip) - max(0, quiet - 2)) * FRAME
-                        self.clips.put_nowait((source, revision, time.monotonic(), began, voiced * FRAME / SR,
-                                              recording, recording[:speech_end], received - max(0, quiet-2)*FRAME/SR))
+                        self.clips.put_nowait(Clip('final', source, revision, time.monotonic(), began, last_speech,
+                                                   recording, recording[:speech_end], voiced * FRAME / SR))
                     clip.clear()
                     pre.clear()
                     onset = 0
@@ -145,26 +169,37 @@ class Hearing:
             hub.note('hearing', f'Whisper unavailable: {error}')
             return
         self.whisper_ready = True
+        preview = None
         while True:
-            source, revision, ended, began, voiced, audio, speech, spoken_until = self.clips.get()
-            if speech is None:
-                if revision == hub.brain.revision and time.monotonic() - ended < .9 and hub.brain.can_interrupt(source):
+            clip = self.clips.get()
+            source, revision, began = clip.source, clip.revision, clip.began
+            if clip.kind == 'barge':
+                if revision == hub.brain.revision and time.monotonic() - clip.queued < .9 and hub.brain.can_interrupt(source):
                     try:
-                        text = self.transcribe(mlx_whisper, audio)
-                        _, voice_name = people.speaker(source, audio, len(audio)/SR, addressed=True)
+                        text = self.transcribe(mlx_whisper, clip.audio)
+                        _, voice_name = people.speaker(source, clip.audio, len(clip.audio)/SR, addressed=True)
                         hub.brain.interrupt(source, text, voice_name=voice_name)
                     except (ValueError, RuntimeError, OSError):
                         pass
                 continue
             valid = lambda: revision == hub.brain.revision and hub.accepts(source, 'ears') and not hub.brain.busy.is_set()
-            if time.monotonic() - ended > 2 or not valid():
+            if time.monotonic() - clip.queued > 2 or not valid():
+                continue
+            stamp = (source, revision, began, clip.last_speech)
+            if clip.kind == 'preview':
+                try:
+                    text = self.transcribe(mlx_whisper, clip.audio)
+                    preview = (stamp, text) if text else None
+                except (ValueError, RuntimeError, OSError):
+                    preview = None
                 continue
             self.decoding = (source, revision, began, time.monotonic())
             try:
-                enrolled, _ = people.speaker(source, speech, voiced, addressed=False)
+                enrolled, _ = people.speaker(source, clip.speech, clip.voiced, addressed=False)
                 if enrolled:
                     continue
-                text = self.transcribe(mlx_whisper, audio)
+                text = preview[1] if preview and preview[0] == stamp else self.transcribe(mlx_whisper, clip.audio)
+                preview = None
                 if hub.brain.interruption and text:
                     from .brain import INTERRUPT, repeats_playback
 
@@ -174,10 +209,10 @@ class Hearing:
                     if marker and not text.lower().startswith('stop listening'):
                         text = text[marker.end():].strip()
                 if text and valid() and hub.brain.addressed(text, source, began):
-                    _, name = people.speaker(source, speech, voiced, addressed=True)
+                    _, name = people.speaker(source, clip.speech, clip.voiced, addressed=True)
                     if valid():
                         face = hub.sight.solo_recognized() if hub.sight and not name else None
-                        hub.brain.submit(text, source, heard_at=began, name=name, face=face, speech_end=spoken_until)
+                        hub.brain.submit(text, source, heard_at=began, name=name, face=face, speech_end=clip.last_speech)
             except Exception as error:
                 hub.note('hearing', f'Transcription failed: {error}')
             finally:

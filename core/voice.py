@@ -203,7 +203,7 @@ def thinking(stop, *, greeting):
     def sound():
         try:
             previous = 0.
-            schedule = (0., 3.4, 7.6) if greeting else (.85, 3.9, 8.1)
+            schedule = (0., 1.8, 3.6, 6.2)
             for index, when in enumerate(schedule):
                 if done.wait(max(0., when - previous)) or stop.is_set():
                     break
@@ -356,7 +356,7 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         speaker.hush()
         return
     hub.note('speaker', None)
-    cue_at = max(0., duration-.30) if ready_cue else 0. if interim and not text else None
+    cue_at = max(0., duration-.30) if ready_cue else 0. if (interim or segment) and not text else None
     speech_end = max(0., duration-.42) if text and ready_cue else duration if text else 0.
     if speech_end > 0:
         envelope, nod = motion_track(pcm[:round(speech_end*SR)*2])
