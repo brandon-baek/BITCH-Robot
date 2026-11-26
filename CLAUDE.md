@@ -51,6 +51,7 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
+| `sim/` | Mac | Measured 3D model for simulation and RL: `params.py` (every dimension) → `python -m sim.build` → MuJoCo, URDF, GLB/OBJ/STL, web viewer; Gymnasium envs `Bitch-LookAt-v0`, `Bitch-Pose-v0` in desk.py units at 50 Hz |
 | `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH) |
 
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.

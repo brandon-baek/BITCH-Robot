@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BITCH in 3D</title>
+<style>
+/* VOICE: a maker's bench, plain and exact, like a parts drawing pinned above the desk
+   IDEA: the robot itself on a turntable you can spin, with the joint dials beside it
+   PICTURE: the live 3D model, large, lit like the desk lamp it almost is
+   COLOUR and TYPE: desk grey ground, ink navy type, kraft for the one accent; big Helvetica
+   LAYOUT: modest title, model fills the first screen, dials below on phones and beside it on wide screens */
+:root{color-scheme:light dark;--bg:light-dark(#e7e6e2,#0f1520);--panel:light-dark(#f3f2ef,#172031);--ink:light-dark(#14213d,#e7e6e2);
+--soft:light-dark(#5b6476,#9aa3b5);--kraft:#b5895a;--line:light-dark(#d3d1cb,#283247)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Helvetica Neue",Helvetica,Arial,sans-serif;overflow-x:clip}
+header{padding:clamp(20px,3vw,36px) max(4vw,16px) 8px}
+h1{margin:0;font-size:clamp(34px,6vw,52px);line-height:1.05;letter-spacing:-.02em;font-weight:700}
+header p{margin:6px 0 0;color:var(--soft);max-width:62ch}
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;padding:12px max(4vw,16px) 32px}
+.stage{position:relative;height:min(74vh,720px);min-height:380px;border-radius:14px;overflow:hidden;background:var(--panel)}
+.stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.read{position:absolute;left:16px;bottom:14px;font-size:13px;color:var(--soft);pointer-events:none}
+.read b{display:block;color:var(--ink);font-size:30px;line-height:1.1;font-weight:700;font-variant-numeric:tabular-nums}
+aside{display:flex;flex-direction:column;gap:18px}
+.dial{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:baseline}
+.dial label{font-weight:700;font-size:17px}
+.dial output{font-variant-numeric:tabular-nums;color:var(--soft);font-size:14px;white-space:nowrap}
+.dial small{grid-column:1/-1;color:var(--soft);font-size:13px}
+input[type=range]{grid-column:1/-1;width:100%;height:44px;accent-color:var(--kraft);margin:0}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+button{font:inherit;font-size:15px;min-height:44px;padding:0 16px;border-radius:22px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--kraft);outline-offset:2px}
+.toggles{display:flex;flex-direction:column;gap:6px;font-size:15px}
+.toggles label{display:flex;gap:10px;align-items:center;min-height:36px}
+.toggles input{width:20px;height:20px;accent-color:var(--kraft)}
+.note{font-size:13px;color:var(--soft);border-top:1px solid var(--line);padding-top:12px}
+@media(max-width:860px){main{grid-template-columns:minmax(0,1fr)}.stage{height:58vh}}
+</style></head><body>
+<header><h1>BITCH, in 3D</h1>
+<p>The measured simulation model. Drag to spin it, pinch or scroll to zoom. The dials use the same −1 to 1 units as desk.py, and every move settles with the Actor's springs.</p></header>
+<main>
+<div class="stage" id="stage"><div class="read"><b id="height">0 mm</b><span id="sub">head top above the lid</span></div></div>
+<aside>
+<div class="row" id="presets"></div>
+<div id="dials"></div>
+<div class="toggles">
+<label><input type="checkbox" id="idle" checked> Idle breathing</label>
+<label><input type="checkbox" id="xray"> See inside the box</label>
+<label><input type="checkbox" id="full"> Full reach (past the Actor's safe range)</label>
+</div>
+<p class="note">Model from sim/params.py: shoebox 380 × 250 × 118 mm, arm 148 mm, an L-shaped neck 70 mm long, head 75 × 68 mm, four MG90S servos. 106 g of moving parts.</p>
+</aside>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+{
+const MODEL = {"name":"BITCH","units":"metres, radians; joint values in desk.py units (-1..1)","frame":"x forward, y left, z up","lid_height":0.118,"bodies":[{"name":"world","parent":null,"pos":[0.0,0.0,0.0],"quat":[1.0,0.0,0.0,0.0],"geoms":[{"name":"box","type":"box","size":[0.123,0.188,0.045],"pos":[0.0,0.0,0.045],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.64,0.66,0.68,1.0],"group":0,"mat":"box"},{"name":"lid","type":"box","size":[0.125,0.19,0.015],"pos":[0.0,0.0,0.103],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.7,0.72,0.74,1.0],"group":0,"mat":"lid"},{"name":"cable_hole","type":"cylinder","size":[0.006,0.0002,0.0],"pos":[-0.045,0.01,0.1182],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.05,0.05,0.06,1.0],"group":1,"mat":"hole"},{"name":"pi4","type":"box","size":[0.0425,0.028,0.0085],"pos":[0.04,-0.095,0.0105],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.12,0.42,0.2,1.0],"group":4,"mat":"pcb"},{"name":"pca9685","type":"box","size":[0.03125,0.0127,0.0055],"pos":[0.04,0.07,0.0075],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.12,0.25,0.55,1.0],"group":4,"mat":"pcb_blue"},{"name":"rail0","type":"box","size":[0.009,0.075,0.0025],"pos":[0.038,0.0,0.1205],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.89,0.77,0.57,1.0],"group":1,"mat":"wood"},{"name":"rail1","type":"box","size":[0.009,0.075,0.0025],"pos":[-0.038,0.0,0.1205],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.89,0.77,0.57,1.0],"group":1,"mat":"wood"},{"name":"susan_bottom_f","type":"box","size":[0.01,0.047,0.0005],"pos":[0.037,0.0,0.1235],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_bottom_b","type":"box","size":[0.01,0.047,0.0005],"pos":[-0.037,0.0,0.1235],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_bottom_l","type":"box","size":[0.027,0.01,0.0005],"pos":[0.0,0.037,0.1235],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_bottom_r","type":"box","size":[0.027,0.01,0.0005],"pos":[0.0,-0.037,0.1235],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball0","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.038,0.0,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball1","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.035107,0.014542,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball2","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.02687,0.02687,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball3","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.014542,0.035107,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball4","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.0,0.038,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball5","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.014542,0.035107,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball6","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.02687,0.02687,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball7","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.035107,0.014542,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball8","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.038,0.0,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball9","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.035107,-0.014542,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball10","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.02687,-0.02687,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball11","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.014542,-0.035107,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball12","type":"sphere","size":[0.0024,0.0,0.0],"pos":[-0.0,-0.038,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball13","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.014542,-0.035107,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball14","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.02687,-0.02687,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"ball15","type":"sphere","size":[0.0024,0.0,0.0],"pos":[0.035107,-0.014542,0.12735],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"s1_case","type":"box","size":[0.0114,0.0061,0.01125],"pos":[-0.0055,0.0,0.11145],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s1_pcb","type":"box","size":[0.0089,0.00485,0.0006],"pos":[-0.0055,0.0,0.1032],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.12,0.42,0.2,1.0],"group":1,"mat":"pcb"},{"name":"s1_tabs","type":"box","size":[0.01625,0.0061,0.00125],"pos":[-0.0055,0.0,0.11695],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s1_label","type":"box","size":[0.007,0.00015,0.0045],"pos":[-0.0055,-0.00625,0.1112],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.62,0.1,0.12,1.0],"group":1,"mat":"label"},{"name":"s1_dome","type":"cylinder","size":[0.006,0.00175,0.0],"pos":[0.0,0.0,0.12445],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s1_shaft","type":"cylinder","size":[0.0024,0.00175,0.0],"pos":[0.0,0.0,0.12795],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"s1_cable","type":"box","size":[0.003,0.0018,0.0007],"pos":[-0.0199,0.0,0.1042],"quat":[0.0,0.0,0.0,1.0],"rgba":[0.55,0.25,0.1,1.0],"group":1,"mat":"cable"}]},{"name":"turntable","parent":0,"pos":[0.0,0.0,0.1317],"quat":[1.0,0.0,0.0,0.0],"geoms":[{"name":"s1_hub","type":"cylinder","size":[0.0035,0.0025,0.0],"pos":[0.0,0.0,-0.0025],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"s1_horn","type":"box","size":[0.012,0.003,0.001],"pos":[0.008,0.0,-0.001],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"susan_top_f","type":"box","size":[0.01,0.047,0.0005],"pos":[0.037,0.0,-0.0005],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_top_b","type":"box","size":[0.01,0.047,0.0005],"pos":[-0.037,0.0,-0.0005],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_top_l","type":"box","size":[0.027,0.01,0.0005],"pos":[0.0,0.037,-0.0005],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"susan_top_r","type":"box","size":[0.027,0.01,0.0005],"pos":[0.0,-0.037,-0.0005],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"turn_plate","type":"box","size":[0.035,0.035,0.0035],"pos":[0.0,0.0,0.0035],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.71,0.55,0.37,1.0],"group":0,"mat":"kraft"},{"name":"s2_bracket","type":"box","size":[0.0025,0.012,0.014],"pos":[-0.0086,-0.02275,0.021],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.71,0.55,0.37,1.0],"group":1,"mat":"kraft"},{"name":"s2_case","type":"box","size":[0.0114,0.0061,0.01125],"pos":[0.0,-0.02275,0.0215],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s2_pcb","type":"box","size":[0.0089,0.00485,0.0006],"pos":[0.0,-0.031,0.0215],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.12,0.42,0.2,1.0],"group":1,"mat":"pcb"},{"name":"s2_tabs","type":"box","size":[0.01625,0.0061,0.00125],"pos":[0.0,-0.01725,0.0215],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s2_label","type":"box","size":[0.007,0.00015,0.0045],"pos":[-0.00625,-0.023,0.0215],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.62,0.1,0.12,1.0],"group":1,"mat":"label"},{"name":"s2_dome","type":"cylinder","size":[0.006,0.00175,0.0],"pos":[0.0,-0.00975,0.027],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s2_shaft","type":"cylinder","size":[0.0024,0.00175,0.0],"pos":[0.0,-0.00625,0.027],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"s2_cable","type":"box","size":[0.003,0.0018,0.0007],"pos":[0.0,-0.03,0.0071],"quat":[0.5,-0.5,0.5,0.5],"rgba":[0.55,0.25,0.1,1.0],"group":1,"mat":"cable"}],"joint":{"name":"base","axis":[0.0,0.0,1.0],"deg_per_unit":90.0,"reach":[-1,1],"safe":[-0.9,0.9],"rest":0.0}},{"name":"arm","parent":1,"pos":[0.0,0.0,0.027],"quat":[1.0,0.0,0.0,0.0],"geoms":[{"name":"arm_stick","type":"box","size":[0.008,0.0025,0.076],"pos":[0.0,0.0,0.074],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.89,0.77,0.57,1.0],"group":0,"mat":"wood"},{"name":"s2_hub","type":"cylinder","size":[0.0035,0.0025,0.0],"pos":[0.0,-0.005,0.0],"quat":[0.5,-0.5,-0.5,-0.5],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"s2_horn","type":"box","size":[0.012,0.003,0.001],"pos":[0.0,-0.0035,0.008],"quat":[0.5,-0.5,-0.5,-0.5],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"s3_case","type":"box","size":[0.0114,0.0061,0.01125],"pos":[0.0,-0.01375,0.1425],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s3_pcb","type":"box","size":[0.0089,0.00485,0.0006],"pos":[0.0,-0.0055,0.1425],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.12,0.42,0.2,1.0],"group":1,"mat":"pcb"},{"name":"s3_tabs","type":"box","size":[0.01625,0.0061,0.00125],"pos":[0.0,-0.01925,0.1425],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s3_label","type":"box","size":[0.007,0.00015,0.0045],"pos":[0.00625,-0.0135,0.1425],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.62,0.1,0.12,1.0],"group":1,"mat":"label"},{"name":"s3_dome","type":"cylinder","size":[0.006,0.00175,0.0],"pos":[0.0,-0.02675,0.148],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s3_shaft","type":"cylinder","size":[0.0024,0.00175,0.0],"pos":[0.0,-0.03025,0.148],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"s3_cable","type":"box","size":[0.003,0.0018,0.0007],"pos":[0.0,-0.0065,0.1281],"quat":[0.5,0.5,0.5,-0.5],"rgba":[0.55,0.25,0.1,1.0],"group":1,"mat":"cable"}],"joint":{"name":"arm","axis":[0.0,1.0,0.0],"deg_per_unit":45.0,"reach":[-1.5,1.5],"safe":[-1.3,-0.15],"rest":-0.8}},{"name":"neck","parent":2,"pos":[0.0,0.0,0.148],"quat":[1.0,0.0,0.0,0.0],"geoms":[{"name":"s3_hub","type":"cylinder","size":[0.0035,0.0025,0.0],"pos":[0.0,-0.0315,0.0],"quat":[0.707107,0.707107,0.0,0.0],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"s3_horn","type":"box","size":[0.012,0.003,0.001],"pos":[0.008,-0.033,0.0],"quat":[0.707107,0.707107,0.0,0.0],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"neck_side","type":"box","size":[0.0325,0.0025,0.015],"pos":[0.0185,-0.0365,0.015],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.71,0.55,0.37,1.0],"group":0,"mat":"kraft"},{"name":"neck_front","type":"box","size":[0.0025,0.02,0.015],"pos":[0.0535,-0.019,0.015],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.71,0.55,0.37,1.0],"group":0,"mat":"kraft"},{"name":"s4_case","type":"box","size":[0.0114,0.0061,0.01125],"pos":[0.05175,-0.0156,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s4_pcb","type":"box","size":[0.0089,0.00485,0.0006],"pos":[0.0435,-0.0156,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.12,0.42,0.2,1.0],"group":1,"mat":"pcb"},{"name":"s4_tabs","type":"box","size":[0.01625,0.0061,0.00125],"pos":[0.05725,-0.0156,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s4_label","type":"box","size":[0.007,0.00015,0.0045],"pos":[0.0515,-0.0156,0.00975],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.62,0.1,0.12,1.0],"group":1,"mat":"label"},{"name":"s4_dome","type":"cylinder","size":[0.006,0.00175,0.0],"pos":[0.06475,-0.0101,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.18,0.2,0.2,0.82],"group":1,"mat":"servo"},{"name":"s4_shaft","type":"cylinder","size":[0.0024,0.00175,0.0],"pos":[0.06825,-0.0101,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.62,0.64,0.67,1.0],"group":1,"mat":"steel"},{"name":"s4_cable","type":"box","size":[0.003,0.0018,0.0007],"pos":[0.0445,-0.03,0.016],"quat":[0.5,-0.5,0.5,-0.5],"rgba":[0.55,0.25,0.1,1.0],"group":1,"mat":"cable"}],"joint":{"name":"neck","axis":[0.0,-1.0,0.0],"deg_per_unit":45.0,"reach":[-1,1],"safe":[-1.0,-0.1],"rest":-0.8}},{"name":"head","parent":3,"pos":[0.07,-0.0101,0.016],"quat":[1.0,0.0,0.0,0.0],"geoms":[{"name":"s4_hub","type":"cylinder","size":[0.0035,0.0025,0.0],"pos":[-0.0005,0.0,0.0],"quat":[0.0,0.707107,0.0,0.707107],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"s4_horn","type":"box","size":[0.012,0.003,0.001],"pos":[0.001,0.0,0.008],"quat":[0.0,0.707107,0.0,0.707107],"rgba":[0.08,0.08,0.09,1.0],"group":1,"mat":"horn"},{"name":"head_panel","type":"box","size":[0.0015,0.0375,0.034],"pos":[0.0035,0.0,-0.004],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.71,0.55,0.37,1.0],"group":0,"mat":"kraft"},{"name":"eye_l","type":"cylinder","size":[0.01,0.0006,0.0],"pos":[0.0056,0.0175,0.007],"quat":[0.5,0.5,0.5,0.5],"rgba":[0.97,0.97,0.96,1.0],"group":0,"mat":"eye"},{"name":"pupil_l","type":"cylinder","size":[0.0052,0.0004,0.0],"pos":[0.0066,0.0175,0.0048],"quat":[0.5,0.5,0.5,0.5],"rgba":[0.03,0.03,0.03,1.0],"group":1,"mat":"pupil"},{"name":"dome_l","type":"ellipsoid","size":[0.003,0.01,0.01],"pos":[0.0062,0.0175,0.007],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.9,0.95,1.0,0.14],"group":1,"mat":"dome"},{"name":"eye_r","type":"cylinder","size":[0.01,0.0006,0.0],"pos":[0.0056,-0.0175,0.007],"quat":[0.5,0.5,0.5,0.5],"rgba":[0.97,0.97,0.96,1.0],"group":0,"mat":"eye"},{"name":"pupil_r","type":"cylinder","size":[0.0052,0.0004,0.0],"pos":[0.0066,-0.0175,0.0048],"quat":[0.5,0.5,0.5,0.5],"rgba":[0.03,0.03,0.03,1.0],"group":1,"mat":"pupil"},{"name":"dome_r","type":"ellipsoid","size":[0.003,0.01,0.01],"pos":[0.0062,-0.0175,0.007],"quat":[1.0,0.0,0.0,0.0],"rgba":[0.9,0.95,1.0,0.14],"group":1,"mat":"dome"}],"joint":{"name":"head","axis":[1.0,0.0,0.0],"deg_per_unit":45.0,"reach":[-1,1],"safe":[-0.85,0.85],"rest":0.0}}],"poses":{"rest":[0.0,-0.8,-0.8,0.0],"upright":[0,0,0,0]}};
+const K=[55,30,65,95], C=[11,10,11.5,10];          // actor.Actor spring constants
+const NAMES=['base','arm','neck','head'], HINT=['+ turns left','+ leans forward','+ looks up','+ tilts'];
+const PRESETS={Rest:[0,-.8,-.8,0],Upright:[0,0,0,0],Curious:[0,-.45,-.35,.55],'Look left':[.6,-.6,-.6,.15],Shy:[-.5,-1.1,-1,-.3],Bedtime:[0,1.1,-1,0]};
+const stage=document.getElementById('stage');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputEncoding=THREE.sRGBEncoding; stage.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(32,1,.01,10); camera.position.set(.46,.36,.42);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);
+controls.target.set(0,.215,0); controls.enableDamping=true; controls.minDistance=.25; controls.maxDistance=2.2; controls.maxPolarAngle=Math.PI*.49;
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a8378,.75));
+const sun=new THREE.DirectionalLight(0xfff4e6,.85); sun.position.set(.5,1.1,.6); sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048); Object.assign(sun.shadow.camera,{left:-.4,right:.4,top:.4,bottom:-.4,near:.1,far:3}); scene.add(sun);
+const desk=new THREE.Mesh(new THREE.PlaneGeometry(4,4),new THREE.MeshStandardMaterial({color:0xecebe7,roughness:.95}));
+desk.rotation.x=-Math.PI/2; desk.receiveShadow=true; scene.add(desk);
+
+const root=new THREE.Group(); root.rotation.x=-Math.PI/2; scene.add(root);     // MuJoCo is z-up
+const objs=[], joints={}, mats={}, boxMeshes=[], hidden=[]; let headPanel=null;
+const q4=a=>new THREE.Quaternion(a[1],a[2],a[3],a[0]);
+function material(rgba,name){
+  const key=rgba.join()+name; if(mats[key]) return mats[key];
+  const m=new THREE.MeshStandardMaterial({color:new THREE.Color(rgba[0],rgba[1],rgba[2]).convertSRGBToLinear(),roughness:.8,metalness:0});
+  if(rgba[3]<1){m.transparent=true;m.opacity=rgba[3];m.depthWrite=rgba[3]>.5;}
+  if(name==='steel'){m.metalness=.7;m.roughness=.3;} if(name==='servo'||name==='dome'||name==='eye'){m.roughness=.25;}
+  return mats[key]=m;
+}
+function geometry(g){
+  const s=g.size;
+  if(g.type==='box') return new THREE.BoxGeometry(2*s[0],2*s[1],2*s[2]);
+  if(g.type==='cylinder') return new THREE.CylinderGeometry(s[0],s[0],2*s[1],32).rotateX(Math.PI/2);
+  if(g.type==='sphere') return new THREE.SphereGeometry(s[0],12,8);
+  return new THREE.SphereGeometry(1,32,16).scale(s[0],s[1],s[2]);
+}
+MODEL.bodies.forEach((b,i)=>{
+  const o=new THREE.Group(); o.position.fromArray(b.pos); o.quaternion.copy(q4(b.quat)); o.userData.q0=o.quaternion.clone();
+  (b.parent==null?root:objs[b.parent]).add(o); objs[i]=o;
+  if(b.joint) joints[b.joint.name]={...b.joint,obj:o,axis:new THREE.Vector3().fromArray(b.joint.axis)};
+  b.geoms.forEach(g=>{
+    const mesh=new THREE.Mesh(geometry(g),material(g.rgba,g.mat));
+    mesh.position.fromArray(g.pos); mesh.quaternion.copy(q4(g.quat));
+    mesh.castShadow=g.rgba[3]>.5; mesh.receiveShadow=true; o.add(mesh);
+    if(g.group===4){mesh.visible=false;hidden.push(mesh);}
+    if(g.name==='box'||g.name==='lid') boxMeshes.push(mesh);
+    if(g.name==='head_panel') headPanel=mesh;
+  });
+});
+
+// joint state: value x, velocity v, target t (all in desk.py units)
+const st=NAMES.map((n,i)=>({x:MODEL.poses.rest[i],v:0,t:MODEL.poses.rest[i]}));
+const dials=document.getElementById('dials');
+dials.innerHTML=NAMES.map((n,i)=>`<div class="dial"><label for="d${i}">${n[0].toUpperCase()+n.slice(1)}</label><output id="o${i}"></output>
+<input type="range" id="d${i}" step="0.01"><small>${HINT[i]}, ${joints[n].deg_per_unit}° per unit</small></div>`).join('');
+const sliders=NAMES.map((n,i)=>document.getElementById('d'+i)), outs=NAMES.map((n,i)=>document.getElementById('o'+i));
+const full=document.getElementById('full');
+function limits(){NAMES.forEach((n,i)=>{const r=full.checked?joints[n].reach:joints[n].safe;sliders[i].min=r[0];sliders[i].max=r[1];
+  st[i].t=Math.min(r[1],Math.max(r[0],st[i].t));sliders[i].value=st[i].t;});}
+full.onchange=limits; limits();
+sliders.forEach((s,i)=>s.oninput=()=>{st[i].t=+s.value;mark(null);});
+const pre=document.getElementById('presets');
+pre.innerHTML=Object.keys(PRESETS).map(k=>`<button type="button" data-p="${k}" aria-pressed="${k==='Rest'}">${k}</button>`).join('');
+function mark(k){pre.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.p===k));}
+pre.onclick=e=>{const k=e.target.dataset&&e.target.dataset.p;if(!k)return;
+  if(PRESETS[k].some((v,i)=>v<+sliders[i].min||v>+sliders[i].max)) {full.checked=true;}
+  limits(); PRESETS[k].forEach((v,i)=>{st[i].t=v;sliders[i].value=v;}); mark(k);};
+document.getElementById('xray').onchange=e=>{const on=e.target.checked;
+  boxMeshes.forEach(m=>{m.material=m.material.clone();m.material.transparent=on;m.material.opacity=on?.18:1;m.material.depthWrite=!on;});
+  hidden.forEach(m=>m.visible=on);};
+const idle=document.getElementById('idle'), reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(reduce) idle.checked=false;
+
+const lidZ=MODEL.lid_height, box3=new THREE.Box3(), hEl=document.getElementById('height'), subEl=document.getElementById('sub');
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+const ro=new ResizeObserver(resize); ro.observe(stage); resize();
+let last=performance.now(), T=0, frame=0;
+function tick(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now; T+=dt;
+  for(let k=0;k<Math.ceil(dt/.005);k++){                  // Actor's spring, sub-stepped
+    const h=dt/Math.ceil(dt/.005);
+    st.forEach((s,i)=>{
+      let goal=s.t;
+      if(idle.checked){ if(i===1||i===2) goal+=.04*Math.sin(2*Math.PI*.25*T+i); if(i===0) goal+=.05*Math.sin(.37*T)*Math.sin(.11*T); if(i===3) goal+=.04*Math.sin(.29*T+1);}
+      if(reduce){s.x=goal;s.v=0;return;}
+      s.v+=(K[i]*(goal-s.x)-C[i]*s.v)*h; s.x+=s.v*h;
+    });
+  }
+  NAMES.forEach((n,i)=>{const j=joints[n];
+    j.obj.quaternion.copy(j.obj.userData.q0).multiply(new THREE.Quaternion().setFromAxisAngle(j.axis,st[i].x*j.deg_per_unit*Math.PI/180));
+    if(frame%6===0) outs[i].textContent=`${st[i].t>=0?'+':'−'}${Math.abs(st[i].t).toFixed(2)}  (${Math.round(st[i].t*j.deg_per_unit)}°)`;});
+  if(frame++%6===0&&headPanel){root.updateMatrixWorld(true);box3.setFromObject(headPanel);
+    hEl.textContent=Math.round((box3.max.y-lidZ)*1000)+' mm';
+    subEl.textContent=`head top above the lid · arm leans ${Math.abs(Math.round(st[1].x*joints.arm.deg_per_unit))}° ${st[1].x<0?'back':'forward'}`;}
+  controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick);
+}
+function theme(){const dark=document.documentElement.dataset.theme==='dark'||(!document.documentElement.dataset.theme&&matchMedia('(prefers-color-scheme: dark)').matches);
+  scene.background=new THREE.Color(dark?0x172031:0xf3f2ef); desk.material.color.set(dark?0x2a3346:0xecebe7);}
+theme(); new MutationObserver(theme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',theme);
+requestAnimationFrame(tick);
+}
+</script>
+</body></html>

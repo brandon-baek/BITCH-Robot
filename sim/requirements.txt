@@ -1,0 +1,7 @@
+mujoco>=3.2
+gymnasium>=1.0
+trimesh>=4.0
+numpy
+pillow
+# for training only:
+# stable-baselines3>=2.3
