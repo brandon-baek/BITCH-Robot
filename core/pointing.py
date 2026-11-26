@@ -67,12 +67,56 @@ def index_tip(hands):
     return (tip.x, tip.y) if .025 < tip.x < .975 and .025 < tip.y < .975 else None
 
 
+def pose_bodies(poses):
+    """Extract normalized upper-body anchors and estimated head boxes from MediaPipe poses.
+
+    Even when someone turns away, looks down, or covers their face with their hands, their
+    shoulders and head/ear landmarks keep tracking the same physical person."""
+    bodies = []
+    for landmarks in (poses or ()):
+        if len(landmarks) < 13:
+            continue
+        shoulders = [landmarks[i] for i in (11, 12)
+                     if max(landmarks[i].visibility or 0., landmarks[i].presence or 0.) >= .42
+                     and -.12 <= landmarks[i].x <= 1.12 and -.05 <= landmarks[i].y <= 1.15]
+        head_pts = [landmarks[i] for i in (0, 2, 5, 7, 8, 9, 10)
+                    if max(landmarks[i].visibility or 0., landmarks[i].presence or 0.) >= .38
+                    and -.05 <= landmarks[i].x <= 1.05 and -.05 <= landmarks[i].y <= 1.02]
+        if len(shoulders) < 2 and not (shoulders and head_pts):
+            continue
+        if len(shoulders) == 2:
+            sx = (shoulders[0].x + shoulders[1].x) / 2
+            sy = (shoulders[0].y + shoulders[1].y) / 2
+            span = max(.12, min(.58, math.hypot(shoulders[0].x - shoulders[1].x, shoulders[0].y - shoulders[1].y)))
+        else:
+            hx_hint = sum(pt.x for pt in head_pts) / len(head_pts)
+            sx = .65 * shoulders[0].x + .35 * hx_hint
+            sy = shoulders[0].y
+            span = .22
+        hw = max(.085, min(.34, span * .58))
+        hh = max(.11, min(.42, hw * 1.28))
+        if head_pts:
+            cx = sum(pt.x for pt in head_pts) / len(head_pts)
+            cy = sum(pt.y for pt in head_pts) / len(head_pts)
+        else:
+            cx, cy = sx, max(.08, sy - hh * .92)
+        left = max(0., min(1. - hw, cx - hw / 2))
+        top = max(0., min(1. - hh, cy - hh / 2))
+        bodies.append({
+            'anchor': (max(0., min(1., sx)), max(0., min(1., sy))),
+            'span': span,
+            'head_box': (left, top, hw, hh),
+        })
+    return bodies
+
+
 class Pointing:
     def __init__(self):
         self.pending = None
         self.frames = threading.Event()
         self.lock = threading.Lock()
         self.samples = deque(maxlen=95)
+        self.bodies = None
         self.ready = False
         self.hand_ready = False
         self.hand_request = None
@@ -83,9 +127,17 @@ class Pointing:
             self.pending = source, received, frame
             self.frames.set()
 
-    def observe(self, source, received, region):
+    def observe(self, source, received, region, bodies=()):
         with self.lock:
             self.samples.append((source, received, region))
+            self.bodies = (source, received, tuple(bodies))
+
+    def recent_bodies(self, source, now, max_age=.65):
+        with self.lock:
+            item = self.bodies
+        if not item or item[0] != source or now - item[1] > max_age:
+            return ()
+        return item[2]
 
     def during(self, source, span, now):
         start, end = span
@@ -132,7 +184,7 @@ class Pointing:
 
             options = vision.PoseLandmarkerOptions(
                 BaseOptions(model_asset_path=str(model)), running_mode=vision.RunningMode.VIDEO,
-                num_poses=2, min_pose_detection_confidence=.60)
+                num_poses=3, min_pose_detection_confidence=.50, min_tracking_confidence=.50)
             import contextlib
             with contextlib.ExitStack() as resources:
                 detector = resources.enter_context(vision.PoseLandmarker.create_from_options(options))
@@ -163,7 +215,7 @@ class Pointing:
                     image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
                     poses = detector.detect_for_video(image, int(received*1000)).pose_landmarks
                     region = pointing_region(poses[0], width/height) if len(poses) == 1 else None
-                    self.observe(source, received, region)
+                    self.observe(source, received, region, pose_bodies(poses))
                     if hand_detector and requested and requested[0] == source and received < requested[1]:
                         hands = hand_detector.detect_for_video(image, int(received*1000))
                         tip = index_tip(hands.hand_landmarks) if len(poses) <= 1 else None

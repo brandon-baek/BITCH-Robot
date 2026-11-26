@@ -97,26 +97,78 @@ class WakeTests(unittest.TestCase):
         from core import helper
 
         brain = Brain()
-        statuses = iter([{'state': 'sending'}, {'state': 'returned', 'answer': '**Sunny**, 64°F. [Forecast](https://x.y)'}])
+        statuses = iter([{'state': 'sending'}, {'state': 'returned', 'answer': 'As ChatGPT, **Sunny**, 64°F. [Forecast](https://x.y)'}])
         robot = SimpleNamespace(macro=lambda *args: True, handoff=True, auto_handoff=True,
                                 macro_status=lambda request_id: next(statuses))
         announced = []
-        brain.announce = lambda source, text, heard=None, chime=False: announced.append((source, text))
+        brain.announce = lambda source, text, heard=None, chime=False, **kw: announced.append((source, text, heard, kw))
         with (patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'),
               patch.object(helper.threading, 'Thread')):
             self.assertIsNone(helper.start(brain, 'desk', None, "What's the weather?"))
             self.assertEqual(helper.tasks[-1]['state'], 'working')
             helper.watch(brain, 'desk', helper.tasks[-1])
-        self.assertEqual(announced, [('desk', 'Sunny, 64°F. Forecast')])
+        self.assertEqual(announced[0][:2], ('desk', 'Sunny, 64°F. Forecast'))
+        self.assertNotIn('ChatGPT', announced[0][1])
+        self.assertNotIn('ChatGPT', announced[0][2])
         self.assertEqual(helper.tasks[-1]['state'], 'done')
         self.assertTrue(helper.OUTSIDE.search("What's on my calendar tomorrow?"))
-        # A send the Pi couldn't read back is reported instead of leaving BITCH silent.
+        self.assertTrue(helper.should_lookup("Give me a morning briefing."))
+        # Hallucinated calendar/email or unprompted ChatGPT mentions get sanitized from the quick spoken ack.
+        self.assertEqual(
+            helper.sanitize_ack("Let me check your calendar and email through ChatGPT for tomorrow's weather.",
+                                "What's the weather tomorrow?"),
+            'Let me check.',
+        )
+        # Immediate 'ready' failure from Pi browser reports right away instead of hanging until timeout.
+        robot.macro_status = lambda request_id: {'state': 'ready', 'reason': 'Sign in to ChatGPT in Chromium on the Pi.'}
+        announced.clear()
+        with patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'):
+            helper.watch(brain, 'desk', {'id': 'r', 'request': 'Weather?', 'state': 'working', 'explicit': False})
+        self.assertIn('signed in', announced[0][1])
+        self.assertNotIn('ChatGPT', announced[0][1])
+        # Explicit ChatGPT request may still name ChatGPT when reporting tab status.
         robot.macro_status = lambda request_id: {'state': 'send_unverified'}
         announced.clear()
         with patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'):
-            helper.watch(brain, 'desk', {'id': 'x', 'state': 'working'})
+            helper.watch(brain, 'desk', {'id': 'x', 'request': 'Ask ChatGPT', 'state': 'working', 'explicit': True})
         self.assertIn('ChatGPT tab', announced[0][1])
-        self.assertFalse(helper.OUTSIDE.search("What's the square root of 144?"))
+
+    def test_slow_hub_request_turns_into_background_notification_and_returns_later(self):
+        from core import helper
+
+        brain = Brain()
+        clock = [100.]
+        statuses = iter([
+            {'state': 'sending'},
+            {'state': 'sending'},
+            {'state': 'returned', 'answer': 'You have a 10 AM design review and clear skies at 68°F.'},
+        ])
+        robot = SimpleNamespace(macro=lambda *args: True, handoff=True, auto_handoff=True,
+                                macro_status=lambda request_id: next(statuses))
+        announced = []
+        brain.announce = lambda source, text, heard=None, chime=False, **kw: announced.append((text, chime, kw))
+
+        def fake_monotonic():
+            val = clock[0]
+            clock[0] += 8.
+            return val
+
+        with (patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'),
+              patch.object(helper.time, 'monotonic', side_effect=fake_monotonic),
+              patch.object(helper, 'spoken', side_effect=lambda ans, **kw: 'Briefing ready: ' + ans),
+              patch.object(helper.threading, 'Thread')):
+            helper.start(brain, 'desk', 'Brandon', 'Give me a briefing.', user_text='Give me a briefing.')
+            task = helper.tasks[-1]
+            self.assertTrue(helper.waiting())
+            helper.watch(brain, 'desk', task)
+        self.assertEqual(task['state'], 'done')
+        self.assertFalse(helper.waiting())
+        # First announcement was the quiet background heads-up (closing turn), second was the chime notification.
+        self.assertEqual(len(announced), 2)
+        self.assertTrue(announced[0][2].get('close_turn'))
+        self.assertNotIn('ChatGPT', announced[0][0])
+        self.assertTrue(announced[1][1])
+        self.assertIn('Briefing ready:', announced[1][0])
 
     def test_voicechat_gets_addressed_audio_and_qwen_handles_the_local_agent_request(self):
         brain = Brain()
@@ -269,10 +321,13 @@ class WakeTests(unittest.TestCase):
     def test_actions_are_offered_only_when_the_request_calls_for_them(self):
         brain = Brain()
         robot = SimpleNamespace(shows=True, motion_enabled=True, show_active=False, handoff=True)
-        self.assertEqual(brain.available_actions("What's the square root of 144?", robot, False)[0], ['none'])
+        # Substantive / informational questions and briefings route through lookup; robot banter stays local.
+        self.assertIn('lookup', brain.available_actions("What's the square root of 144?", robot, False)[0])
+        self.assertIn('lookup', brain.available_actions('Give me a morning briefing.', robot, False)[0])
+        self.assertEqual(brain.available_actions('How are you feeling today?', robot, False)[0], ['none'])
         self.assertIn('dance', brain.available_actions('Can you bust a move?', robot, False)[0])
-        self.assertNotIn('chatgpt', brain.available_actions('Is GPT smarter than you?', robot, False)[0])
-        self.assertIn('chatgpt', brain.available_actions('Get ChatGPT to plan my week.', robot, False)[0])
+        self.assertNotIn('lookup', brain.available_actions('Do you like your voice?', robot, False)[0])
+        self.assertIn('lookup', brain.available_actions('Get ChatGPT to plan my week.', robot, False)[0])
 
     def test_streamed_phrases_carry_mood_changes_without_reading_codes_aloud(self):
         from core.streaming import Phrases
@@ -572,6 +627,52 @@ class AlignmentTests(unittest.TestCase):
         for time_stamp in np.arange(1.0, 8.31, 0.2):
             tracker.update([left, right], time_stamp)
         self.assertEqual(tracker.update([left, right], 8.5)[1], 2)
+
+    def test_body_tracking_preserves_identity_when_looking_away_or_covering_face(self):
+        from core.people import people
+        from core.pointing import pose_bodies
+
+        landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=0.0, presence=0.0) for _ in range(33)]
+        landmarks[11] = SimpleNamespace(x=0.38, y=0.62, visibility=0.92, presence=0.95)
+        landmarks[12] = SimpleNamespace(x=0.62, y=0.62, visibility=0.92, presence=0.95)
+        bodies = pose_bodies([landmarks])
+        self.assertEqual(len(bodies), 1)
+
+        sight = Sight()
+        sight.target_source = 'mac-camera'
+        face_box = (0.42, 0.26, 0.16, 0.22)
+        sight.attention.update([face_box], 10.0, bodies)
+        visible, focus = sight.attention.update([face_box], 10.35, bodies)
+        sight.attention.people[focus]['name'] = 'Brandon'
+        sight.attention.people[focus]['confirmed_at'] = 10.35
+        sight.attention.people[focus]['face_confirmed_at'] = 10.35
+
+        # Face disappears for 20 seconds (looking away / face covered), while shoulders shift slightly.
+        for step in range(1, 40):
+            now = 10.0 + step * 0.5
+            landmarks[11].x = 0.40
+            landmarks[12].x = 0.64
+            moved_bodies = pose_bodies([landmarks])
+            visible, focus = sight.attention.update([], now, moved_bodies)
+            sight.attention.people[focus]['confirmed_at'] = now
+        self.assertEqual(focus, 1)
+        self.assertEqual(visible[1]['name'], 'Brandon')
+
+        sight.frame = (29.5, 1, b'jpg', {
+            'size': [640, 480],
+            'people': [{'id': 1, 'box': list(visible[1]['box']), 'name': 'Brandon'}],
+            'focus': 1,
+        })
+        with (patch.object(hub, 'accepts', return_value=True),
+              patch.object(people, 'names', side_effect=lambda kind: {'Brandon'} if kind == 'face' else set()),
+              patch('core.sight.time.monotonic', return_value=29.6)):
+            self.assertEqual(sight.solo_identity(), ('Brandon', 'body'))
+            self.assertEqual(sight.solo_recognized(), 'Brandon')
+            self.assertEqual(sight.in_view(), {'names': ['Brandon'], 'others': 0})
+
+        brain = Brain()
+        self.assertTrue(brain.submit('Hey BITCH, do you recognize me?', 'desk', face='Brandon', face_by='body'))
+        self.assertIn('still tracking you, Brandon', brain.reply('Do you recognize me?', 'desk'))
 
 
 class MotionTests(unittest.TestCase):

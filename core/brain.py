@@ -166,9 +166,12 @@ END = re.compile(r'^(?:stop listening|end (?:the )?(?:chat|conversation)|that.s 
 # Offer the shows only when the request is about performing, so a math question can't start a dance.
 PERFORM = re.compile(r"\b(?:danc\w*|moves?|groove|boogie|party|sing\w*|song|music|tune|perform\w*|show|"
                      r"entertain\w*|disco|opera|aria|bored|celebrat\w*|jam)\b", re.I)
-# Asking ChatGPT to do something, not just talking about it.
+# Asking ChatGPT to do something explicitly, or asking about a pending background lookup.
 CHATGPT = re.compile(r"\b(?:ask|get|have|tell|let|use|send|check with|run (?:it|this|that) by)\b[^.?!]{0,30}\bchat ?gpt\b"
                      r"|\bwhat (?:does|would|did|will) chat ?gpt (?:say|think)|\bchat ?gpt,? (?:please|can you|could you)\b", re.I)
+PENDING_UPDATE = re.compile(
+    r"^(?:(?:any|got an?) (?:news|update|answer|word)(?: on that| yet)?|did (?:that|it) come back(?: yet)?|"
+    r"is (?:that|my) (?:briefing|answer|lookup) ready)[.!?]*$", re.I)
 LOOK_FIRST = re.compile(r'^\s*\{\s*"do"\s*:\s*"look"')
 
 
@@ -211,6 +214,7 @@ class Brain:
         self.busy = threading.Event()
         self.hush = threading.Event()
         self.revision = 0
+        self.turn_count = 0
         self.persona = (config.ROOT / 'core' / 'persona.md').read_text().strip()
 
     def start(self):
@@ -268,7 +272,7 @@ class Brain:
             return bool(wake_request(text) is not None or show_stop or
                         self.followup and self.followup[0] == source and heard_at < self.followup[1])
 
-    def submit(self, text, source, heard_at=None, *, name=None, face=None, speech_end=None, audio=None):
+    def submit(self, text, source, heard_at=None, *, name=None, face=None, face_by='face', speech_end=None, audio=None):
         """Admit one addressed utterance. Setup and unrelated speech never reach the model."""
         with self.lock:
             if self.busy.is_set():
@@ -289,8 +293,10 @@ class Brain:
                 # Only the name, after a pause: open the floor without making the mic deaf.
                 if name:
                     self.speaker, self.speaker_evidence = name, 'voice'
+                elif face and not self.speaker:
+                    self.speaker, self.speaker_evidence = face, face_by if face_by in ('face', 'body') else 'face'
                 if not (self.acknowledged and self.acknowledged[0] == source):
-                    self.open_floor(source, name)
+                    self.open_floor(source, name or face)
                 return True
             if not followup:
                 self.clear_conversation(source)
@@ -298,8 +304,10 @@ class Brain:
             self.speaker = name or previous or face
             if name:
                 self.speaker_evidence = 'voice'
+            elif face and (not previous or previous == face and self.speaker_evidence == 'body' and face_by == 'face'):
+                self.speaker_evidence = face_by if face_by in ('face', 'body') else 'face'
             elif not previous:
-                self.speaker_evidence = 'face' if face else None
+                self.speaker_evidence = None
             self.current_voice = name
             self.accepted_wake = wake is not None
             self.turn_audio = audio
@@ -310,6 +318,7 @@ class Brain:
             self.interruption = False
             self.spoken_reply = ''
             self.last_interaction = time.monotonic()
+            self.turn_count += 1
             self.hush.clear()
             self.busy.set()
             self.pending_text = wake if wake is not None else text.strip()
@@ -485,15 +494,17 @@ class Brain:
             stream = None
             proactive = text is None
             chime = False
+            close_proactive = False
             if proactive:
                 source, check_in, *lead = source
                 chime = bool(lead and lead[0])
+                close_proactive = bool(len(lead) > 1 and lead[1])
             try:
                 if self.hush.is_set():
                     continue
                 if text:
                     hub.chat('user', text)
-                ending = bool(text and END.fullmatch(text))
+                ending = bool(text and END.fullmatch(text)) or close_proactive
                 self.close_turn = False
                 self.pending_show = None
                 self.native_audio = None
@@ -522,7 +533,7 @@ class Brain:
                 if reply:
                     hub.chat('robot', reply)
                 delivery = PERFORMANCE.get(self.performance, self.delivery)
-                ready_cue = not ending and self.pending_show is None and not (text and helper.waiting())
+                ready_cue = not ending and self.pending_show is None
                 if self.native_audio:
                     self.log_latency()
                     self.spoken_reply = reply
@@ -793,7 +804,7 @@ class Brain:
         Returns a full answer, or a note for the model while BITCH quietly learns their face and voice."""
         from .people import people
 
-        known = self.speaker if self.speaker_evidence in ('voice', 'face', 'introduced') else None
+        known = self.speaker if self.speaker_evidence in ('voice', 'face', 'body', 'introduced') else None
         if forget := FORGET_ME.search(text):
             if not known:
                 return 'I don’t know who you are yet, so there’s nothing to forget.', None
@@ -841,27 +852,34 @@ class Brain:
         return None, (f'They just told you they are {name}. Greet them by name. You are quietly learning their {what} '
                       f'from this conversation; mention that in a few words, and that saying "forget me" undoes it.')
 
-    def ask_chatgpt(self, source, identity, prompt):
+    def ask_chatgpt(self, source, identity, prompt, *, user_text=''):
         history = self.history.get((source, None), ())
-        return helper.start(self, source, identity, prompt, history) or 'Let me ask ChatGPT.'
+        explicit = helper.mentions_gpt(user_text or prompt)
+        remembered = memory.context(identity, prompt) if identity else None
+        fallback = 'Let me ask ChatGPT.' if explicit else 'Let me check on that.'
+        return helper.start(self, source, identity, prompt, history,
+                            user_text=user_text or prompt, remembered=remembered) or fallback
 
-    def announce(self, source, text, heard=None, chime=False):
-        """Say something BITCH learned on its own, like ChatGPT's answer, once the floor is free."""
+    def announce(self, source, text, heard=None, chime=False, *, polite=False, close_turn=False):
+        """Say something BITCH learned in the background once the floor is free."""
         def wait_for_turn():
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 talking = hub.hearing and hub.hearing.capture and time.monotonic() - hub.hearing.capture[3] < 1.2
+                decoding = hub.hearing and hub.hearing.decoding and time.monotonic() - hub.hearing.decoding[3] < 8.
                 with self.lock:
-                    if not self.busy.is_set() and not talking:
-                        history = self.history.setdefault((source, None), deque(maxlen=HISTORY_MESSAGES))
-                        history.append({'role': 'assistant', 'content': heard or text})
-                        self.history_at[(source, None)] = time.monotonic()
+                    recently_spoke = polite and self.followup and (time.monotonic() - self.last_interaction < 3.5)
+                    if not self.busy.is_set() and not talking and not decoding and not recently_spoke:
+                        if heard is not False and not close_turn:
+                            history = self.history.setdefault((source, None), deque(maxlen=HISTORY_MESSAGES))
+                            history.append({'role': 'assistant', 'content': heard or text})
+                            self.history_at[(source, None)] = time.monotonic()
                         self.active_source = source
                         self.interruption = False
                         self.last_interaction = time.monotonic()
                         self.hush.clear()
                         self.busy.set()
-                        self.requests.put_nowait((None, (source, text, chime)))
+                        self.requests.put_nowait((None, (source, text, chime, close_turn)))
                         return
                 time.sleep(.4)
 
@@ -870,11 +888,14 @@ class Brain:
     def typed(self, text):
         """A message typed in the app joins the conversation on the current microphone."""
         ears = hub.selected('ears')
-        return self.submit('BITCH, ' + text.strip(), ears.id if ears else 'app')
+        face, face_by = hub.sight.solo_identity() if hub.sight and hasattr(hub.sight, 'solo_identity') else (
+            hub.sight.solo_recognized() if hub.sight else None, 'face')
+        return self.submit('BITCH, ' + text.strip(), ears.id if ears else 'app', face=face, face_by=face_by)
 
-    def available_actions(self, text, robot, camera_ready):
+    def available_actions(self, text, robot, camera_ready, *, local_only=False):
         """What the model may choose to do this turn, given what is connected right now."""
         actions, extra, lines = ['none'], {}, []
+        explicit_gpt = helper.mentions_gpt(text)
         if camera_ready:
             actions.append('look')
             lines.append('look: only when the answer depends on what your camera sees right now, like what they '
@@ -890,16 +911,28 @@ class Brain:
                 actions.append('routine')
                 extra['routine'] = {'type': 'string', 'enum': routines}
                 lines.append('routine: they ask for one of your saved routines. Put its name in routine.')
-        if robot and getattr(robot, 'handoff', False) and (CHATGPT.search(text) or helper.OUTSIDE.search(text)):
-            actions.append('chatgpt')
+        hub_relevant = not local_only and (
+            CHATGPT.search(text) or helper.should_lookup(text) or not helper.LOCAL_TALK.search(text)
+        )
+        if robot and getattr(robot, 'handoff', False) and hub_relevant:
+            actions.append('lookup')
             extra['task'] = {'type': 'string', 'maxLength': 600}
-            lines.append('chatgpt: your helper ChatGPT can check their calendar, email, files, the weather, news and '
-                         'the web, and set reminders. Use it when the answer needs live information or their accounts, '
-                         'or they ask for ChatGPT. Put the full request in task, with any details from the conversation. '
-                         'Then say only a few words like "Let me check." Never guess the answer yourself.')
-        elif helper.OUTSIDE.search(text):
-            lines.append('You have no live connection for weather, calendar, email or news right now. If they need '
-                         'that, say so in one line instead of guessing.')
+            gpt_note = ' They explicitly asked for ChatGPT, so set do to lookup.' if CHATGPT.search(text) else (
+                ' Never mention ChatGPT unless they explicitly brought it up.' if not explicit_gpt else ''
+            )
+            lines.append(
+                'lookup: your background information hub handles almost everything informational — briefings, '
+                'catch-me-ups, weather, schedule, messages, tasks, news, web lookups, facts, explanations, '
+                'planning, recommendations, and general questions. Keep do="none" ONLY for brief casual banter, '
+                'greetings, feelings, jokes, or questions about yourself. When do="lookup", put the complete '
+                'self-contained request in task (empty string when do is not lookup), and in say give ONLY a '
+                'short 2–5 word line like "Let me check.", "One sec.", or "Looking into it." Do NOT guess the '
+                'answer and do NOT mention checking calendar, email, or specific apps unless asked about them.'
+                + gpt_note
+            )
+        elif helper.OUTSIDE.search(text) and not local_only:
+            lines.append('Your live information lookup is offline right now because the Pi is disconnected. '
+                         'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
 
     def reply(self, text, source, *, stream=None, use_camera=False):
@@ -927,6 +960,8 @@ class Brain:
         if FACE_CHECK.search(text) and not meeting:
             if self.speaker_evidence == 'face':
                 return f'Yeah, I see you, {self.speaker}.'
+            if self.speaker_evidence == 'body':
+                return f'Even without a clear look at your face right now, I’m still tracking you, {self.speaker}.'
             if self.speaker:
                 return f'That sounds like you, {self.speaker}.'
             return 'I’m not sure yet. Face the camera or give me another sentence.'
@@ -936,7 +971,7 @@ class Brain:
                 return 'I can’t see the camera right now.'
             return 'I can see who’s in view, but I can’t tell you who you mean.' if count else (
                 'I don’t see anyone in the camera right now.')
-        identity = self.speaker if self.speaker_evidence in ('voice', 'face') else None
+        identity = self.speaker if self.speaker_evidence in ('voice', 'face', 'body') else None
         if (mark := REMEMBER.fullmatch(text)) and not meeting and not FACE_CHECK.search(text) and not VOICE_CHECK.search(text):
             if not identity:
                 return 'I need to recognize you first. Tell me your name, or let me see your face.'
@@ -953,24 +988,31 @@ class Brain:
                 return 'I need to recognize you before I change what I remember.'
             count = memory.forget(identity, mark[1])
             return 'I’ve forgotten it.' if count else 'I couldn’t find a matching note.'
-        if AGENT_UPDATE.fullmatch(text):
+        if AGENT_UPDATE.fullmatch(text) or PENDING_UPDATE.fullmatch(text):
+            explicit_check = helper.mentions_gpt(text)
             request_id = memory.kv_get('agent:' + identity) if identity else (
                 self.last_agent_request[1] if self.last_agent_request and self.last_agent_request[0] == source else None)
             robot = hub.get('robot')
             status = robot.macro_status(request_id) if request_id and robot else None
             if not status:
-                return 'I don’t have a returned answer in the Pi inbox.'
+                return 'I don’t have a returned answer in the Pi inbox.' if explicit_check else 'I don’t have a pending lookup right now.'
             if status['state'] == 'returned':
-                return status['answer'] if len(status['answer']) <= 420 else (
-                    status['answer'][:395].rsplit(' ', 1)[0] + '… The full answer is in the Pi inbox.')
-            return {'queued': 'It’s queued in the Pi inbox.', 'ready': 'The prompt is ready to send from the Pi.',
-                    'sending': 'I’m waiting for ChatGPT to finish.',
-                    'submitted': 'I sent it. The answer is in the ChatGPT tab when it finishes.',
-                    'send_unverified': 'Check the ChatGPT tab. I couldn’t confirm whether it went through.',
-                    'canceled': 'That request was canceled.'}.get(status['state'], 'The answer hasn’t come back.')
+                ans = helper.strip_gpt_mentions(status['answer'], allow_gpt=explicit_check)
+                return ans if len(ans) <= 420 else (ans[:395].rsplit(' ', 1)[0] + '…')
+            if explicit_check:
+                return {'queued': 'It’s queued in the Pi inbox.', 'ready': 'The prompt is ready to send from the Pi.',
+                        'sending': 'I’m still waiting for ChatGPT to finish.',
+                        'submitted': 'I sent it. The answer is in the ChatGPT tab when it finishes.',
+                        'send_unverified': 'Check the ChatGPT tab. I couldn’t confirm whether it went through.',
+                        'canceled': 'That request was canceled.'}.get(status['state'], 'The answer hasn’t come back yet.')
+            return {'queued': 'It’s queued on the Pi.', 'ready': 'It couldn’t be sent automatically on the Pi.',
+                    'sending': 'Still working on that — I’ll let you know as soon as it comes back.',
+                    'submitted': 'I sent it, though I couldn’t read the reply back automatically.',
+                    'send_unverified': 'I couldn’t confirm whether that lookup went through on the Pi.',
+                    'canceled': 'That request was canceled.'}.get(status['state'], 'Still waiting on that.')
         command = None if local_request else AGENT.fullmatch(text.strip())
         if command:
-            return self.ask_chatgpt(source, identity, command[2].strip())
+            return self.ask_chatgpt(source, identity, command[2].strip(), user_text=text)
         if re.fullmatch(r"(?:what(?:'s| is) the time|what time is it)\s*[?.!]*", text, re.I):
             return f'It’s {datetime.now():%I:%M %p}.'.replace(' 0', ' ')
         conversation = (source, None)
@@ -988,8 +1030,9 @@ class Brain:
         follow_image = (self.last_visual and self.last_visual[0] == conversation
                         and time.monotonic() < self.last_visual[1] and VISUAL_FOLLOWUP.search(text))
         visual = bool(VISUAL.search(text) or follow_image or use_camera)
-        natural_memory = bool(identity and (self.current_voice == identity or self.speaker_evidence == 'face')
+        natural_memory = bool(identity and (self.current_voice == identity or self.speaker_evidence in ('face', 'body'))
                               and config.get('natural_memory') and not visual)
+        explicit_gpt = helper.mentions_gpt(text)
         schema = TURN_SCHEMA
         if visual or can_select_show:
             system = self.persona + '\n\n' + TURN_DIRECTION
@@ -998,14 +1041,16 @@ class Brain:
             schema = MEMORY_SCHEMA if natural_memory else SPOKEN_SCHEMA
             if natural_memory:
                 system += '\n' + MEMORY_DIRECTION
-            actions, extra, lines = self.available_actions(text, robot, image is not None)
+            actions, extra, lines = self.available_actions(text, robot, image is not None, local_only=bool(local_request))
             if len(actions) > 1:
-                # The action comes first, so BITCH knows whether to look before it starts talking.
-                schema = {**schema, 'properties': {'do': {'type': 'string', 'enum': actions}, **extra,
-                                                   **schema['properties']},
-                          'required': ['do', *extra, *schema['required']]}
-                system += ('\nBegin with do. Use none for ordinary conversation. Choose an action only when the '
-                           'latest request calls for it:\n- ' + '\n- '.join(lines))
+                # do comes first so LookFirst works before speech; task/routine come last so speech streams immediately.
+                schema = {**schema, 'properties': {'do': {'type': 'string', 'enum': actions},
+                                                   **schema['properties'], **extra},
+                          'required': ['do', *schema['required'], *extra]}
+                system += ('\nBegin with do. Choose an action when the latest request calls for it:\n- '
+                           + '\n- '.join(lines))
+                if 'lookup' in actions and helper.should_lookup(text):
+                    system += '\nThis request needs your information hub: set do to "lookup".'
             elif lines:
                 system += '\n' + ' '.join(lines)
         if self.speaker:
@@ -1070,15 +1115,28 @@ class Brain:
         if stream and not visual and not can_select_show:
             phrases = streaming.Phrases(text)
             beat_delivery = beat_performance = None
+            sanitized_lookup = False
 
             def speak_as_written(content):
-                nonlocal beat_delivery, beat_performance
+                nonlocal beat_delivery, beat_performance, sanitized_lookup
                 parts, metadata = phrases.feed(content)
                 if metadata.get('do') == 'look' or not parts and LOOK_FIRST.match(content):
                     raise LookFirst
+                is_lookup = metadata.get('do') in ('lookup', 'chatgpt')
                 for part, code in zip(parts, phrases.styles):
-                    if self.hush.is_set():
+                    if self.hush.is_set() or sanitized_lookup:
                         return
+                    if is_lookup:
+                        cleaned = helper.sanitize_ack(part, text, allow_gpt=explicit_gpt)
+                        if cleaned != part:
+                            sanitized_lookup = True
+                            if stream.parts:
+                                return
+                            part = cleaned
+                    else:
+                        part = helper.strip_gpt_mentions(part, allow_gpt=explicit_gpt)
+                        if not part:
+                            continue
                     previous_performance = beat_performance
                     if beat_delivery is None:
                         self.set_delivery(metadata)
@@ -1128,12 +1186,17 @@ class Brain:
                     self.pending_show = (action, None)
                 elif action == 'routine' and turn.get('routine'):
                     self.performance_reply(turn['routine'])
-                elif action == 'chatgpt':
+                elif action in ('lookup', 'chatgpt'):
+                    speech = (' '.join(stream.parts) if stream and stream.parts
+                              else helper.sanitize_ack(speech, text, allow_gpt=explicit_gpt))
                     task = (turn.get('task') or '').strip()
-                    request = text if not task or task.casefold() == text.casefold() else f'{text}\n(BITCH’s note: {task})'
-                    outcome = helper.start(self, source, identity, request, list(history))
+                    request = text if not task or task.casefold() == text.casefold() else f'{text}\n(Context: {task})'
+                    outcome = helper.start(self, source, identity, request, list(history),
+                                           user_text=text, remembered=remembered)
                     if outcome:
-                        speech = speech.rstrip() + ' ' + outcome
+                        speech = outcome if not (stream and stream.parts) else speech.rstrip() + ' ' + outcome
+                else:
+                    speech = helper.strip_gpt_mentions(speech, allow_gpt=explicit_gpt)
                 note = turn.get('note', turn.get('remember'))
                 if natural_memory:
                     memory.remember_in_context(identity, text, note)

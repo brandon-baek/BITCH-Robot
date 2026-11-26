@@ -39,8 +39,8 @@ def job_path(request_id):
 def enqueue(item):
     path = job_path(item.get('id'))
     prompt = item.get('prompt')
-    if item.get('name') != 'agent' or not isinstance(prompt, str) or not 0 < len(prompt.strip()) <= 1500:
-        raise ValueError('expected an agent prompt of up to 1500 characters')
+    if item.get('name') != 'agent' or not isinstance(prompt, str) or not 0 < len(prompt.strip()) <= 2500:
+        raise ValueError('expected an agent prompt of up to 2500 characters')
     QUEUE.mkdir(parents=True, exist_ok=True, mode=0o700)
     record = {'id': item['id'], 'version': 1, 'macro': 'agent', 'prompt': prompt.strip(),
               'created_at': datetime.now(timezone.utc).isoformat()}
@@ -102,7 +102,10 @@ def read_job(request_id):
 
 def handoff_status(request_id):
     record = read_job(request_id)
-    return {'state': record.get('state', 'queued'), 'answer': record.get('answer')}
+    status = {'state': record.get('state', 'queued'), 'answer': record.get('answer')}
+    if record.get('reason'):
+        status['reason'] = record['reason']
+    return status
 
 
 def write_job(path, record):
@@ -203,6 +206,8 @@ def inbox_html():
                  'canceled': 'Canceled'}[state]
         prompt = format_prompt(record['prompt']) if state == 'ready' else record['prompt']
         section = f'<section><h2>{label}</h2><textarea readonly rows="{8 if state == "ready" else 4}" aria-label="Request">{escape(prompt)}</textarea>'
+        if record.get('reason'):
+            section += f'<p>{escape(record["reason"])}</p>'
         if state in ('queued', 'ready'):
             section += (f'<form method="post"><input type="hidden" name="id" value="{request_id}">'
                         '<button name="action" value="send">Send with ChatGPT</button> '

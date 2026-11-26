@@ -58,21 +58,30 @@ def center(box):
 
 
 class Attention:
-    """Give a new person a moment to settle in, then hold gaze through brief occlusion."""
+    """Give a new person a moment to settle in, hold gaze through brief occlusion,
+    and keep tracking the same body and identity even when their face is turned or covered."""
+    NAMED_HOLD = 4.5
+
     def __init__(self):
         self.people = {}
         self.next_id = 1
         self.focus = None
         self.focus_since = 0
 
-    def update(self, boxes, now):
-        self.people = {key: person for key, person in self.people.items() if now - person['seen'] < 0.75}
+    def update(self, boxes, now, bodies=()):
+        self.people = {
+            key: person for key, person in self.people.items()
+            if now - person['seen'] < (self.NAMED_HOLD if person.get('name') else 1.2 if person.get('body') else 0.75)
+        }
         pairs = []
         for index, box in enumerate(boxes):
+            box_center = center(box)
             for key, person in self.people.items():
-                distance = math.dist(center(box), center(person['box']))
-                limit = max(0.085, person['box'][2] * 0.65)
-                if distance < min(0.19, limit):
+                distance = math.dist(box_center, center(person['box']))
+                if person.get('body'):
+                    distance = min(distance, math.dist(box_center, center(person['body']['head_box'])))
+                limit = max(0.085, person['box'][2] * 0.72)
+                if distance < min(0.22, limit):
                     pairs.append((distance, key, index))
         remaining = set(range(len(boxes)))
         matched = set()
@@ -83,11 +92,73 @@ class Attention:
                 person['box'] = tuple(weight * new + (1 - weight) * old
                                       for new, old in zip(boxes[index], person['box']))
                 person['seen'] = now
+                person['face_seen'] = now
                 remaining.remove(index)
                 matched.add(key)
+
+        unused_bodies = set(range(len(bodies)))
+        # Attach body poses to face-matched people first so we know where their shoulders are.
+        body_pairs = []
+        for b_idx in unused_bodies:
+            body = bodies[b_idx]
+            head_c = center(body['head_box'])
+            for key in matched:
+                person = self.people[key]
+                dist = math.dist(head_c, center(person['box']))
+                if person.get('body'):
+                    dist = min(dist, math.dist(body['anchor'], person['body']['anchor']))
+                if dist < max(0.18, body['span'] * 0.95):
+                    body_pairs.append((dist, key, b_idx))
+        linked_people = set()
+        for _, key, b_idx in sorted(body_pairs):
+            if key not in linked_people and b_idx in unused_bodies:
+                self.people[key]['body'] = bodies[b_idx]
+                self.people[key]['body_seen'] = now
+                unused_bodies.remove(b_idx)
+                linked_people.add(key)
+
+        # Keep tracking existing people via their body pose when their face is turned away or covered.
+        occluded_pairs = []
+        for b_idx in unused_bodies:
+            body = bodies[b_idx]
+            head_c = center(body['head_box'])
+            for key, person in self.people.items():
+                if key in matched:
+                    continue
+                if person.get('body'):
+                    dist = math.dist(body['anchor'], person['body']['anchor'])
+                    limit = max(0.22, max(body['span'], person['body']['span']) * 1.2)
+                else:
+                    dist = math.dist(head_c, center(person['box']))
+                    limit = max(0.18, body['span'] * 0.9)
+                if dist < limit:
+                    occluded_pairs.append((dist, key, b_idx))
+        for _, key, b_idx in sorted(occluded_pairs):
+            if key not in matched and b_idx in unused_bodies:
+                person = self.people[key]
+                body = bodies[b_idx]
+                person['box'] = tuple(0.35 * new + 0.65 * old
+                                      for new, old in zip(body['head_box'], person['box']))
+                person['body'] = body
+                person['body_seen'] = now
+                person['seen'] = now
+                matched.add(key)
+                unused_bodies.remove(b_idx)
+
         for index in sorted(remaining):
-            self.people[self.next_id] = {'box': boxes[index], 'seen': now, 'first': now, 'attended': -math.inf}
+            box = boxes[index]
+            attached_body = None
+            if unused_bodies:
+                best = min(unused_bodies, key=lambda b_idx: math.dist(center(bodies[b_idx]['head_box']), center(box)))
+                if math.dist(center(bodies[best]['head_box']), center(box)) < max(0.18, bodies[best]['span'] * 0.95):
+                    attached_body = bodies[best]
+                    unused_bodies.remove(best)
+            self.people[self.next_id] = {
+                'box': box, 'seen': now, 'face_seen': now, 'first': now, 'attended': -math.inf,
+                'body': attached_body, 'body_seen': now if attached_body else -math.inf,
+            }
             self.next_id += 1
+
         visible = {key: person for key, person in self.people.items() if person['seen'] == now}
         candidates = {key: person for key, person in visible.items() if now - person['first'] >= 0.28}
         if self.focus not in self.people:
@@ -238,32 +309,41 @@ class Sight:
                     self.gesture = HeadGesture()
                     self.sample_window.clear()
                 self.target_source = source
-                visible, focus = self.attention.update(boxes, received)
+                bodies = self.pointing.recent_bodies(source, received) if self.pointing.ready else ()
+                visible, focus = self.attention.update(boxes, received, bodies)
                 for person in visible.values():
-                    if received - person.get('thumb_at', -1e9) >= 1.:
+                    if person.get('face_seen') == received and received - person.get('thumb_at', -1e9) >= 1.:
                         person['thumb'], person['thumb_at'] = thumbnail(preview, person['box']), received
-                if len(rows) and received >= self.face_at and people.needed('face') and visible:
-                    key = min(visible, key=lambda identifier: visible[identifier].get('face_at', 0))
-                    person = visible[key]
+                face_visible = {k: p for k, p in visible.items() if p.get('face_seen') == received}
+                if len(rows) and received >= self.face_at and people.needed('face') and face_visible:
+                    key = min(face_visible, key=lambda identifier: face_visible[identifier].get('face_at', 0))
+                    person = face_visible[key]
                     index = min(range(len(boxes)), key=lambda i: math.dist(center(boxes[i]), center(person['box'])))
                     person['face_at'] = received
                     self.face_at = received + 0.30
                     try:
-                        name = people.face(detection, rows[index], source, key, alone=len(boxes) == 1)
-                        if person.get('last_name') == name:
-                            person['name'] = name
-                        if name and name == person.get('name'):
-                            person['confirmed_at'] = received
-                        person['last_name'] = name
+                        name = people.face(detection, rows[index], source, key, alone=len(visible) == 1)
+                        if name:
+                            if person.get('last_name') == name or person.get('name') == name:
+                                person['name'] = name
+                                person['confirmed_at'] = received
+                                person['face_confirmed_at'] = received
+                            person['last_name'] = name
+                        else:
+                            # Looking away or covering part of the face returns None; never erase a known track.
+                            person['last_name'] = None
                     except (cv2.error, RuntimeError, OSError, AttributeError, ValueError):
                         self.face_at = received + 2
-                allowed_names = people.names('face')
+                allowed_names = people.names('face') | people.names('voice')
                 for person in visible.values():
                     if person.get('name') not in allowed_names:
                         person['name'] = None
+                    elif person.get('name'):
+                        # Refresh track confirmation while the same body/person stays continuously tracked.
+                        person['confirmed_at'] = received
                 target = self.attention.people.get(focus)
                 focused_row = None
-                if focus in visible and len(rows):
+                if focus in face_visible and len(rows):
                     index = min(range(len(boxes)), key=lambda i: math.dist(center(boxes[i]), center(target['box'])))
                     focused_row = rows[index]
                 alignment = config.get('camera_calibration').get(source)
@@ -289,20 +369,38 @@ class Sight:
                 })
                 self.frame_ready.notify_all()
 
-    def solo_recognized(self, within=.8):
+    def solo_identity(self, within=4.5):
+        """Return (name, 'face' | 'body') for a lone recognized person in view, even if currently looking away."""
         with self.lock:
             now = time.monotonic()
-            if not self.frame or now - self.frame[0] > .5 or not hub.accepts(self.target_source, 'eyes'):
-                return None
-            visible = self.frame[3]['people']
-            if len(visible) != 1:
-                return None
-            entry = visible[0]
-            person = self.attention.people.get(entry['id'], {})
-            name = entry['name']
-            if name and now - person.get('confirmed_at', -math.inf) < within and name in people.names('face'):
-                return name
-        return None
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return None, None
+            allowed = people.names('face') | people.names('voice')
+            active = [p for p in self.attention.people.values() if now - p['seen'] < min(within, Attention.NAMED_HOLD)]
+            if len(active) != 1:
+                return None, None
+            person = active[0]
+            name = person.get('name')
+            if name and now - person.get('confirmed_at', -math.inf) < within and name in allowed:
+                by = 'face' if now - person.get('face_confirmed_at', -math.inf) < 2.2 else 'body'
+                return name, by
+        return None, None
+
+    def solo_recognized(self, within=4.5):
+        return self.solo_identity(within=within)[0]
+
+    def note_voice(self, name):
+        """Associate a confident voice match with a lone unidentified body in view."""
+        if not name:
+            return
+        with self.lock:
+            now = time.monotonic()
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return
+            visible = [p for p in self.attention.people.values() if now - p['seen'] < .9]
+            if len(visible) == 1 and not visible[0].get('name') and name in (people.names('face') | people.names('voice')):
+                visible[0]['name'] = name
+                visible[0]['confirmed_at'] = now
 
     def in_view(self):
         """Recognized names and how many others are in the camera right now, or None with no camera."""
@@ -310,7 +408,7 @@ class Sight:
             now = time.monotonic()
             if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
                 return None
-            known = people.names('face')
+            known = people.names('face') | people.names('voice')
             names = sorted({entry['name'] for entry in self.frame[3]['people'] if entry['name'] in known})
             return {'names': names, 'others': len(self.frame[3]['people']) - len(names)}
 
@@ -462,8 +560,8 @@ class Sight:
                 energy = min(1., hub.level) if now - hub.hearing.activity_at < .25 else 0.
             if phase == 'Understanding':
                 social = 'ponder'
-            if helper.waiting() and not speaking and phase not in ('Listening', 'Understanding') and social in (None, 'attend'):
-                social = 'ponder'   # thinking it over while ChatGPT works
+            if helper.waiting() and not speaking and not listening and phase not in ('Listening', 'Understanding') and social is None:
+                social = 'ponder'   # brief ponder during initial foreground lookup only; stays attentive while listening
             if chirping:
                 social = 'notice'
             elif social in ('ponder', 'speaking') and brain.expression and now < brain.expression[1]:

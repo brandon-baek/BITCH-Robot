@@ -59,40 +59,87 @@ function mood(state) {
   const settings = state.settings;
   const phase = state.turn_phase;
   const micDevice = state.devices.find(device => device.id === settings.mic_source);
+  const bgCount = state.tasks.filter(task => task.state === 'background').length;
+  const pendingNote = bgCount ? ' · ' + (bgCount === 1 ? '1 lookup pending' : bgCount + ' lookups pending') : '';
   if (state.show_active) return ['speaking', 'Performing'];
   if (state.status === 'Speaking') return ['speaking', 'Talking'];
   if (state.status === 'Thinking' || state.status === 'Answering') return ['thinking', 'Thinking'];
-  if (state.tasks.some(task => task.state === 'working') && !['Listening', 'Understanding', 'Ready'].includes(phase)) return ['thinking', 'Asking ChatGPT'];
-  if (settings.mic_muted) return ['off', 'Your mic is off'];
-  if (settings.mic_source === 'off' || !micDevice) return ['off', 'No microphone'];
+  if (state.tasks.some(task => task.state === 'working') && !['Listening', 'Understanding', 'Ready'].includes(phase)) return ['thinking', 'Looking into it'];
+  if (settings.mic_muted) return ['off', 'Your mic is off' + pendingNote];
+  if (settings.mic_source === 'off' || !micDevice) return ['off', 'No microphone' + pendingNote];
   if (!state.ears_ready) return ['idle', 'Waking up'];
   if (phase === 'Listening') return ['hearing', 'Listening'];
   if (phase === 'Understanding') return ['thinking', 'Got it'];
-  if (phase === 'Ready') return ['listening', state.speaker_name ? 'Go ahead, ' + state.speaker_name : 'Go ahead'];
-  if (state.rhythm === 'asleep') return ['asleep', 'Asleep'];
-  if (state.rhythm === 'resting') return ['resting', 'Resting'];
-  return ['idle', 'Say “Hey BITCH”'];
+  if (phase === 'Ready') return ['listening', (state.speaker_name ? 'Go ahead, ' + state.speaker_name : 'Go ahead') + pendingNote];
+  if (state.rhythm === 'asleep') return ['asleep', 'Asleep' + pendingNote];
+  if (state.rhythm === 'resting') return ['resting', 'Resting' + pendingNote];
+  return ['idle', 'Say “Hey BITCH”' + pendingNote];
 }
 
 const QUIET_AFTER = 45;   // seconds after a conversation ends before its captions fade
+const SESSION_GAP = 600;  // seconds of silence separating distinct conversations
+let exchangeSentinels = null;
 
-// The exchange happening now: what you said and what BITCH is saying. Older lines live in Earlier.
+function ensureExchangeObserver(exchange) {
+  if (CSS.supports('animation-timeline', 'scroll()') || exchangeSentinels) return;
+  const start = document.createElement('div');
+  const end = document.createElement('div');
+  for (const sentinel of [start, end]) {
+    sentinel.setAttribute('aria-hidden', 'true');
+    sentinel.style.cssText = 'min-inline-size: 1px; min-block-size: 1px; flex: none';
+  }
+  const observer = new IntersectionObserver(entries => {
+    for (const {target, isIntersecting} of entries) {
+      exchange.classList.toggle(target === start ? 'more-start' : 'more-end', !isIntersecting);
+    }
+  }, {root: exchange});
+  exchangeSentinels = {start, end, observer};
+}
+
+// The active conversation captions, scrollable up through past turns in this exchange.
 function renderNow(state, feeling) {
   const messages = state.messages;
-  const lastUser = messages.map(message => message.role).lastIndexOf('user');
   const newest = messages.at(-1);
   const active = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
   const working = state.tasks.some(task => task.state === 'working');
   const showing = Boolean(newest) && (active || working || state.now - newest.at < QUIET_AFTER);
-  const said = lastUser >= 0 ? messages[lastUser].text : '';
-  // While BITCH talks, show only what it has said aloud so far; afterwards, the whole reply.
-  const reply = state.speaking || messages.slice(lastUser + 1).filter(message => message.role === 'robot')
-    .slice(-2).map(message => message.text).join(' ');
-  if (showing) {
-    if ($('said').textContent !== said) $('said').textContent = said;
-    if ($('reply').textContent !== reply) {
-      $('reply').textContent = reply;
-      $('reply').classList.toggle('long', reply.length > 150);
+  const exchange = $('exchange');
+  const wasShowing = $('captions').dataset.showing === 'true';
+
+  if (showing && messages.length) {
+    let startIdx = messages.length - 1;
+    while (startIdx > 0 && messages[startIdx].at - messages[startIdx - 1].at <= SESSION_GAP) startIdx--;
+    const items = messages.slice(startIdx).map(m => ({role: m.role, text: m.text}));
+    // While BITCH talks, show only what it has said aloud so far on the active reply line.
+    if (state.speaking) {
+      if (items.at(-1)?.role === 'robot') items[items.length - 1].text = state.speaking;
+      else items.push({role: 'robot', text: state.speaking});
+    }
+    const signature = JSON.stringify(items);
+    if (exchange.dataset.signature !== signature) {
+      const prevCount = Number(exchange.dataset.count || 0);
+      const nearBottom = exchange.scrollHeight - exchange.scrollTop - exchange.clientHeight < 36;
+      const newTurn = items.length > prevCount && items.at(-1)?.role === 'user';
+      ensureExchangeObserver(exchange);
+      const nodes = items.map(item => {
+        const p = document.createElement('p');
+        p.className = item.role === 'robot' ? 'reply' : 'said';
+        p.textContent = item.text;
+        return p;
+      });
+      if (exchangeSentinels) {
+        exchangeSentinels.observer.disconnect();
+        exchange.replaceChildren(exchangeSentinels.start, ...nodes, exchangeSentinels.end);
+        exchangeSentinels.observer.observe(exchangeSentinels.start);
+        exchangeSentinels.observer.observe(exchangeSentinels.end);
+      } else {
+        exchange.replaceChildren(...nodes);
+      }
+      exchange.dataset.signature = signature;
+      exchange.dataset.count = String(items.length);
+      if (!wasShowing || nearBottom || newTurn) {
+        exchange.scrollTop = exchange.scrollHeight;
+      }
     }
   }
   $('captions').dataset.showing = String(showing);
@@ -115,7 +162,7 @@ function renderCompany(state, feeling) {
     by = 'Learning';
   } else if (talking && state.company) {
     text = state.company.name;
-    by = {voice: 'Voice', face: 'Face', introduced: 'Introduced'}[state.company.by] || '';
+    by = {voice: 'Voice', face: 'Face', body: 'Tracked', introduced: 'Introduced'}[state.company.by] || '';
   } else if (talking && view && !view.names.length && view.others === 1) {
     text = 'Someone new';
     add = true;
@@ -199,7 +246,16 @@ function renderTasks(tasks) {
     $('tasks').replaceChildren(p);
     return;
   }
-  const words = {working: 'Waiting for ChatGPT…', queued: 'In the Pi inbox', slow: 'Still waiting. Check the ChatGPT tab on the Pi.', canceled: 'Canceled'};
+  const words = {
+    working: 'Looking into it…',
+    background: 'Working in the background — will notify you',
+    queued: 'Queued on the Pi',
+    failed: 'Couldn’t reach the Pi browser',
+    unread: 'Sent — check the Pi browser tab',
+    lost: 'Lost connection to the Pi',
+    slow: 'Timed out on the Pi',
+    canceled: 'Canceled',
+  };
   $('tasks').replaceChildren(...tasks.slice().reverse().map(task => {
     const row = document.createElement('div');
     row.className = 'row task';

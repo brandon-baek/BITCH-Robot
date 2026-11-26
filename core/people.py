@@ -228,7 +228,7 @@ class People:
 
     def face(self, image, row, source, track, alone):
         session = self.active()
-        if row[2] < 45 or not self.needed('face'):
+        if row[2] < 32 or not self.needed('face'):
             return None
         model = self.model('face')
         vector = normalized(model.feature(model.alignCrop(image, row)))

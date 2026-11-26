@@ -76,10 +76,7 @@
     </p>
     <div class="faces" id="faces" hidden></div>
     <div class="captions" id="captions" aria-live="polite">
-      <div class="exchange" id="exchange">
-        <p class="said" id="said"></p>
-        <p class="reply" id="reply"></p>
-      </div>
+      <div class="exchange" id="exchange" tabindex="0" aria-label="Recent conversation captions"></div>
       <p class="hint" id="hint">Say “Hey BITCH”, or type below.</p>
     </div>
   </main>
@@ -161,9 +158,9 @@
     </section>
 
     <section class="group">
-      <h3>ChatGPT</h3>
+      <h3>Information hub</h3>
       <div class="list" id="tasks"><p class="row muted">Nothing asked yet</p></div>
-      <p class="footnote">For the weather, your calendar, email and the web, BITCH asks your ChatGPT on the Pi and tells you the answer.</p>
+      <p class="footnote">For briefings, weather, schedule, email, web lookups and general questions, BITCH checks your signed-in GPT on the Pi and notifies you when slow answers finish.</p>
     </section>
 
     <section class="group" id="peopleSetup">

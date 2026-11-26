@@ -407,9 +407,12 @@ class Hearing:
                 if text and valid() and hub.brain.addressed(text, source, began):
                     _, name = people.speaker(source, clip.speech, clip.voiced, addressed=True)
                     if valid():
-                        face = hub.sight.solo_recognized(within=6.) if hub.sight and not name else None
+                        if name and hub.sight:
+                            hub.sight.note_voice(name)
+                        face, face_by = (hub.sight.solo_identity(within=8.)
+                                         if hub.sight and not name else (None, 'face'))
                         hub.brain.submit(text, source, heard_at=began, name=name, face=face,
-                                         speech_end=clip.last_speech, audio=clip.speech)
+                                         face_by=face_by or 'face', speech_end=clip.last_speech, audio=clip.speech)
             except Exception as error:
                 hub.note('hearing', f'Transcription failed: {error}')
             finally:
