@@ -71,7 +71,15 @@ PAGE = r'''
       && /instant|light|medium|heavy|standard|extended|thinking|auto|fast|pro/i.test((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || ''))) || null;
   };
   const modeItems = () => all('[role="menuitemradio"], [role="menuitem"], [role="option"]').filter(visible);
-  return {composer, sendButton, streaming, replies, asks, loginButton, textOf, modeButton, modeItems};
+  const newChatLink = () => all('[data-testid="create-new-chat-button"], a[href="/"]')
+    .find((e) => visible(e) && /new chat/i.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''))) || null;
+  // True when ChatGPT has marked the newest reply's turn as complete (it streams before that).
+  const finished = () => {
+    const r = replies(); const last = r[r.length - 1];
+    const turn = last && last.closest('[data-talvt-turn-state]');
+    return !!turn && turn.getAttribute('data-talvt-turn-state') === 'complete';
+  };
+  return {composer, sendButton, streaming, replies, asks, loginButton, textOf, modeButton, modeItems, newChatLink, finished};
 })()
 '''
 
@@ -349,7 +357,25 @@ def normalized(text):
 
 
 def open_new_chat(tab):
-    """Load a fresh chat and wait for the composer. Returns an error or None."""
+    """Start a fresh chat and wait for the composer. Returns an error or None.
+
+    When ChatGPT is already open, its own "New chat" link switches chats inside the page, which takes a moment
+    instead of the 15+ seconds a Pi 4 needs to load ChatGPT from scratch."""
+    try:
+        state = tab.run('const link = page.newChatLink(); if (!link || !page.composer()) return false; '
+                        'if (page.asks().length || location.pathname !== "/") link.click(); return true;', 6.)
+    except (RuntimeError, TimeoutError):
+        state = False
+    if state:
+        deadline = time.monotonic() + 6.
+        while time.monotonic() < deadline:
+            time.sleep(.25)
+            try:
+                if tab.run('return location.pathname === "/" && !page.asks().length && !!page.composer() '
+                           '&& !(page.composer().value ?? page.composer().innerText).trim();', 4.):
+                    return None
+            except (RuntimeError, TimeoutError):
+                pass
     tab.call('Page.enable')
     tab.call('Page.navigate', {'url': HOME_PAGE})
     deadline = time.monotonic() + LOAD_SECONDS
@@ -424,10 +450,11 @@ def read_reply(tab, before, wait=SEND_WAIT_SECONDS):
     last, stable = None, 0
     started = time.monotonic()
     while time.monotonic() < deadline:
-        time.sleep(1.)
+        time.sleep(.5)
         try:
             state = tab.run('const r = page.replies(); return {asks: page.asks().length, count: r.length, '
-                            'streaming: page.streaming(), text: page.textOf(r[r.length - 1]), url: location.href};', 8.)
+                            'streaming: page.streaming(), finished: page.finished(), '
+                            'text: page.textOf(r[r.length - 1]), url: location.href};', 8.)
         except (RuntimeError, TimeoutError):
             continue
         sent = sent or state['asks'] > before[0] or '/c/' in state['url']
@@ -436,9 +463,13 @@ def read_reply(tab, before, wait=SEND_WAIT_SECONDS):
         if state['count'] <= before[1] or state['streaming'] or not state['text']:
             last, stable = None, 0
             continue
+        if state.get('finished'):
+            # ChatGPT says the turn is complete; no need to wait for the text to sit still.
+            url = state['url'] if '/c/' in state['url'] else None
+            return {'state': 'returned', 'answer': state['text'][:12000], 'url': url}
         if state['text'] == last:
             stable += 1
-            if stable >= 2:
+            if stable >= 3:
                 url = state['url'] if '/c/' in state['url'] else None
                 return {'state': 'returned', 'answer': state['text'][:12000], 'url': url}
         else:
@@ -452,9 +483,18 @@ def run_chatgpt(prompt, *, send, mode=None):
         return {'state': 'ready', 'reason': problem}
     tab = None
     sent = False
+    timing, clock = {}, time.monotonic()
+
+    def lap(name):
+        nonlocal clock
+        now = time.monotonic()
+        timing[name] = round(now - clock, 1)
+        clock = now
+
     try:
         tab = chatgpt_tab()
         problem = open_new_chat(tab)
+        lap('new_chat')
         if problem:
             return {'state': 'ready', 'reason': problem}
         if mode:
@@ -462,14 +502,20 @@ def run_chatgpt(prompt, *, send, mode=None):
                 choose_mode(tab, mode)
             except (RuntimeError, TimeoutError):
                 close_menu(tab)
+            lap('mode')
         if not enter_prompt(tab, prompt):
             return {'state': 'ready', 'reason': 'Could not type the request into ChatGPT on the Pi.'}
+        lap('paste')
         if not send:
             return {'state': 'drafted'}
         before = tab.run('return [page.asks().length, page.replies().length];')
         press_send(tab)
         sent = True
-        return read_reply(tab, before)
+        lap('send')
+        result = read_reply(tab, before)
+        lap('answer')
+        result['timing'] = timing
+        return result
     except (OSError, ValueError, RuntimeError, TimeoutError, KeyError, TypeError, urllib.error.URLError) as error:
         if sent:
             return {'state': 'send_unverified', 'reason': f'Lost the ChatGPT page while it answered: {error}'}

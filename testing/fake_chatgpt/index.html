@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- A stand-in for chatgpt.com's chat page (markup as of Nov 2026) with the hooks desktop_chatgpt.py uses. -->
 <meta charset="utf-8"><title>ChatGPT</title>
+<nav><a href="/" data-testid="create-new-chat-button" id="new-chat">New chat</a></nav>
 <main id="thread"></main>
 <form>
   <div id="prompt-textarea" class="ProseMirror" contenteditable="true"></div>
@@ -10,6 +11,9 @@
 const box = document.getElementById('prompt-textarea');
 const send = document.getElementById('composer-submit-button');
 const thread = document.getElementById('thread');
+document.getElementById('new-chat').addEventListener('click', (e) => {
+  e.preventDefault(); thread.innerHTML = ''; history.pushState({}, '', '/');
+});
 const sync = () => { send.disabled = !box.innerText.trim(); };
 // ProseMirror reads pasted text from the clipboard event and turns lines into paragraphs.
 box.addEventListener('paste', (e) => {
