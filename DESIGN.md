@@ -25,7 +25,8 @@ Kraft belongs to BITCH. Navy belongs to you. Red only means something is off or 
 
 ## Layout
 
-- Main screen: sticky glass top bar (eyes, name, status line, voice mute, Settings), conversation bubbles bottom-aligned, fixed glass composer (mic mute, message field, Send). Stop floats above the composer only while BITCH thinks, talks or performs.
+- Main screen is a stage, not a chat: glass top bar (name, voice mute, Settings); BITCH's eyes large in the centre with the status word (22px semibold) and who it is with ("With Brandon" plus a kraft Voice or Face badge, "Brandon is here", or "Someone new" with Add); then captions of the exchange happening now: what you said (17px, quoted, secondary) and BITCH's reply (24px). Captions fade 45 seconds after the conversation ends. "Earlier" opens the last 40 lines in a sheet. Fixed glass composer (mic mute, message field, Send). Stop floats above the composer only while BITCH thinks, talks or performs.
+- Adding a person is its own sheet: name, then a round live camera view with six progress dots, then three sentences to read that tick off as each voice sample lands, then a kraft check.
 - Column max 680px, centred on a wide Mac window.
 - Settings: a `<dialog>` sheet. Bottom sheet on a phone, centred panel from 720px. Grouped inset lists with 0.5px hairlines inset 16px, uppercase 13px section headers, footnotes under groups.
 - Controls are at least 44px. Respects safe areas.

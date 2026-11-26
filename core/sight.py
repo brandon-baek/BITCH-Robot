@@ -286,6 +286,16 @@ class Sight:
                 return name
         return None
 
+    def in_view(self):
+        """Recognized names and how many others are in the camera right now, or None with no camera."""
+        with self.lock:
+            now = time.monotonic()
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return None
+            known = people.names('face')
+            names = sorted({entry['name'] for entry in self.frame[3]['people'] if entry['name'] in known})
+            return {'names': names, 'others': len(self.frame[3]['people']) - len(names)}
+
     def direction_scene(self):
         with self.lock:
             if not self.frame or time.monotonic() - self.frame[0] > .65 or not hub.accepts(self.target_source, 'eyes'):

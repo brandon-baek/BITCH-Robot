@@ -20,26 +20,14 @@
   <symbol id="i-voice-off" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
 </svg>
 
 <div class="app" id="app">
   <header class="bar">
-    <div class="identity">
-      <svg class="eyes" id="eyes" viewBox="0 0 72 38" aria-hidden="true">
-        <defs>
-          <clipPath id="eyeClipL"><circle cx="18" cy="19" r="15"/></clipPath>
-          <clipPath id="eyeClipR"><circle cx="54" cy="19" r="15"/></clipPath>
-        </defs>
-        <g clip-path="url(#eyeClipL)"><circle class="sclera" cx="18" cy="19" r="15"/><circle class="pupil" id="pupilL" cx="18" cy="19" r="6.5"/><rect class="lid" id="lidL" x="2" y="3" width="32" height="0"/></g>
-        <g clip-path="url(#eyeClipR)"><circle class="sclera" cx="54" cy="19" r="15"/><circle class="pupil" id="pupilR" cx="54" cy="19" r="6.5"/><rect class="lid" id="lidR" x="38" y="3" width="32" height="0"/></g>
-        <circle class="rim" cx="18" cy="19" r="15"/><circle class="rim" cx="54" cy="19" r="15"/>
-      </svg>
-      <div class="titles">
-        <h1>BITCH</h1>
-        <p class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connecting</span></p>
-      </div>
-    </div>
+    <h1>BITCH</h1>
     <div class="bar-actions" id="barActions" hidden>
       <button class="icon-button" id="voiceToggle" type="button" aria-pressed="false" aria-label="Mute BITCH’s voice"><svg><use href="#i-voice"/></svg></button>
       <button class="icon-button" id="openSettings" type="button" aria-label="Settings"><svg><use href="#i-settings"/></svg></button>
@@ -67,9 +55,30 @@
     </form>
   </section>
 
-  <main class="conversation" id="conversation" hidden>
-    <div class="messages" id="messages"></div>
-    <p class="empty" id="empty">Say “Hey BITCH”, or type a message.</p>
+  <main class="stage" id="stage" hidden>
+    <div class="presence">
+      <svg class="eyes" id="eyes" viewBox="0 0 72 38" aria-hidden="true">
+        <defs>
+          <clipPath id="eyeClipL"><circle cx="18" cy="19" r="15"/></clipPath>
+          <clipPath id="eyeClipR"><circle cx="54" cy="19" r="15"/></clipPath>
+        </defs>
+        <g clip-path="url(#eyeClipL)"><circle class="sclera" cx="18" cy="19" r="15"/><circle class="pupil" id="pupilL" cx="18" cy="19" r="6.5"/><rect class="lid" id="lidL" x="2" y="3" width="32" height="0"/></g>
+        <g clip-path="url(#eyeClipR)"><circle class="sclera" cx="54" cy="19" r="15"/><circle class="pupil" id="pupilR" cx="54" cy="19" r="6.5"/><rect class="lid" id="lidR" x="38" y="3" width="32" height="0"/></g>
+        <circle class="rim" cx="18" cy="19" r="15"/><circle class="rim" cx="54" cy="19" r="15"/>
+      </svg>
+      <p class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connecting</span></p>
+      <p class="company" id="company" hidden>
+        <svg><use href="#i-person"/></svg><span id="companyText"></span>
+        <span class="by" id="companyBy"></span>
+        <button class="text-button small" id="addFromStage" type="button" hidden>Add</button>
+      </p>
+    </div>
+    <div class="captions" id="captions" aria-live="polite">
+      <p class="said" id="said"></p>
+      <p class="reply" id="reply"></p>
+      <p class="hint" id="hint">Say “Hey BITCH”, or type below.</p>
+    </div>
+    <button class="text-button earlier" id="showEarlier" type="button" hidden>Earlier</button>
   </main>
 
   <footer class="composer" id="composer" hidden>
@@ -151,18 +160,13 @@
       <p class="footnote">For the weather, your calendar, email and the web, BITCH asks your ChatGPT on the Pi and tells you the answer.</p>
     </section>
 
-    <section class="group" id="peopleSetup" hidden>
+    <section class="group" id="peopleSetup">
       <h3>People</h3>
       <div class="list">
-        <label class="row"><span>Name</span><input id="personName" maxlength="32" autocomplete="off" placeholder="Your name"></label>
-        <div class="row buttons">
-          <button class="text-button" id="rememberFace" type="button">Learn face</button>
-          <button class="text-button" id="rememberVoice" type="button">Learn voice</button>
-          <button class="text-button" id="cancelEnroll" type="button" hidden>Cancel</button>
-        </div>
         <div id="profiles"></div>
+        <button class="row action" id="addPerson" type="button">Add someone…</button>
       </div>
-      <p class="footnote" id="enrollState" role="status">Only add yourself or someone who agrees. Face and voice patterns stay on this Mac.</p>
+      <p class="footnote">BITCH saves a face and voice fingerprint on this Mac, never photos or recordings. Only add someone who agrees.</p>
     </section>
 
     <section class="group" id="browserSetup">
@@ -203,6 +207,49 @@
       </div>
       <p class="footnote" id="notice" hidden></p>
     </section>
+  </div>
+</dialog>
+<dialog class="sheet" id="earlier" aria-labelledby="earlierTitle">
+  <div class="sheet-head">
+    <h2 id="earlierTitle">Earlier</h2>
+    <button class="text-button" id="closeEarlier" type="button">Done</button>
+  </div>
+  <div class="sheet-body"><div class="history" id="history"></div>
+    <p class="footnote">BITCH keeps the last 40 lines while it runs, then lets the oldest go.</p></div>
+</dialog>
+
+<dialog class="sheet compact" id="person" aria-labelledby="personTitle">
+  <div class="sheet-head">
+    <button class="text-button" id="cancelPerson" type="button">Cancel</button>
+    <h2 class="sheet-title" id="personTitle">New person</h2>
+    <button class="text-button" id="personNext" type="button">Next</button>
+  </div>
+  <div class="sheet-body">
+    <section class="step" id="stepName">
+      <p class="lead">Who should BITCH get to know?</p>
+      <div class="list"><label class="row"><span>Name</span><input id="personName" maxlength="32" autocomplete="off" placeholder="Required"></label></div>
+      <p class="footnote">Only add yourself or someone who agrees.</p>
+    </section>
+    <section class="step" id="stepFace" hidden>
+      <p class="lead">Look at the camera</p>
+      <p class="footnote center">Be the only one in view and turn your head a little, slowly.</p>
+      <div class="enroll-view"><canvas id="enrollPicture" hidden></canvas><span class="no-frame" id="enrollNoFrame">Waiting for the camera…</span></div>
+      <div class="progress" id="faceProgress"></div>
+    </section>
+    <section class="step" id="stepVoice" hidden>
+      <p class="lead">Read these out loud</p>
+      <p class="footnote center">Pause briefly after each one.</p>
+      <ol class="lines" id="voiceLines">
+        <li>“Hey BITCH, it’s me. I’m teaching you my voice.”</li>
+        <li>“The quick brown fox jumps over a lazy cardboard robot.”</li>
+        <li>“Next time I talk to you, you’ll know it’s me.”</li>
+      </ol>
+    </section>
+    <section class="step" id="stepDone" hidden>
+      <div class="done"><svg><use href="#i-check"/></svg></div>
+      <p class="lead" id="doneText">BITCH knows you now.</p>
+    </section>
+    <p class="footnote center" id="enrollState" role="status"></p>
   </div>
 </dialog>
 </body>

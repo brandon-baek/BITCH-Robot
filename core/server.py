@@ -160,11 +160,16 @@ def state(req: Request):
     data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
     data['pointing_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'ready', False))
     data['tasks'] = helper.recent()
+    data['now'] = time.time()
+    brain = hub.brain
+    talking = brain.busy.is_set() or remaining > 0
+    data['company'] = ({'name': brain.speaker, 'by': brain.speaker_evidence}
+                       if talking and brain.speaker else None)
+    data['in_view'] = hub.sight.in_view() if hub.sight else None
+    data['people'] = people.state()
     data['voice_energy'] = round(voice.articulation()[0], 2)
     data['robot_online'] = bool(getattr(hub.get('robot'), 'online', False))
-    if owner == 'local':
-        data['people'] = people.state()
-        data['speaker_name'] = hub.brain.speaker if remaining else None
+    data['speaker_name'] = hub.brain.speaker if remaining else None
     return data
 
 
@@ -237,8 +242,7 @@ def stop(req: Request):
 
 @app.post('/api/people')
 async def profiles(req: Request):
-    if authorize(req) != 'local':
-        raise HTTPException(403, 'Manage profiles on the Mac.')
+    authorize(req)
     data = await payload(req)
     action = data.get('action')
     name = data.get('name', '')
@@ -247,7 +251,8 @@ async def profiles(req: Request):
     if action in ('face', 'voice'):
         source = hub.selected('eyes' if action == 'face' else 'ears')
         if not source or action == 'voice' and not hub.hearing.ready:
-            raise HTTPException(400, 'Choose an active camera or microphone first.')
+            raise HTTPException(400, 'Turn on a camera in Settings first.' if action == 'face'
+                                else 'Turn on a microphone in Settings first.')
         try:
             people.begin(name, action, source.id)
         except ValueError as error:

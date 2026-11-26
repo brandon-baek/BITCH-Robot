@@ -59,6 +59,7 @@ function mood(state) {
   if (state.show_active) return ['speaking', 'Performing'];
   if (state.status === 'Speaking') return ['speaking', 'Talking'];
   if (state.status === 'Thinking' || state.status === 'Answering') return ['thinking', 'Thinking'];
+  if (state.tasks.some(task => task.state === 'working') && !['Listening', 'Understanding', 'Ready'].includes(phase)) return ['thinking', 'Asking ChatGPT'];
   if (settings.mic_muted) return ['off', 'Your mic is off'];
   if (settings.mic_source === 'off' || !micDevice) return ['off', 'No microphone'];
   if (!state.ears_ready) return ['idle', 'Waking up'];
@@ -68,27 +69,81 @@ function mood(state) {
   return ['idle', 'Say “Hey BITCH”'];
 }
 
-function renderMessages(state) {
-  const working = state.tasks.filter(task => task.state === 'working');
-  const signature = JSON.stringify([state.messages, working.map(task => task.id)]);
-  if ($('messages').dataset.signature === signature) return;
-  $('messages').dataset.signature = signature;
-  const nodes = state.messages.map(message => {
-    const p = document.createElement('p');
-    p.className = 'bubble ' + (message.role === 'robot' ? 'robot' : 'user');
-    p.textContent = message.text;
-    return p;
-  });
-  for (const task of working) {
-    const p = document.createElement('p');
-    p.className = 'bubble working';
-    p.textContent = 'Asking ChatGPT';
-    nodes.push(p);
+const QUIET_AFTER = 45;   // seconds after a conversation ends before its captions fade
+
+// The exchange happening now: what you said and what BITCH is saying. Older lines live in Earlier.
+function renderNow(state, feeling) {
+  const messages = state.messages;
+  const lastUser = messages.map(message => message.role).lastIndexOf('user');
+  const replies = messages.slice(lastUser + 1).filter(message => message.role === 'robot').slice(-2);
+  const newest = messages.at(-1);
+  const active = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
+  const recent = newest && state.now - newest.at < QUIET_AFTER;
+  const working = state.tasks.some(task => task.state === 'working');
+  const showing = Boolean(newest) && (active || recent || working);
+  const said = lastUser >= 0 ? messages[lastUser].text : '';
+  const reply = replies.map(message => message.text).join(' ');
+  if ($('said').textContent !== said) $('said').textContent = said;
+  if ($('reply').textContent !== reply) {
+    $('reply').textContent = reply;
+    $('reply').classList.toggle('short', reply.length < 180);
   }
-  const pinned = scrollY + innerHeight >= document.documentElement.scrollHeight - 80;
-  $('messages').replaceChildren(...nodes);
-  $('empty').hidden = nodes.length > 0;
-  if (pinned) scrollTo({top: document.documentElement.scrollHeight});
+  $('captions').dataset.fading = String(!showing);
+  $('hint').hidden = showing;
+  if (!showing) $('hint').textContent = state.settings.mic_muted ? 'Your mic is off. Type below.' : 'Say “Hey BITCH”, or type below.';
+  $('said').hidden = $('reply').hidden = !showing;
+  $('showEarlier').hidden = !messages.length;
+  if ($('earlier').open) renderHistory(messages);
+}
+
+// Who BITCH is with, and how it knows them.
+function renderCompany(state, feeling) {
+  const talking = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
+  const view = state.in_view;
+  let text = '', by = '', add = false;
+  if (talking && state.company) {
+    text = 'With ' + state.company.name;
+    by = {voice: 'Voice', face: 'Face'}[state.company.by] || '';
+  } else if (talking && view && !view.names.length && view.others === 1) {
+    text = 'Someone new';
+    add = true;
+  } else if (view && view.names.length) {
+    const names = view.names.length > 1 ? view.names.slice(0, -1).join(', ') + ' and ' + view.names.at(-1) : view.names[0];
+    text = names + (view.others ? ' and ' + view.others + (view.others === 1 ? ' other' : ' others') : '') + (view.names.length + view.others > 1 ? ' are here' : ' is here');
+  } else if (view && view.others && !state.people.profiles.length) {
+    text = view.others === 1 ? 'Someone is here' : view.others + ' people are here';
+    add = true;
+  }
+  $('company').hidden = !text;
+  if ($('companyText').textContent !== text) $('companyText').textContent = text;
+  if ($('companyBy').textContent !== by) $('companyBy').textContent = by;
+  $('addFromStage').hidden = !add;
+}
+
+function renderHistory(messages) {
+  const signature = JSON.stringify(messages);
+  if ($('history').dataset.signature === signature) return;
+  $('history').dataset.signature = signature;
+  const nodes = [];
+  let previous = 0;
+  messages.forEach((message, index) => {
+    if (message.at - previous > 600) {
+      const time = document.createElement('time');
+      time.textContent = new Date(message.at * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+      nodes.push(time);
+    }
+    const next = messages[index + 1];
+    const line = document.createElement('p');
+    const opens = message.at - previous > 600, closes = !next || next.at - message.at > 600;
+    line.className = 'line ' + (message.role === 'robot' ? 'robot' : 'user') + (opens && closes ? ' only' : closes ? ' last' : '');
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = message.role === 'robot' ? 'BITCH' : 'You';
+    line.append(who, document.createTextNode(message.text));
+    nodes.push(line);
+    previous = message.at;
+  });
+  $('history').replaceChildren(...nodes);
 }
 
 function renderTasks(tasks) {
@@ -137,16 +192,18 @@ async function refresh() {
   $('micToggle').setAttribute('aria-pressed', String(settings.mic_muted));
   $('micToggle').setAttribute('aria-label', settings.mic_muted ? 'Turn my microphone back on' : 'Turn off my microphone');
   setIcon($('micToggle'), settings.mic_muted ? 'i-mic-off' : 'i-mic');
-  renderMessages(state);
-
-  if (!$('settings').open) return;
-  if (state.people) renderPeople(state.people);
-  renderTasks(state.tasks);
+  renderNow(state, feeling);
+  renderCompany(state, feeling);
+  if ($('person').open) updatePerson(state.people);
   if (previewSource !== settings.camera_source) {
     previewSource = settings.camera_source;
     frameId = 0;
     clearPreview();
   }
+
+  if (!$('settings').open) return;
+  renderPeople(state.people);
+  renderTasks(state.tasks);
   const entries = capability => devices
     .filter(device => device.online && device.caps.includes(capability))
     .map(device => [device.id, device.name + (device.id === browserDevice ? ' (this device)' : '')]);
@@ -385,12 +442,13 @@ async function useMedia(kind) {
 
 function clearPreview() {
   $('noFrame').textContent = previewSource === 'off' ? 'Camera off' : 'Waiting for the camera…';
-  $('noFrame').hidden = false;
-  $('picture').hidden = true;
+  $('enrollNoFrame').textContent = previewSource === 'off' ? 'Choose a camera in Settings first.' : 'Waiting for the camera…';
+  $('noFrame').hidden = $('enrollNoFrame').hidden = false;
+  $('picture').hidden = $('enrollPicture').hidden = true;
   $('attention').textContent = 'No one in view';
 }
 
-async function drawFrame(response, source) {
+async function drawFrame(response, source, target) {
   const scene = JSON.parse(response.headers.get('X-Scene'));
   const jpeg = URL.createObjectURL(await response.blob());
   try {
@@ -398,7 +456,7 @@ async function drawFrame(response, source) {
     image.src = jpeg;
     await image.decode();
     if (source !== previewSource) return;
-    const canvas = $('picture');
+    const canvas = $(target);
     const [width, height] = scene.size;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
@@ -445,7 +503,7 @@ async function drawFrame(response, source) {
     const beats = {curious: 'Curious lean', glance: 'Glancing aside', shy: 'Peeking back', peek: 'Peeking back',
       stretch: 'Stretching', proud: 'Chin up', sad: 'Drooping', survey: 'Looking around the room'};
     $('drive').textContent = beats[scene.drive.gesture] || scene.drive.mode;
-    $('noFrame').hidden = true;
+    $(target === 'picture' ? 'noFrame' : 'enrollNoFrame').hidden = true;
     canvas.hidden = false;
   } finally {
     URL.revokeObjectURL(jpeg);
@@ -455,7 +513,8 @@ async function drawFrame(response, source) {
 async function preview() {
   let delay = 0;
   const source = previewSource;
-  if (document.hidden || source === 'off' || !$('settings').open) {
+  const target = $('person').open && enroll.step === 'face' ? 'enrollPicture' : $('settings').open ? 'picture' : null;
+  if (document.hidden || source === 'off' || !target) {
     delay = 300;
   } else {
     try {
@@ -466,7 +525,7 @@ async function preview() {
           delay = 180;
         } else {
           frameId = Number(response.headers.get('X-Frame'));
-          await drawFrame(response, source);
+          await drawFrame(response, source, target);
         }
       }
     } catch {
@@ -511,33 +570,106 @@ async function calibrate(step, track = false) {
 }
 
 function renderPeople(people) {
-  const enrollment = people.enrollment;
-  $('cancelEnroll').hidden = !enrollment;
-  $('rememberFace').disabled = $('rememberVoice').disabled = Boolean(enrollment);
-  if (enrollment || people.message) {
-    $('enrollState').textContent = (enrollment ? enrollment.progress + ' of ' + enrollment.total + ' · ' : '') + people.message;
-  }
   const list = $('profiles');
   const signature = JSON.stringify(people.profiles);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   list.replaceChildren(...people.profiles.map(person => {
     const row = document.createElement('div');
-    row.className = 'row';
-    const label = document.createElement('span');
-    label.textContent = person.name;
+    row.className = 'row person-row';
+    const name = document.createElement('button');
+    name.className = 'text-button';
+    name.type = 'button';
+    name.textContent = person.name;
+    name.setAttribute('aria-label', 'Teach BITCH ' + person.name + '’s face and voice again');
+    name.onclick = () => openPerson(person.name).catch(fail);
     const known = document.createElement('span');
     known.className = 'value';
-    known.textContent = [person.face && 'Face', person.voice && 'voice'].filter(Boolean).join(' and ');
+    known.textContent = [person.face && 'Face', person.voice && 'Voice'].filter(Boolean).join(' · ') || 'Nothing yet';
     const remove = document.createElement('button');
     remove.className = 'text-button';
     remove.type = 'button';
     remove.textContent = 'Forget';
     remove.setAttribute('aria-label', 'Forget ' + person.name);
     remove.onclick = () => api('people', {action: 'remove', name: person.name}).catch(fail);
-    row.append(label, known, remove);
+    row.append(name, known, remove);
     return row;
   }));
+}
+
+// Adding someone: name, then face, then voice. Either can be skipped.
+const enroll = {step: 'name', name: '', saw: null};
+
+function showStep(step) {
+  enroll.step = step;
+  for (const [id, name] of [['stepName', 'name'], ['stepFace', 'face'], ['stepVoice', 'voice'], ['stepDone', 'done']]) $(id).hidden = step !== name;
+  $('personNext').textContent = step === 'name' ? 'Next' : step === 'done' ? 'Done' : 'Skip';
+  $('cancelPerson').style.visibility = step === 'done' ? 'hidden' : '';
+  $('personTitle').textContent = step === 'name' ? 'New person' : enroll.name;
+  $('enrollState').textContent = '';
+  if (step === 'face') frameId = 0;
+}
+
+async function openPerson(name = '') {
+  if ($('settings').open) $('settings').close();
+  enroll.name = name;
+  $('personName').value = name;
+  $('faceProgress').replaceChildren(...Array.from({length: 6}, () => document.createElement('i')));
+  for (const line of $('voiceLines').children) line.className = '';
+  $('person').showModal();
+  if (name) await learn('face');
+  else {
+    showStep('name');
+    $('personName').focus();
+  }
+}
+
+async function learn(kind) {
+  showStep(kind);
+  enroll.saw = null;
+  try {
+    await api('people', {action: kind, name: enroll.name});
+  } catch (error) {
+    $('enrollState').textContent = error.message + (kind === 'face' ? ' You can skip to voice.' : '');
+  }
+}
+
+async function nextStep() {
+  if (enroll.step === 'name') {
+    enroll.name = $('personName').value.trim();
+    if (!enroll.name) throw new Error('Type a name first.');
+    return learn('face');
+  }
+  if (enroll.step === 'done') return $('person').close();
+  await api('people', {action: 'cancel'}).catch(() => {});
+  if (enroll.step === 'face') return learn('voice');
+  showStep('done');
+  $('doneText').textContent = 'Nothing new saved for ' + enroll.name + '.';
+}
+
+function updatePerson(people) {
+  const session = people.enrollment;
+  if (session) {
+    enroll.saw = session.kind;
+    if (session.kind === 'face') [...$('faceProgress').children].forEach((dot, index) => dot.classList.toggle('on', index < session.progress));
+    if (session.kind === 'voice') [...$('voiceLines').children].forEach((line, index) => {
+      line.className = index < session.progress ? 'done' : index === session.progress ? 'current' : '';
+    });
+    if (people.message) $('enrollState').textContent = people.message;
+    return;
+  }
+  // The session closed: saved, timed out, or canceled.
+  if (enroll.saw && people.message.startsWith('Saved')) {
+    const finished = enroll.saw;
+    enroll.saw = null;
+    if (finished === 'face') return learn('voice');
+    showStep('done');
+    const profile = people.profiles.find(person => person.name === enroll.name);
+    $('doneText').textContent = profile?.face ? 'BITCH knows ' + enroll.name + '’s face and voice.' : 'BITCH knows ' + enroll.name + '’s voice.';
+  } else if (enroll.saw && people.message) {
+    enroll.saw = null;
+    $('enrollState').textContent = people.message;
+  }
 }
 
 // Main screen controls
@@ -601,9 +733,21 @@ action('robotForm', 'submit', async () => {
 action('showCode', 'click', async () => {
   $('pairCode').value = (await (await api('pair-code')).json()).code;
 });
-action('rememberFace', 'click', () => api('people', {action: 'face', name: $('personName').value}));
-action('rememberVoice', 'click', () => api('people', {action: 'voice', name: $('personName').value}));
-action('cancelEnroll', 'click', () => api('people', {action: 'cancel'}));
+action('addPerson', 'click', () => openPerson());
+action('addFromStage', 'click', () => openPerson());
+action('personNext', 'click', nextStep);
+$('personName').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); nextStep().catch(fail); } });
+action('cancelPerson', 'click', async () => {
+  await api('people', {action: 'cancel'}).catch(() => {});
+  $('person').close();
+});
+$('person').addEventListener('cancel', () => api('people', {action: 'cancel'}).catch(() => {}));
+action('showEarlier', 'click', () => {
+  renderHistory(latest?.messages || []);
+  $('earlier').showModal();
+  $('history').lastElementChild?.scrollIntoView({block: 'end'});
+});
+action('closeEarlier', 'click', () => $('earlier').close());
 action('useMic', 'click', () => useMedia('ears'));
 action('useCamera', 'click', () => useMedia('eyes'));
 action('startCalibration', 'click', () => calibrate('start'));
@@ -658,8 +802,8 @@ async function start() {
     $('statusText').textContent = 'Not connected yet';
     return;
   }
-  $('conversation').hidden = $('composer').hidden = $('barActions').hidden = false;
-  $('robotSetup').hidden = $('addDevice').hidden = $('peopleSetup').hidden = !hello.local;
+  $('stage').hidden = $('composer').hidden = $('barActions').hidden = false;
+  $('robotSetup').hidden = $('addDevice').hidden = !hello.local;
   const address = 'http://' + hello.host + ':' + hello.http;
   $('pairLink').href = $('pairLink').textContent = address;
   browserId = localStorage.getItem('desk-robot-browser');

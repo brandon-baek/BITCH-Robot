@@ -1,5 +1,6 @@
 """Route one microphone, one camera and one speaker at a time."""
 import threading
+import time
 
 from . import config
 
@@ -56,7 +57,7 @@ class Hub:
 
     def chat(self, role, text):
         with self.lock:
-            self.messages = (self.messages + [{'role': role, 'text': text}])[-24:]
+            self.messages = (self.messages + [{'role': role, 'text': text, 'at': time.time()}])[-40:]
 
     def snapshot(self):
         with self.lock:

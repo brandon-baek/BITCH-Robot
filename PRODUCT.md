@@ -21,7 +21,8 @@ A robot that feels alive on Brandon's desk, run on his own Mac (Ollama, Whisper,
 - Devices are pluggable: the Mac mic and camera, a phone's mic and camera, the Pi's Bluetooth speaker. Future hardware is a new driver.
 
 ## Capabilities and Constraints
-- Main screen, confirmed: the conversation (what Brandon and BITCH said, plus typing to BITCH), the current status, and quick controls: mute BITCH's voice, mute Brandon's own mic, and stop.
+- Main screen, confirmed: not a chat. BITCH's presence and status, who it recognizes while talking, captions of the current exchange that fade when the conversation ends, typing to BITCH, and quick controls: mute BITCH's voice, mute Brandon's own mic, and stop. Earlier lines are one tap away; the server keeps only the last 40.
+- Adding a person is a guided flow (name, face, voice) from Settings or from the "Someone new" prompt; it works from the Mac or a paired phone.
 - Everything else lives in Settings: camera view and alignment, devices (mic, camera, speaker), volume, behavior switches, people recognition, pairing a phone, connecting the Pi, ChatGPT requests.
 - Plain HTML, CSS and JavaScript in `app/`, served by FastAPI on :8780 and :8781. No build step. Must work in the Mac window (WKWebView) and on iPhone Safari over the home certificate.
 - Pairing and secure-link setup screens must stay for a phone's first visit.
