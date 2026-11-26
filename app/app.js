@@ -21,16 +21,19 @@ async function api(path, body) {
 }
 
 function fail(error) {
-  $('error').textContent = error.message;
-  $('error').hidden = false;
+  const banner = $('error');
+  banner.textContent = error.message;
+  // Shown in the top layer, re-raised each time so it lands above any sheet that is open.
+  if (banner.matches(':popover-open')) banner.hidePopover();
+  banner.showPopover();
   clearTimeout(fail.timer);
-  fail.timer = setTimeout(() => { $('error').hidden = true; }, 6000);
+  fail.timer = setTimeout(() => banner.hidePopover(), 6000);
 }
 
 function action(id, event, fn) {
   $(id).addEventListener(event, async e => {
     if (event !== 'change' && event !== 'input') e.preventDefault();
-    $('error').hidden = true;
+    if ($('error').matches(':popover-open')) $('error').hidePopover();
     try { await fn(e); } catch (error) { fail(error); }
   });
 }
