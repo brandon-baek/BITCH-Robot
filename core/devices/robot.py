@@ -18,6 +18,7 @@ class Robot(Device):
         self.audio_monitor = False
         self.handoff = False
         self.auto_handoff = False
+        self.gestures = False
         self.audio_warm = False
         self.warming_since = None
         self.expressive = False
@@ -64,6 +65,7 @@ class Robot(Device):
             self.emotive_performance = bool(result and result.get('performance', 0) >= 3)
             self.motion_enabled = bool(result and result.get('motion', True))
             self.joint_attention = bool(result and result.get('joint_attention'))
+            self.gestures = bool(result and result.get('gestures'))
             self.shows = bool(result and result.get('shows') == 1)
             self.show_active = bool(result and result.get('show_active'))
             if self.online and result.get('audio'):
@@ -97,8 +99,14 @@ class Robot(Device):
                 self.warming_since = None
             time.sleep(2)
 
-    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0.):
-        return self.post('look', {'mode': mode, 'base': base, 'neck': neck, 'energy': energy, 'accent': accent})
+    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0., tilt=0., lean=0.):
+        item = {'mode': mode, 'base': base, 'neck': neck, 'energy': energy}
+        if self.gestures:
+            item.update(accent=max(-.5, min(.5, accent)), tilt=max(-.45, min(.45, tilt)), lean=max(-.25, min(.25, lean)))
+        else:
+            # An older Pi rejects accents past this.
+            item['accent'] = max(-.35, min(.35, accent))
+        return self.post('look', item)
 
     def speak(self, wav):
         return bool(self.request('speak', wav, 'audio/wav', timeout=4))

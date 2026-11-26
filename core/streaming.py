@@ -40,11 +40,15 @@ class Phrases:
         while self.offset < len(text):
             tail = text[self.offset:]
             # Wait for whitespace after punctuation to avoid cutting a number or abbreviation.
+            # A short opener like "Nope." goes out alone so the robot starts talking sooner.
+            shortest = 3 if not self.offset else 10
             end = next((m.end() for m in SENTENCE.finditer(tail)
-                        if m.end() >= 10 and not ABBREVIATION.search(tail[:m.end()])), 0)
-            if not end and len(tail) >= 62:
+                        if m.end() >= shortest and not ABBREVIATION.search(tail[:m.end()])), 0)
+            # A long sentence may break at a comma; the opening one breaks sooner to start talking.
+            least, ready = (24, 40) if not self.offset else (44, 62)
+            if not end and len(tail) >= ready:
                 end = next((m.end() for m in CLAUSE.finditer(tail)
-                            if 44 <= m.end() <= 90 and tail[m.end():m.end()+1] == ' '), 0)
+                            if least <= m.end() <= 90 and tail[m.end():m.end()+1] == ' '), 0)
             if not end and complete:
                 end = len(tail)
             if not end:
@@ -54,7 +58,7 @@ class Phrases:
             phrase = clean(segment)
             # Let the completed-response path handle model output that parrots a request.
             if not self.offset and len(self.request.split()) >= 4 and (
-                    self.request == phrase.casefold().rstrip('?.!') or
+                    self.request == phrase.casefold().rstrip('?.!') or len(phrase.split()) >= 3 and
                     self.request.startswith(phrase.casefold().rstrip('?.!') + ' ')):
                 break
             self.offset += end

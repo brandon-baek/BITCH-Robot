@@ -133,6 +133,10 @@ class WakeTests(unittest.TestCase):
             say.assert_called_once_with('Take care.', brain.hush, ready_cue=False, delivery='warm')
             self.assertEqual(brain.followup_seconds(), 0)
             self.assertFalse(brain.addressed("Let's go to the store", 'desk', time.monotonic()))
+            # The thread is kept, so "Hey BITCH, one more thing" a minute later still has context.
+            self.assertEqual(len(brain.history[('desk', None)]), 2)
+            brain.history_at[('desk', None)] -= 901
+            brain.clear_conversation('desk')
             self.assertFalse(brain.history)
 
     def test_new_question_overrides_model_closure(self):
@@ -177,6 +181,32 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(brain.performance, 'annoyed')
         self.assertFalse(brain.close_turn)
 
+    def test_model_can_look_through_the_camera_once_and_then_answers_from_the_frame(self):
+        brain = Brain()
+        calls = []
+
+        def generate(messages, **kwargs):
+            calls.append((kwargs['schema'], messages[-1].get('images')))
+            if len(calls) == 1:
+                return '{"do":"look","v":"n","say":"Let me see.","end":false}'
+            return '{"delivery":"neutral","performance":"none","say":"A red mug.","turn":"continue","remember":"","show":"none"}'
+
+        sight = SimpleNamespace(current_scene=lambda: (b'jpeg', 1))
+        with patch.object(hub, 'sight', sight), patch('core.brain.llm.chat', side_effect=generate):
+            self.assertEqual(brain.reply('Guess what this thing is.', 'desk'), 'A red mug.')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('look', calls[0][0]['properties']['do']['enum'])
+        self.assertNotIn('do', calls[1][0]['properties'])
+        self.assertTrue(calls[1][1])
+
+    def test_actions_are_offered_only_when_the_request_calls_for_them(self):
+        brain = Brain()
+        robot = SimpleNamespace(shows=True, motion_enabled=True, show_active=False, handoff=True)
+        self.assertEqual(brain.available_actions("What's the square root of 144?", robot, False)[0], ['none'])
+        self.assertIn('dance', brain.available_actions('Can you bust a move?', robot, False)[0])
+        self.assertNotIn('chatgpt', brain.available_actions('Is GPT smarter than you?', robot, False)[0])
+        self.assertIn('chatgpt', brain.available_actions('Get ChatGPT to plan my week.', robot, False)[0])
+
     def test_streamed_phrases_carry_mood_changes_without_reading_codes_aloud(self):
         from core.streaming import Phrases
 
@@ -194,9 +224,52 @@ class WakeTests(unittest.TestCase):
         with patch.object(voice, 'render', return_value=(b'wav', 1.0)), patch.object(
                 voice, 'play', side_effect=lambda *args, **kwargs: stop.set()):
             stream.offer('First sentence.', 'neutral')
-            stream.offer('Second sentence.', 'neutral')
+            stream.offer('Second sentence.', 'warm')
             stream.close()
         self.assertEqual(spoken, ['First sentence.'])
+
+    def test_ready_sentences_play_as_one_clip_without_synthesizer_padding(self):
+        import threading
+
+        padded = np.r_[np.zeros(9600), np.sin(np.arange(24000) * .1), np.zeros(12000)].astype(np.float32)
+        trimmed = voice.trim(padded, 24000)
+        self.assertLess(len(trimmed) / 24000, 1.2)
+        self.assertGreater(len(trimmed) / 24000, 1.)
+        sentence = voice.encode(trimmed)
+        gate, plays, spoken = threading.Event(), [], []
+
+        def speaker(wav, duration, stop, **kwargs):
+            plays.append((duration, kwargs['delivery']))
+            gate.wait(2)
+
+        stream = voice.ReplyStream(threading.Event(), lambda: None, spoken.append)
+        with patch.object(voice, 'render', return_value=sentence), patch.object(voice, 'play', side_effect=speaker):
+            stream.offer('One.', 'neutral')
+            while not plays:
+                time.sleep(.01)
+            for phrase in ('Two.', 'Three.'):
+                stream.offer(phrase, 'neutral')
+            stream.offer('Four.', 'warm')
+            time.sleep(.1)
+            gate.set()
+            stream.close()
+        self.assertEqual(spoken, ['One.', 'Two.', 'Three.', 'Four.'])
+        self.assertEqual([delivery for _, delivery in plays], ['neutral', 'neutral', 'warm'])
+        self.assertAlmostEqual(plays[1][0], 2 * sentence[1] + .16, places=2)
+
+    def test_a_short_opening_sentence_streams_by_itself(self):
+        from core.streaming import Phrases
+
+        self.assertEqual(Phrases('What is your favorite color?').feed('{"v":"w","say":"Yellow. It')[0], ['Yellow.'])
+        self.assertEqual(Phrases('Yes I think so too').feed('{"v":"n","say":"Yes. Me')[0], ['Yes.'])
+
+    def test_a_finished_sounding_preview_ends_the_turn_but_a_trailing_one_waits(self):
+        from core.hearing import sounds_finished
+
+        for text in ('Hey BITCH, what time is it?', 'Tell me a joke.', 'Yes.', 'I like that.'):
+            self.assertTrue(sounds_finished(text), text)
+        for text in ('Hey BITCH.', 'Hey BITCH, I was thinking and.', 'So the thing is,', 'Well...', 'Can you', ''):
+            self.assertFalse(sounds_finished(text), text)
 
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
         brain = Brain()
@@ -448,6 +521,32 @@ class MotionTests(unittest.TestCase):
         self.assertLess(abs(raised[0] - dipped[0]), .002)
 
 
+    def test_word_gestures_tilt_and_lean_the_head_while_talking(self):
+        def talk(gesture):
+            desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.,
+                                   S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
+            motion = pi.Motion(desk)
+            motion.started = True
+            for tick in range(60):
+                motion.step('speaking', 0., -.67, tick * .02, .02, .5, 0., None, gesture)
+            return desk.cur
+
+        still, tilted, leaning = talk((0., 0.)), talk((.3, 0.)), talk((0., .15))
+        self.assertGreater(abs(tilted[3] - still[3]), .15)
+        self.assertGreater(leaning[1] - still[1], .05)
+        self.assertLess(abs(tilted[0] - still[0]), .01)
+
+    def test_spoken_words_become_timed_gestures(self):
+        events = voice.gestures([('No', .1), (',', .3), ('do', .5), ('you', .7), ('?', 1.), ('Yeah', 1.4), ('.', 1.7)])
+        kinds = [(kind, round(at, 1)) for kind, at, _, _ in events]
+        self.assertIn(('shake', .1), kinds)
+        self.assertIn(('lean', .7), kinds)
+        self.assertIn(('nod', 1.4), kinds)
+        self.assertTrue(any(kind == 'tilt' for kind, _ in kinds))
+        nod, tilt, lean = voice.gesture_at(events, 1.6)
+        self.assertLess(nod, 0)
+
+
 class CharacterTests(unittest.TestCase):
     def test_idle_gesture_moves_distinct_joints_and_returns_to_the_gaze(self):
         desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0,
@@ -578,7 +677,8 @@ class InteractionTests(unittest.TestCase):
         with patch.object(hub, 'brain', brain), patch.object(hub, 'accepts', return_value=True):
             brain.busy.set()
             hearing.feed('desk', np.zeros(512))
-            self.assertTrue(hearing.audio.empty())
+            # Kept as lead-in for the next turn rather than dropped.
+            self.assertFalse(hearing.audio.empty())
             brain.busy.clear()
             brain.followup = ('desk', now-.1)
             hearing.capture = ('desk', brain.revision, now-1., now)
@@ -693,6 +793,9 @@ class PiProtocolTests(unittest.TestCase):
             self.assertEqual(request('/ping')[1]['performance'], 3)
             self.assertTrue(request('/ping')[1]['joint_attention'])
             self.assertEqual(request('/look', {'mode': 'speak-upbeat', 'accent': 2})[0], 400)
+            self.assertEqual(request('/ping')[1]['gestures'], 1)
+            self.assertEqual(request('/look', {'mode': 'speaking', 'accent': .4, 'tilt': .3, 'lean': -.1})[0], 200)
+            self.assertEqual(request('/look', {'mode': 'speaking', 'tilt': 2})[0], 400)
             self.assertEqual(request('/hear?text=dance')[0], 404)
             self.assertFalse(states.exists())
             self.assertEqual(request('/look', {'mode': 'watch', 'base': float('nan')})[0], 400)

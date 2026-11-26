@@ -48,13 +48,15 @@ A known face can appear by name in the Mac preview and get a quiet double take. 
 
 ## Desktop agent handoff
 
-Say **“BITCH, ask ChatGPT to suggest a name for my lamp.”** The companion sends that explicit request to the Pi. The signed-in Chromium session opens a new ChatGPT conversation, pastes the attributed request, sends it, and returns the completed reply to the local Pi inbox. Then ask **“What did ChatGPT say?”** to hear it. Everyday conversation uses the local models.
+Say **“BITCH, ask ChatGPT to suggest a name for my desk plant.”** The companion sends that explicit request to the Pi. The signed-in Chromium session opens a new ChatGPT conversation, pastes the attributed request, sends it, and returns the completed reply to the local Pi inbox. Then ask **“What did ChatGPT say?”** to hear it. Everyday conversation uses the local models.
 
 The [ChatGPT inbox](#chatgpt-inbox) shows the status of each request and offers manual recovery if the Pi browser is unavailable. The companion does not automatically retry a send it could not verify.
 
 ## Nemotron VoiceChat trial
 
 On Apple Silicon, allow about 12 GB of free disk space and run `bash mac/setup-voicechat.sh` to install the pinned speech-swift CLI and INT5 VoiceChat bundle. Enable **Try Nemotron VoiceChat** under **Connections** on the Mac. The trial runs speech-to-speech on each completed addressed utterance using the project's microphone, wake gate, and speaker. This uses the CLI’s file mode, so the full audio reply is generated before playback.
+
+**Keep it off on the M1 Pro.** Measured on 25 Nov 2026, one short question took 35.6 s. The 8 GB model reloads on every turn (5–15 s), and the M1 Pro needs about 185 ms to process each 80 ms frame, so the model runs about 2.3× slower than real time even with faster voice settings (`--speech-iterations 1`). Keeping it loaded can't fix that, because live full-duplex mode would fall further behind with every second of speech. It also refused to say its favorite color. The model is "realtime" on a datacenter GPU, or on roughly an M3 Max or M4 Max. The default Whisper → Qwen → Kokoro path starts talking about 2 s after you stop.
 
 Qwen handles complex requests, vision, recall, skills, and fallbacks locally. You can say **“BITCH, ask Qwen to explain how this works”** to route a question to it directly. **“Ask ChatGPT to…”** explicitly uses the Pi’s signed-in browser. An alternate installed bundle can be selected with `BITCH_VOICECHAT_MODEL` or the Mac setting `voicechat_model`.
 
@@ -78,9 +80,19 @@ The [character motion and shared attention notes](docs/character-motion.md) desc
 
 If you run Ollama on a different local port, set `ollama_url` in the Mac companion’s `~/.bitch/settings.json` or pass `OLLAMA_URL` when launching it. On macOS, a model directory outside iCloud Drive keeps model files available for local inference.
 
-## Interruptions, names and check-ins
+## Talking with BITCH
 
-While BITCH is speaking, start your correction naturally, such as **“Actually, the blue one is mine”** or **“Wait, I meant tomorrow.”** An enrolled speaker can cut in with other phrasing. BITCH checks microphone audio and its transcription against what it was just saying. Once it yields, keep speaking so it gets the rest of your sentence in the next turn. Use **Stop speech** to end the conversation or a performance from the screen.
+Say **“Hey BITCH”** and the rest in one breath, or just **“Hey BITCH”**: it chirps within about a second and keeps listening, so you can go straight on. The name works at the start or end (“…what do you think, BITCH?”). A conversation keeps its thread for 15 minutes, so a later “Hey BITCH, one more thing about that” still has context.
+
+When your sentence sounds finished, BITCH answers about a second after you stop. If you pause and keep going while it is still thinking, it drops its half-made answer and replies to everything you said. The microphone never goes deaf: words you start while BITCH finishes a reply or a chirp are kept.
+
+While BITCH is speaking, just talk over it. It learns how loud and how late its own voice comes back into the mic, so a person who is clearly louder than that echo stops it in about a second, and **“Wait”** or **“Stop”** stop it sooner. Keep speaking and the rest of your sentence becomes the next turn. Use **Stop speech** to end the conversation or a performance from the screen.
+
+BITCH also hears *how* you said something. It compares pitch, pitch movement, loudness and pace with your usual voice on that microphone, and the model gets a short note like “louder and faster than usual” alongside your words. That lets it pick up excitement, annoyance or sarcasm. Its own voice answers the mood: higher and quicker when upbeat, lower and softer when gentle.
+
+The model picks actions itself when you ask in your own words: **“bust a move”** starts a dance, **“how do I look?”** makes it check the camera first, **“get ChatGPT to…”** sends the request to the Pi, and naming a saved routine runs it. Performances are only offered when you ask about dancing, singing, music or a show, and ChatGPT only when you ask it for something.
+
+While it talks, the head nods with the syllables of the actual audio, timed to the delay the echo gate measures, and gestures land on the words: a nod on “yes” or “exactly”, a head shake on “no” or “don’t”, a tilt through a question, leaning in on “you” and back on “I”. Head tilts, shakes and leans need the updated Pi (`bash ~/BITCH-Robot/update.sh`); an older Pi still gets the nods. A quick reply keeps eye contact while thinking; the look-away ponder pose only shows if an answer takes over a second.
 
 Say **“Remember that my bike is lime green”**, **“What do you remember?”**, or **“Forget my bike.”** Saved notes persist on the Mac and are scoped to a recognized voice. **Remember natural preferences** also lets BITCH retain clearly stated lasting details without a “remember” command.
 

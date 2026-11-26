@@ -18,6 +18,10 @@ playback = None
 echo_reference = None
 recent_echo = None
 last_played = {}
+output_delay = .25   # seconds from sending audio to hearing it in the room; learned by hearing.EchoGate
+MOTION_LEAD = .12    # network and servo spring lag between a motion command and visible movement
+NOD_GAIN = 1.55      # how big the syllable nods are (was 1.12; asked for more nodding)
+gesture_track = []
 STEP = .04
 DELIVERY = {
     'neutral': (1.02, .183, 0.),
@@ -32,10 +36,17 @@ pipeline_lock = threading.Lock()
 
 
 VOICE_RATE = {'gentle': .93, 'emphatic': 1.07, 'upbeat': 1.06, 'playful': 1.045}
+# Mood also moves the pitch and the loudness, so a sad line sounds lower and softer, not just slower.
+VOICE_PITCH = {'gentle': .965, 'warm': .985, 'emphatic': .985, 'upbeat': 1.055, 'playful': 1.04}
+VOICE_GAIN = {'gentle': .8, 'warm': .92}
+
+
+spoken = threading.local()   # word start times from the last synthesis on this thread
 
 
 def synthesize(text, speed=1.):
     global pipeline
+    spoken.words = []
     with pipeline_lock:
         if pipeline is None:
             try:
@@ -45,9 +56,16 @@ def synthesize(text, speed=1.):
                 pipeline = False
         if pipeline:
             try:
-                parts = [np.asarray(audio, dtype=np.float32).reshape(-1)
-                         for _, _, audio in pipeline(text, voice=config.get('kokoro_voice'), speed=speed)]
+                parts, words, offset = [], [], 0.
+                for result in pipeline(text, voice=config.get('kokoro_voice'), speed=speed):
+                    audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                    # Kokoro reports when each word starts, which lets gestures land on it.
+                    words += [(token.text, offset + token.start_ts) for token in (result.tokens or ())
+                              if token.start_ts is not None]
+                    parts.append(audio)
+                    offset += len(audio) / SR
                 if parts:
+                    spoken.words = words
                     return np.concatenate(parts), SR
             except Exception:
                 pipeline = False
@@ -61,20 +79,111 @@ def synthesize(text, speed=1.):
             return samples, audio.getframerate()
 
 
+def trim(audio, rate):
+    """Cut the silence the synthesizer pads around every phrase.
+
+    Kokoro adds about 0.35 s before and 0.5 s after each phrase. Untrimmed, every reply
+    starts late and every sentence break turns into a second of dead air."""
+    start, end = trim_bounds(audio, rate)
+    return np.asarray(audio, dtype=np.float32)[start:end]
+
+
+def trim_bounds(audio, rate):
+    audio = np.asarray(audio, dtype=np.float32)
+    loud = np.flatnonzero(np.abs(audio) >= max(.004, .02 * float(np.abs(audio).max()))) if len(audio) else ()
+    if not len(loud):
+        return 0, len(audio)
+    return max(0, loud[0] - round(.04 * rate)), loud[-1] + round(.1 * rate)
+
+
 def render(text, ready_cue=False, delivery='neutral'):
-    audio, rate = synthesize(text, VOICE_RATE.get(delivery, 1.))
+    pitch = VOICE_PITCH.get(delivery, 1.)
+    # Speeding playback raises the pitch, so ask the synthesizer for the rest of the pace.
+    spoken.words = []
+    audio, rate = synthesize(text, VOICE_RATE.get(delivery, 1.) / pitch)
+    start, end = trim_bounds(audio, rate)
+    audio = np.asarray(audio, dtype=np.float32)[start:end]
     if not len(audio):
         raise ValueError('speech synthesis returned no audio')
+    words = [(word, (at - start / rate) / (1.035 * pitch)) for word, at in getattr(spoken, 'words', ())]
     # Retain the clean voice and its prosody. Add a quiet metallic signal and one very short reflection.
-    count = max(1, round(len(audio) * SR / (rate * 1.035)))
+    count = max(1, round(len(audio) * SR / (rate * 1.035 * pitch)))
     clean = np.interp(np.linspace(0, len(audio) - 1, count), np.arange(len(audio)), audio)
     signal = clean * (0.93 + 0.07 * np.sin(2 * np.pi * 75 * np.arange(count) / SR))
     delay = round(0.004 * SR)
     signal[delay:] += 0.055 * clean[:-delay]
-    signal *= 0.9 / max(float(np.abs(signal).max()), 0.2)
+    signal *= 0.9 * VOICE_GAIN.get(delivery, 1.) / max(float(np.abs(signal).max()), 0.2)
     if ready_cue:
         signal = np.concatenate((signal, np.zeros(round(SR * 0.12)), cue()))
-    return encode(signal)
+    result = encode(signal)
+    remember_gestures(result[0], gestures(words))
+    return result
+
+
+AFFIRM = {'yes', 'yeah', 'yep', 'yup', 'right', 'exactly', 'sure', 'totally', 'absolutely', 'definitely',
+          'correct', 'agreed', 'true', 'okay', 'ok', 'uh-huh'}
+NEGATE = {'no', 'nope', 'nah', 'not', "don't", "can't", "won't", "isn't", "aren't", 'never', "didn't", "doesn't",
+          "wasn't", "shouldn't", "couldn't", "wouldn't", "haven't", 'nothing', 'nobody'}
+EMPHASIS = {'really', 'very', 'so', 'super', 'huge', 'tiny', 'always', 'seriously', 'literally', 'actually',
+            'way', 'every', 'all', 'best', 'worst', 'love', 'hate', 'amazing', 'terrible'}
+YOU = {'you', 'your', "you're", 'yours', 'yourself', "you've", "you'll"}
+SELF = {'i', 'me', 'my', "i'm", "i've", "i'll", "i'd", 'myself'}
+THINK = {'hmm', 'well', 'um', 'uh', 'maybe', 'perhaps', 'guess', 'probably', 'honestly'}
+GESTURES = {}   # rendered clip -> its word gestures, so the motion travels with the audio
+
+
+def gestures(words):
+    """Turn word timings into body language: nod on yes, shake on no, tilt on a question,
+    lean in on "you" and back on "I"."""
+    events, shook, opening = [], False, True
+    for index, (word, at) in enumerate(words):
+        plain = word.casefold().strip('.,!?;:"“”‘’\'').replace('’', "'")
+        if word.strip() == '?':
+            start = next((t for w, t in reversed(words[:index]) if w.strip() in '.!'), words[0][1])
+            events.append(('tilt', max(start, at - .8), at - max(start, at - .8) + .45, 1.))
+        elif plain in AFFIRM:
+            events.append(('nod', at, .42, 1.))
+        elif plain in NEGATE and not shook:
+            events.append(('shake', at, .6, 1.))
+            shook = True
+        elif plain in EMPHASIS:
+            events.append(('nod', at, .32, .65))
+        elif plain in YOU:
+            events.append(('lean', at, .75, 1.))
+        elif plain in SELF and opening:
+            events.append(('lean', at, .75, -.7))
+        elif plain in THINK and opening:
+            events.append(('tilt', at, .9, -.8))
+        if word.strip() in ('.', '!', '?'):
+            shook, opening = False, True
+        elif plain:
+            opening = False
+    return events
+
+
+def remember_gestures(wav, events):
+    GESTURES[wav] = events
+    while len(GESTURES) > 24:
+        GESTURES.pop(next(iter(GESTURES)))
+
+
+def gesture_at(events, elapsed):
+    """Extra (nod, tilt, lean) for the word gestures active at this point in the clip."""
+    nod = tilt = lean = 0.
+    for kind, at, length, strength in events:
+        phase = (elapsed - at) / length
+        if not 0 <= phase < 1:
+            continue
+        swell = np.sin(np.pi * phase)
+        if kind == 'nod':
+            nod -= .15 * strength * swell
+        elif kind == 'shake':
+            tilt += .2 * strength * np.sin(4 * np.pi * phase) * (1 - phase)
+        elif kind == 'tilt':
+            tilt += .19 * strength * swell
+        elif kind == 'lean':
+            lean += .09 * strength * swell
+    return nod, tilt, lean
 
 
 def note(hz, seconds, volume=.27):
@@ -102,6 +211,23 @@ def encode(signal):
         file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
         file.writeframes((signal * gain * 32767).astype('<i2').tobytes())
     return result.getvalue(), len(signal) / SR
+
+
+def join(first, second, pause=.16):
+    """Play two rendered sentences as one clip with a natural breath between them."""
+    frames = []
+    for wav in (first, second):
+        with wave.open(io.BytesIO(wav)) as file:
+            frames.append(file.readframes(file.getnframes()))
+    result = io.BytesIO()
+    with wave.open(result, 'wb') as file:
+        file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
+        file.writeframes(frames[0] + bytes(round(SR * pause) * 2) + frames[1])
+    joined = result.getvalue()
+    shift = len(frames[0]) / 2 / SR + pause
+    remember_gestures(joined, GESTURES.get(first, []) + [(kind, at + shift, length, strength)
+                                                         for kind, at, length, strength in GESTURES.get(second, [])])
+    return joined
 
 
 def warm():
@@ -182,7 +308,8 @@ def is_echo(audio, received):
 
 
 def clear_playback():
-    global playback, echo_reference, recent_echo
+    global playback, echo_reference, recent_echo, gesture_track
+    gesture_track = []
     if echo_reference is not None:
         recent_echo = time.monotonic() + 1.4, echo_reference
     playback = echo_reference = None
@@ -193,7 +320,9 @@ def articulation():
     if current is None:
         return 0., False, 0.
     started, level, nod, lead, motion_start, motion_end, cue_at, delivery, _ = current
-    elapsed = time.monotonic() - started - lead
+    # Follow the sound as it leaves the speaker (the hearing echo gate measures that delay),
+    # starting each move a little early so the servos land on the syllable.
+    elapsed = time.monotonic() - started - lead - max(0., output_delay - MOTION_LEAD)
     chirping = cue_at is not None and cue_at <= elapsed < cue_at + .31
     if not motion_start <= elapsed < motion_end:
         return 0., chirping, 0.
@@ -204,7 +333,19 @@ def articulation():
     strength, amplitude, posture = DELIVERY[delivery]
     energy = level[index]*(1-fraction) + level[following]*fraction
     pitch = nod[index]*(1-fraction) + nod[following]*fraction
-    return min(1., float(energy)*strength), chirping, posture + amplitude*1.12*float(pitch)
+    extra, _, _ = gesture_at(gesture_track, elapsed)
+    return min(1., float(energy)*strength), chirping, posture + amplitude*NOD_GAIN*float(pitch) + extra
+
+
+def gesture():
+    """Head tilt and lean from the words being spoken right now."""
+    current = playback
+    if current is None or not gesture_track:
+        return 0., 0.
+    started, lead = current[0], current[3]
+    elapsed = time.monotonic() - started - lead - max(0., output_delay - MOTION_LEAD)
+    _, tilt, lean = gesture_at(gesture_track, elapsed)
+    return float(tilt), float(lean)
 
 
 def delivery_now():
@@ -212,10 +353,23 @@ def delivery_now():
     return current[-2:] if current is not None else None
 
 
+class Either:
+    """Stops when either event is set, so a thinking cue ends the moment speech is ready."""
+    def __init__(self, first, second):
+        self.first, self.second = first, second
+
+    def is_set(self):
+        return self.first.is_set() or self.second.is_set()
+
+    def wait(self, timeout):
+        return self.first.wait(timeout) or self.second.is_set()
+
+
 @contextmanager
 def thinking(stop, *, greeting):
-    """Play sparse cues during generation; finish the active cue before speech starts."""
+    """Play sparse cues during generation; the first spoken words cut off a cue still playing."""
     done = threading.Event()
+    either = Either(done, stop)
 
     def sound():
         try:
@@ -225,7 +379,7 @@ def thinking(stop, *, greeting):
                 if done.wait(max(0., when - previous)) or stop.is_set():
                     break
                 started = time.monotonic()
-                play(*encode(wait_sound(index if greeting else index+1)), stop, interim=True)
+                play(*encode(wait_sound(index if greeting else index+1)), either, interim=True)
                 previous = when + time.monotonic() - started
         except (OSError, ValueError, wave.Error) as error:
             hub.note('speaker', f'Cue failed: {error}')
@@ -245,6 +399,9 @@ def thinking(stop, *, greeting):
         yield finish
     finally:
         finish()
+
+
+NOTHING = object()
 
 
 class ReplyStream:
@@ -284,8 +441,26 @@ class ReplyStream:
 
     def play(self):
         first = True
-        while (part := self.audio.get()) is not None and not self.stop.is_set():
-            wav, phrase, delivery, laugh_first, expression = part
+        held = NOTHING
+        while not self.stop.is_set():
+            part, held = (self.audio.get() if held is NOTHING else held), NOTHING
+            if part is None:
+                break
+            (wav, duration), phrase, delivery, laugh_first, expression = part
+            phrases = [phrase] if phrase else []
+            # Sentences that finished rendering while the last one played go out as one clip,
+            # so the speaker doesn't stop and restart between them.
+            while phrase:
+                try:
+                    following = self.audio.get_nowait()
+                except queue.Empty:
+                    break
+                if following is None or not following[1] or following[2:] != (delivery, False, expression):
+                    held = following
+                    break
+                wav = join(wav, following[0][0])
+                duration += .16 + following[0][1]
+                phrases.append(following[1])
             if first:
                 self.finish_thinking()
                 first = False
@@ -293,9 +468,9 @@ class ReplyStream:
                 laugh(self.stop)
             if self.stop.is_set():
                 break
-            if phrase:
-                self.on_speech(phrase)
-            play(*wav, self.stop, text=bool(phrase), delivery=delivery, segment=True, expression=expression)
+            for spoken in phrases:
+                self.on_speech(spoken)
+            play(wav, duration, self.stop, text=bool(phrase), delivery=delivery, segment=True, expression=expression)
 
     def finish(self, reply, delivery, ready_cue):
         spoken = ' '.join(self.parts)
@@ -333,7 +508,7 @@ def say(text, stop, *, ready_cue=False, delivery='neutral', expression='none'):
 
 def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral', interim=False, segment=False,
          expression='none'):
-    global playback, echo_reference
+    global playback, echo_reference, gesture_track
     speaker = hub.selected('voice')
     if stop.is_set() or config.get('muted') or not config.get('volume'):
         return
@@ -345,7 +520,10 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         pcm = file.readframes(file.getnframes())
     lead = 0.
     # A short output tail lets the Bluetooth transport drain the final syllable.
-    tail = .44 if speaker.id == 'robot' else .12
+    # Mid-reply sentences need less while the keep-awake stream holds the speaker open.
+    tail = .12
+    if speaker.id == 'robot':
+        tail = .16 if segment and text and getattr(speaker, 'audio_warm', False) else .44
     frames = pcm
     if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20:
         if not getattr(speaker, 'audio_warm', False):
@@ -380,6 +558,7 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         envelope, nod = motion_track(pcm[:round(speech_end*SR)*2])
     else:
         envelope = nod = ()
+    gesture_track = GESTURES.get(wav, []) if text else []
     playback = start, envelope, nod, lead, 0., speech_end, cue_at, delivery, expression
     echo_reference = (start+lead, np.frombuffer(pcm, '<i2')[::6].astype(float)) if text else None
     early = False

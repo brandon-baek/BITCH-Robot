@@ -94,6 +94,10 @@ def saved(name):
     return memory.kv_get('robot-skill:' + name.casefold())
 
 
+def names():
+    return [key.split(':', 1)[1] for key in memory.kv_keys('robot-skill:')]
+
+
 def save(name, plan):
     memory.kv_set('robot-skill:' + name.casefold(), validate_plan(plan))
 

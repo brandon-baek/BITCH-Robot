@@ -18,6 +18,12 @@ def kv_get(key, default=None):
         return json.loads(row[0]) if row else default
 
 
+def kv_keys(prefix):
+    with lock:
+        return [row[0] for row in database.execute(
+            "select k from kv where substr(k, 1, ?) = ? order by k", (len(prefix), prefix))]
+
+
 def kv_set(key, value):
     with lock, database:
         database.execute('insert into kv(k,v) values(?,?) on conflict(k) do update set v=excluded.v',

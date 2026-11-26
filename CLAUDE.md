@@ -1,6 +1,6 @@
 # BITCH — project brief for Claude Code
 
-BITCH is Brandon's desk-lamp robot: a cardboard and popsicle-stick body on a Raspberry Pi 4, with googly eyes.
+BITCH is Brandon's desk robot (not a lamp): a cardboard and popsicle-stick body on a Raspberry Pi 4, with googly eyes.
 "BITCH" is its real name, on purpose; "Hey BITCH" is its wake phrase.
 
 ## The goal
@@ -40,8 +40,9 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/` | Mac | BITCH's mind: `python -m core` (the BITCH app runs `python -m core --app`). App on :8780 (http) and :8781 (https) |
 | `core/hub.py` | Mac | Device registry, events, routing (which device speaks a reply), app updates |
 | `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
-| `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device; YuNet/SFace faces, desk map, arrivals; Kokoro or `say` voice |
-| `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON with actions; tools run; deep brain (qwen3.5:9b) for background work |
+| `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals; Kokoro voice with word-timed gestures |
+| `core/prosody.py` | Mac | How something was said (pitch, range, loudness, pace) against that mic's usual voice, as a note for the brain |
+| `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON; a `do` field lets it look, perform, run a routine or ask ChatGPT, offered only when the request calls for it |
 | `core/moves.py` | Mac | Move steps shared by the robot and the app; invents new moves (keyframes from the 9B, clamped to Actor limits) |
 | `core/life.py` | Mac | Mood, timers/reminders/routines, greetings and the one-time welcome, initiative, memory reflection, diary |
 | `core/memory.py`, `config.py` | Mac | SQLite memory and settings in `~/.bitch` (never in the repo) |
@@ -53,6 +54,8 @@ personality, memory and habits, and it should notice things on its own instead o
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.
 
 ## Working rules
+- Measure voice changes with real models before shipping: far-field clips for wake and word errors, a scripted
+  conversation with a fake Pi that echoes BITCH back into the mic, and the `Turn: first words … s` log line.
 - The GitHub repo `brandon-baek/BITCH-Robot` is public, so never commit secrets.
 - Commit as `Brandon <brandonbaekk@gmail.com>`.
 - Test without the hardware first: `testing/fakes/adafruit_servokit.py`, `testing/fake_ollama.py` (OLLAMA_URL), a test video as

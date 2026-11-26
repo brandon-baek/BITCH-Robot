@@ -21,7 +21,7 @@ def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_
     payload = {
         'model': model or config.get('chat_model'), 'messages': messages, 'stream': on_delta is not None,
         'think': False, 'keep_alive': '30m' if model else CHAT_KEEP_ALIVE,
-        'options': {'temperature': temperature, 'num_ctx': 4096, 'num_predict': max_tokens},
+        'options': {'temperature': temperature, 'num_ctx': 8192, 'num_predict': max_tokens},
     }
     if schema is not None:
         payload['format'] = schema
@@ -57,7 +57,7 @@ def warm_context(system):
             prompt = '<|im_start|>system\n' + system
             with request('/api/generate', {
                 'model': model, 'prompt': prompt, 'raw': True, 'think': False, 'stream': False,
-                'keep_alive': CHAT_KEEP_ALIVE, 'options': {'num_ctx': 4096, 'num_predict': 1},
+                'keep_alive': CHAT_KEEP_ALIVE, 'options': {'num_ctx': 8192, 'num_predict': 1},
             }, 30) as response:
                 json.load(response)
             return

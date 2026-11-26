@@ -15,6 +15,7 @@ from .pointing import MODEL as POINTING_MODEL, Pointing
 MAX_BASE = 0.55
 MIN_NECK, MAX_NECK = -0.88, -0.43
 REST_NECK = -0.8
+THINK_BEFORE_PONDER = .9   # seconds of thinking before the look-away ponder pose
 
 
 def aim_at(x, y, samples):
@@ -383,6 +384,7 @@ class Sight:
         last_focus = None
         last_aim = None
         noticed_until = 0.
+        thinking_since = None
         while True:
             robot = hub.get('robot')
             now = time.monotonic()
@@ -393,7 +395,11 @@ class Sight:
             listening = bool(brain and brain.followup_seconds()) or phase == 'Listening'
             energy, chirping, speech_pitch = voice.articulation()
             speaking = bool(brain and brain.busy.is_set() and hub.status == 'Speaking')
-            reaction = {'Answering': 'notice', 'Thinking': 'ponder', 'Speaking': 'speaking'}.get(hub.status)
+            # Replies usually start within a second now, so keep eye contact while thinking
+            # and only look away to ponder when an answer takes longer.
+            thinking_since = (thinking_since or now) if hub.status == 'Thinking' else None
+            pondering = 'ponder' if thinking_since and now - thinking_since >= THINK_BEFORE_PONDER else 'attend'
+            reaction = {'Answering': 'notice', 'Thinking': pondering, 'Speaking': 'speaking'}.get(hub.status)
             social = reaction if brain and brain.busy.is_set() and reaction else 'attend' if listening else None
             if phase == 'Listening':
                 social = 'listen'
@@ -483,6 +489,7 @@ class Sight:
                 base, neck = attention_aim or (0, REST_NECK)
                 mode = social
                 accent = speech_pitch if speaking and not chirping else 0.
+                tilt, lean = voice.gesture() if speaking and not chirping else (0., 0.)
                 if not robot.performance:
                     mode = {
                         'double-take': 'notice', 'seek': 'ponder', 'listen': 'attend',
@@ -495,7 +502,7 @@ class Sight:
                 if not robot.expressive:
                     mode = {'mirror-left': 'attend', 'mirror-right': 'attend', 'happy': 'recognize',
                             'scared': 'notice', 'sad': 'ponder', 'proud': 'recognize'}.get(mode, mode)
-                result = robot.look(mode, base, neck, energy, accent)
+                result = robot.look(mode, base, neck, energy, accent, tilt, lean)
                 labels = {
                     'notice': 'Noticed you', 'double-take': 'Double take', 'seek': 'Looking for you',
                     'ponder': 'Thinking', 'attend': 'Your turn', 'listen': 'Listening',

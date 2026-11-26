@@ -178,7 +178,7 @@ class Motion:
         self.restoring = abs(REST[1] - desk.cur[1]) > 0.02
         self.started = True
 
-    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None):
+    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None, gesture=(0., 0.)):
         if not self.started:
             if mode == 'park' and score_frame is None:
                 return
@@ -189,7 +189,10 @@ class Motion:
         actor = self.actor
         actor.low = (-BASE, -1.06, NECK[0], -.64)
         actor.high = (BASE, -.42, NECK[1], .64)
-        actor.speed = (.58 * min(1., max(0., desk.BASE_SPEED)), .68, .85, 1.65)
+        # While talking the head moves quicker, so nods and shakes land on the syllable instead of
+        # being smoothed away. The heavy base and arm keep their normal limits.
+        talking = mode in SPEECH
+        actor.speed = (.58 * min(1., max(0., desk.BASE_SPEED)), .68, 1.5 if talking else .85, 2.6 if talking else 1.65)
         actor.accel = (1.55, 2.1, 3.5, 7.4)
         if score_frame is not None:
             pose, stiffness, idle = score_frame
@@ -264,8 +267,8 @@ class Motion:
             lean_response = 1 - math.exp(-dt / (.24 if energy > self.lean else .38))
             self.lean += (energy - self.lean) * lean_response
             neck += accent * weight + .035 * energy
-            arm += weight * (.15 * self.lean - .17 * accent)
-            tilt += direction * weight * (.11 * energy + .92 * accent)
+            arm += weight * (.15 * self.lean - .17 * accent) + gesture[1]  # higher arm = leaning in
+            tilt += direction * weight * (.11 * energy + .92 * accent) + gesture[0]
             base -= direction * .038 * self.lean
         elif mode == 'listen':
             # Stay inclined through a pause. The head responds more than the arm.
@@ -331,6 +334,7 @@ class Body:
         self.audio_label = 'Checking speaker'
         self.beat = 'park'
         self.energy = self.accent = 0.
+        self.gesture = (0., 0.)
         self.pose = list(REST)
         self.show = None
         self.show_result = None
@@ -430,9 +434,10 @@ class Body:
                 process.wait()
         process.stdin.close()
 
-    def set_look(self, look, energy=0., accent=0.):
+    def set_look(self, look, energy=0., accent=0., tilt=0., lean=0.):
         with self.lock:
             self.energy, self.accent = energy, accent
+            self.gesture = (tilt, lean)
             self.look = look
             self.look_at = time.monotonic()
             return self.position
@@ -557,6 +562,7 @@ class Body:
                 now = time.monotonic()
                 with self.lock:
                     energy, accent = self.energy, self.accent
+                    gesture = self.gesture if now - self.look_at < .3 else (0., 0.)
                     look = self.look if now - self.look_at < 3 else ('park', 0, -0.8)
                     if self.player and self.player.poll() is not None:
                         if self.show and self.player.returncode:
@@ -579,7 +585,7 @@ class Body:
 
                     motion = Motion(desk)
                 if motion:
-                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame)
+                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame, gesture)
                     with self.lock:
                         self.position = (motion.desk.cur[0], motion.desk.cur[2])
                         self.beat = motion.beat
@@ -655,7 +661,7 @@ def listen(motion_enabled=True):
                                        'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
                                        'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
-                                       'motion': body.motion_enabled, 'protocol': 1})
+                                       'motion': body.motion_enabled, 'gestures': 1, 'protocol': 1})
                 elif self.path == '/show':
                     with body.lock:
                         self.respond(200, body.show_result or {'state': 'idle'})
@@ -713,9 +719,13 @@ def listen(motion_enabled=True):
                             if not math.isfinite(energy) or not 0 <= energy <= 1:
                                 raise ValueError('invalid speech level')
                             accent = float(item.get('accent', 0))
-                            if not math.isfinite(accent) or not -.35 <= accent <= .35:
+                            if not math.isfinite(accent) or not -.5 <= accent <= .5:
                                 raise ValueError('invalid speech accent')
-                            base, neck = body.set_look(look, energy, accent)
+                            # Word-timed gestures from the Mac: a head tilt or shake and a lean in or back.
+                            tilt, lean = float(item.get('tilt', 0)), float(item.get('lean', 0))
+                            if not (math.isfinite(tilt) and math.isfinite(lean)) or abs(tilt) > .45 or abs(lean) > .25:
+                                raise ValueError('invalid gesture')
+                            base, neck = body.set_look(look, energy, accent, tilt, lean)
                             self.respond(200, {'ok': True, 'base': base, 'neck': neck,
                                                'beat': body.beat, 'pose': body.pose})
                         return
