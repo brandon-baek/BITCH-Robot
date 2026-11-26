@@ -540,8 +540,9 @@ def run_chatgpt(prompt, *, send, mode=None):
 def prepare_next(tab):
     """Start loading a fresh chat now, so the next question doesn't wait for it."""
     try:
-        tab.call('Page.navigate', {'url': HOME_PAGE}, timeout=5.)
-    except (OSError, RuntimeError, TimeoutError):
+        # Fire and forget: the answer goes back to BITCH now, the page loads while it talks.
+        tab.ws.send(json.dumps({'id': 999999, 'method': 'Page.navigate', 'params': {'url': HOME_PAGE}}))
+    except OSError:
         pass
 
 
