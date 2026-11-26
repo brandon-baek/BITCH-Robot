@@ -816,12 +816,14 @@ class MotionTests(unittest.TestCase):
                 motion.step(mode, base, neck, now, 0.02, calm=calm, mood=mood, sfx_volume=0.8)
                 now += 0.02
                 self.assertTrue(all(np.isfinite(desk.cur)))
-                self.assertLessEqual(abs(desk.cur[0]), pi.BASE + 0.01)
-                self.assertGreaterEqual(desk.cur[1], -1.07)
-                self.assertLessEqual(desk.cur[1], -0.41)
-                self.assertGreaterEqual(desk.cur[2], pi.NECK[0] - 0.01)
-                self.assertLessEqual(desk.cur[2], pi.NECK[1] + 0.01)
-                self.assertLessEqual(abs(desk.cur[3]), 0.65)
+                self.assertGreaterEqual(desk.cur[0], character.LIVE_LO[0] - 0.02)
+                self.assertLessEqual(desk.cur[0], character.LIVE_HI[0] + 0.02)
+                self.assertGreaterEqual(desk.cur[1], character.LIVE_LO[1] - 0.02)
+                self.assertLessEqual(desk.cur[1], character.SLEEP_ARM_MAX + 0.02)
+                self.assertGreaterEqual(desk.cur[2], character.LIVE_LO[2] - 0.02)
+                self.assertLessEqual(desk.cur[2], character.LIVE_HI[2] + 0.02)
+                self.assertGreaterEqual(desk.cur[3], character.LIVE_LO[3] - 0.02)
+                self.assertLessEqual(desk.cur[3], character.LIVE_HI[3] + 0.02)
             if calm:
                 # Calm watching detaches both the bearing base (0) and balanced head tilt (3).
                 self.assertIn(0, motion.actor.limp)

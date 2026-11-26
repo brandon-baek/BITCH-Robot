@@ -60,8 +60,8 @@ def run_motion_stress():
         'alarm', 'yawn', 'doze', 'speaking', 'speak-warm', 'speak-upbeat',
         'speak-playful', 'speak-sad', 'speak-annoyed', 'speak-amused', 'park',
     ]
-    lo = [-pi.BASE, -1.07, pi.NECK[0], -.65]
-    hi = [pi.BASE, -.41, pi.NECK[1], .65]
+    lo = list(character.LIVE_LO)
+    hi = [character.LIVE_HI[0], character.SLEEP_ARM_MAX, character.LIVE_HI[2], character.LIVE_HI[3]]
     max_vel = [0.0] * 4
     prev = list(desk.cur)
     nan_found = False

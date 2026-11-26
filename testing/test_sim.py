@@ -81,6 +81,35 @@ class SimEnv(unittest.TestCase):
         for _ in range(150): o, _, _, _, info = e.step(pi(o))
         self.assertLess(info['angle_deg'], 5)
 
+    def test_pixar_character_motions_are_collision_free_expressive_and_torque_safe(self):
+        from sim.preview_motion import simulate_scenario
+        from sim.model import mjcf
+        import mujoco
+
+        model = mujoco.MjModel.from_xml_string(mjcf())
+        checks = [
+            ('curious', 'curious', 2.2, 0.0, -0.8, {'valence': 0.35, 'arousal': 0.55}, None, 'three_quarter'),
+            ('victory', 'victory', 2.4, 0.0, -0.8, {'valence': 0.95, 'arousal': 0.95}, None, 'three_quarter'),
+            ('lonely', 'lonely', 3.0, 0.0, -0.8, {'valence': -0.5, 'arousal': 0.15, 'loneliness': 0.9}, None, 'side'),
+            ('doze', 'doze', 5.0, 0.0, -0.8, {'valence': 0.0, 'arousal': 0.05}, None, 'side'),
+            ('scared', 'scared', 1.8, 0.0, -0.8, {'valence': -0.3, 'arousal': 0.9}, None, 'side'),
+            ('speak_playful', 'speak-playful', 2.2, 0.0, -0.8, {'valence': 0.7, 'arousal': 0.7}, 'playful', 'three_quarter'),
+        ]
+        results = {}
+        for item in checks:
+            _, metrics = simulate_scenario(model, *item)
+            results[item[0]] = metrics
+            self.assertEqual(metrics['contacts'], 0, f'Collision in {item[0]}')
+            self.assertLess(max(metrics['max_trq_pct']), 45.0, f'Torque too high in {item[0]}: {metrics["max_trq_pct"]}')
+            self.assertGreater(metrics['min_eye_z_mm'], 50.0, f'Head too low in {item[0]}')
+        # Verify genuine full-body Pixar motion (not held back!)
+        self.assertGreater(results['curious']['eye_span_mm'][0], 60.0)
+        self.assertGreater(results['victory']['span_deg'][3], 40.0)
+        self.assertGreater(results['victory']['span_deg'][0], 25.0)
+        self.assertGreater(results['lonely']['span_deg'][1], 45.0)
+        self.assertGreater(results['doze']['span_deg'][1], 50.0)
+        self.assertGreater(results['speak_playful']['eye_span_mm'][0], 70.0)
+
 
 if __name__ == '__main__':
     unittest.main()

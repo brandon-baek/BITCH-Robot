@@ -121,7 +121,9 @@ class Robot(Device):
                 item['sfx_volume'] = round(max(0., min(1., float(sfx_volume))), 2)
             if sfx:
                 item['sfx'] = sfx
-        if self.gestures:
+        if self.pixar:
+            item.update(accent=max(-.75, min(.75, accent)), tilt=max(-.75, min(.75, tilt)), lean=max(-.45, min(.45, lean)))
+        elif self.gestures:
             item.update(accent=max(-.5, min(.5, accent)), tilt=max(-.45, min(.45, tilt)), lean=max(-.25, min(.25, lean)))
         else:
             # An older Pi rejects accents past this.

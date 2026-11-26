@@ -106,8 +106,11 @@ BEATS['alarm'] = BEATS['double-take']
 BEATS['yawn'] = BEATS['doze']
 SPEECH = {name for name in BEATS if name == 'speaking' or name.startswith('speak-')}
 SOCIAL = {'notice', 'attend', 'listen', 'ponder', 'speaking', 'recognize', 'mirror-left', 'mirror-right',
+          'curious', 'peek', 'shy', 'glance', 'survey',
           'happy', 'sad', 'lonely', 'grumpy', 'victory', 'alarm', 'yawn',
           'scared', 'proud', 'double-take', 'seek', 'look-target', 'doze', 'stretch'} | SPEECH
+WEIGHTED_MODES = {'sad', 'lonely', 'doze', 'yawn', 'speak-gentle'}
+DEEP_ARM_MODES = {'doze', 'lonely', 'sad', 'yawn'}
 IDLE_BEATS = ('curious', 'glance', 'shy', 'stretch', 'peek')
 ROOM_BEATS = ('survey', 'stretch', 'glance', 'sad', 'peek')
 SOFTNESS = {'doze': .4, 'stretch': .7, 'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
@@ -206,12 +209,22 @@ class Motion:
         if self.actor is None:
             self.actor = Actor(wake=False, desk=desk, powered=True)
         actor = self.actor
-        actor.low = (-BASE, -1.06, NECK[0], -.64)
-        actor.high = (BASE, -.42, NECK[1], .64)
-        # While talking or alerting the head moves quicker so nods/shakes land cleanly.
-        talking = mode in SPEECH or mode in ('alarm', 'victory')
-        actor.speed = (.58 * min(1., max(0., desk.BASE_SPEED)), .68, 1.5 if talking else .85, 2.6 if talking else 1.65)
-        actor.accel = (1.55, 2.1, 3.5, 7.4)
+        # Unlock MuJoCo-verified collision-free & torque-safe full-body range!
+        arm_max = character.SLEEP_ARM_MAX if mode in DEEP_ARM_MODES else character.LIVE_HI[1]
+        actor.low = character.LIVE_LO
+        actor.high = (character.LIVE_HI[0], arm_max, character.LIVE_HI[2], character.LIVE_HI[3])
+        # Mode-adaptive Pixar dynamics: crisp snappy pops for energy/speech, weighted slowness for sad/sleepy,
+        # and gentle smooth base tracking when calmly following a face.
+        base_scale = min(1., max(0., desk.BASE_SPEED))
+        if mode in WEIGHTED_MODES:
+            actor.speed = (.55 * base_scale, .92, 1.25, 1.75)
+            actor.accel = (1.8, 2.8, 4.2, 7.0)
+        elif mode in SOCIAL or mode == 'scan':
+            actor.speed = (1.65 * base_scale, 2.45, 3.6, 5.4)
+            actor.accel = (5.8, 9.5, 15.0, 26.0)
+        else:
+            actor.speed = (.58 * base_scale, 1.55, 2.2, 3.6)
+            actor.accel = (1.55, 5.5, 9.0, 16.0)
         if score_frame is not None:
             pose, stiffness, idle = score_frame
             actor.idle_amt = idle * .35
@@ -235,10 +248,10 @@ class Motion:
             if mode == 'scan':
                 self.scan_base = desk.cur[0]
             self.mode = mode
-            if mode in SOCIAL and mode not in SPEECH:
+            if mode in SOCIAL:
                 beat_name = 'mirror' if mode.startswith('mirror-') else mode
                 side = (-1 if mode == 'mirror-left' else 1 if mode == 'mirror-right'
-                        else self.gesture_side if mode in ('ponder', 'seek', 'double-take', 'look-target', 'victory', 'alarm', 'grumpy')
+                        else self.gesture_side if mode in SPEECH or mode in ('ponder', 'seek', 'double-take', 'look-target', 'victory', 'alarm', 'grumpy')
                         else (-1 if base > .30 else 1 if base < -.30 else self.rng.choice((-1, 1))))
                 self.social_phrase = character.synthesize_phrase(beat_name, self.rng, side=side, mood=mood)
         if mode == 'scan':
@@ -266,12 +279,12 @@ class Motion:
                 direction = self.gesture_side
             age = now - self.social_at
             if self.social_phrase is not None:
-                # Re-synthesize alarm loop smoothly while alarm stays active.
-                if mode == 'alarm' and age >= self.social_phrase.duration + 0.25:
+                # Re-synthesize alarm and sustained speaking phrases smoothly so long turns stay fresh!
+                if (mode == 'alarm' or mode in SPEECH) and age >= self.social_phrase.duration + 0.15:
                     self.social_at = now
                     age = 0.0
                     self.gesture_side = -self.gesture_side
-                    self.social_phrase = character.synthesize_phrase('alarm', self.rng, side=self.gesture_side, mood=mood)
+                    self.social_phrase = character.synthesize_phrase(mode, self.rng, side=self.gesture_side, mood=mood)
                 active_phrase, phrase_age = self.social_phrase, age
             else:
                 frames = BEATS[self.beat]
@@ -328,37 +341,41 @@ class Motion:
             base, neck, tilt = base + direction * turn, neck + pitch, direction * tilt
 
         # Layer continuous Pixar emotional baseline + organic non-repeating breathing when live.
+        # Blend baseline down during active phrases so crafted silhouettes never double-stack or saturate.
         if mood and mode not in ('park', 'aim', 'doze', 'yawn') and not (calm and active_phrase is None and frames is None):
             mb, ma, mn, mh, mst = character.mood_baseline(mood, now, self.noise.sample(now))
+            blend = 0.25 if active_phrase is not None else 1.0
             if mode not in SPEECH:
-                base += mb
-            arm += ma
-            neck += mn
-            tilt += mh
-            stiff_mult *= mst
-            # Velocity-coupled arc: turning the base subtly leads with a curious head tilt.
+                base += mb * blend
+            arm += ma * blend
+            neck += mn * blend
+            tilt += mh * blend
+            stiff_mult *= (1.0 + (mst - 1.0) * (0.5 if active_phrase is not None else 1.0))
+            # Velocity-coupled arc: turning the base subtly leads with a curious head tilt & upward lift.
             if following and mode not in SPEECH and self.cue_at is None:
-                tilt += clamp(actor.v[0] * 0.20, 0.14)
-                neck += min(0.05, abs(actor.v[0]) * 0.06)
+                tilt += clamp(actor.v[0] * 0.26, 0.20)
+                neck += min(0.08, abs(actor.v[0]) * 0.08)
 
         if mode in SPEECH:
             weight = SPEECH_WEIGHT.get(mode, 1.)
-            lean_response = 1 - math.exp(-dt / (.24 if energy > self.lean else .38))
+            lean_response = 1 - math.exp(-dt / (.20 if energy > self.lean else .34))
             self.lean += (energy - self.lean) * lean_response
-            neck += accent * weight + .035 * energy
-            arm += weight * (.15 * self.lean - .17 * accent) + gesture[1]  # higher arm = leaning in
-            tilt += direction * weight * (.11 * energy + .92 * accent) + gesture[0]
-            base -= direction * .038 * self.lean
+            neck += accent * weight * 1.25 + .08 * energy + gesture[1] * .55
+            arm += weight * (.22 * self.lean - .22 * accent) + gesture[1] * 1.15
+            tilt += direction * weight * (.14 * energy + 1.05 * accent) + gesture[0] * 1.15
+            if mode not in ('speaking', 'speak-gentle'):
+                base -= direction * .065 * self.lean
         elif mode == 'listen':
-            self.lean += (energy - self.lean) * (1 - math.exp(-dt / .35))
-            neck += .035 * self.lean
-            tilt += .08 * self.lean
+            self.lean += (energy - self.lean) * (1 - math.exp(-dt / .28))
+            arm += .14 * self.lean
+            neck += .18 * self.lean
+            tilt += .15 * self.lean
         else:
             self.lean = 0.
             if energy > 0 and following:
-                neck += .13 * energy
-                arm += .085 * energy
-                tilt -= .16 * energy
+                neck += .18 * energy
+                arm += .15 * energy
+                tilt -= .20 * energy
         if self.cue_at is not None:
             elapsed = now - self.cue_at
             side = math.copysign(1, self.throw)
@@ -915,11 +932,11 @@ def listen(motion_enabled=True):
                             if not math.isfinite(energy) or not 0 <= energy <= 1:
                                 raise ValueError('invalid speech level')
                             accent = float(item.get('accent', 0))
-                            if not math.isfinite(accent) or not -.5 <= accent <= .5:
+                            if not math.isfinite(accent) or not -.85 <= accent <= .85:
                                 raise ValueError('invalid speech accent')
                             # Word-timed gestures from the Mac: a head tilt or shake and a lean in or back.
                             tilt, lean = float(item.get('tilt', 0)), float(item.get('lean', 0))
-                            if not (math.isfinite(tilt) and math.isfinite(lean)) or abs(tilt) > .45 or abs(lean) > .25:
+                            if not (math.isfinite(tilt) and math.isfinite(lean)) or abs(tilt) > .85 or abs(lean) > .50:
                                 raise ValueError('invalid gesture')
                             raw_mood = item.get('mood')
                             mood = None
