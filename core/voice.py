@@ -457,13 +457,14 @@ def thinking(stop, *, greeting):
     def sound():
         try:
             previous = 0.
-            # One cue when you finish; more only if the answer really stalls (two quick ones sounded like a stutter).
-            schedule = (0., 4.5, 9.)
+            # No beep when you finish talking: answers start in about a second. One soft cue only if an answer
+            # really stalls, so you know BITCH is still on it.
+            schedule = (4.5,)
             for index, when in enumerate(schedule):
                 if done.wait(max(0., when - previous)) or stop.is_set():
                     break
                 started = time.monotonic()
-                play(*encode(wait_sound(index if greeting else index+1)), either, interim=True)
+                play(*encode(wait_sound(2)), either, interim=True)
                 previous = when + time.monotonic() - started
         except (OSError, ValueError, wave.Error) as error:
             hub.note('speaker', f'Cue failed: {error}')

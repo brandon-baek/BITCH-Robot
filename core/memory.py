@@ -617,7 +617,7 @@ def consolidate_conversation(owner, transcript, *, replace_episode=None, chat_fn
     if not owner or not transcript:
         return replace_episode
     from . import llm, streaming
-    run_chat = chat_fn or llm.chat
+    run_chat = chat_fn or (lambda messages, **kw: llm.chat(messages, background=True, **kw))
     lines = transcript.splitlines()
     their_lines = [line.split(':', 1)[1] for line in lines if line.startswith('Them:')]
     their_words = _plain(' '.join(their_lines))
@@ -752,7 +752,7 @@ def clean(owner=None, *, chat_fn=None, review=True):
                 drop(row_id, text, 'old episode' if count > EPISODES_KEPT else 'junk')
     if review:
         from . import llm
-        run_chat = chat_fn or llm.chat
+        run_chat = chat_fn or (lambda messages, **kw: llm.chat(messages, background=True, **kw))
         gone = {item['id'] for item in removed}
         for who in sorted(o for o in owners if o):
             facts = [(row[0], row[3]) for row in rows

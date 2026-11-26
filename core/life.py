@@ -611,7 +611,7 @@ class Life:
                             'No stage directions, no emoji, no ChatGPT mentions.'
                         )},
                         {'role': 'user', 'content': 'React aloud.'},
-                    ], max_tokens=70, temperature=0.5)
+                    ], max_tokens=70, temperature=0.5, background=True)
                     line = streaming.clean(line)
                     if not (10 <= len(line) <= 280):
                         line = ''
@@ -845,7 +845,7 @@ class Life:
                         'what you see and that memory. No stage directions, no emoji, no ChatGPT mentions.'
                     )},
                     {'role': 'user', 'content': 'Say your comment aloud.'},
-                ], max_tokens=70, temperature=0.55)
+                ], max_tokens=70, temperature=0.55, background=True)
                 line = streaming.clean(line)
                 if 10 <= len(line) <= 280:
                     memory.mark_used(callback['id'])

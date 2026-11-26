@@ -185,7 +185,10 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(brain.native_audio, (b'wav', .8))
             self.assertEqual(brain.reply('Ask Qwen to explain how salt melts ice.', source, stream=stream),
                              'It lowers the freezing point.')
-            self.assertEqual(agent.call_args.args[0][-1]['content'], 'explain how salt melts ice.')
+            turn = agent.call_args.args[0][-1]['content']
+            self.assertTrue(turn.endswith('\nexplain how salt melts ice.'), turn)
+            # The per-turn notes ride on the message, so the system prompt stays the same turn to turn.
+            self.assertTrue(turn.startswith('[Turn notes'), turn)
             native.assert_called_once()
 
     def test_volume_attenuates_speech_and_cues(self):
@@ -249,7 +252,7 @@ class WakeTests(unittest.TestCase):
         stream.offer = lambda phrase, delivery, **kwargs: stream.parts.append((phrase, delivery))
         partial = '{"v":"a","say":"Oh, come on! A fern beat me.'
 
-        def generate(messages, *, schema, model, on_delta, stop, temperature):
+        def generate(messages, *, schema, model, on_delta, stop, temperature, max_tokens=160):
             self.assertEqual(schema['required'], ['v', 'say', 'end'])
             on_delta(partial)
             self.assertEqual(stream.parts, [('Oh, come on!', 'emphatic')])

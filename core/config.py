@@ -16,6 +16,7 @@ DEFAULTS = {
     'voicechat_bin': '',
     'voicechat_enabled': False,
     'ollama_url': 'http://127.0.0.1:11434',
+    'llm_server': True,     # run the chat model in BITCH's own llama-server (fast follow-up turns)
     'kokoro_voice': 'af_heart',
     'mac_voice': 'Samantha',
     'mic_source': 'mac-mic',

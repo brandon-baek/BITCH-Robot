@@ -299,7 +299,7 @@ def spoken(answer, *, request='', explicit=False, contextualize=False):
                 'Reply with only the spoken words.'
             )},
             {'role': 'user', 'content': plain[:4500]},
-        ], max_tokens=180 if is_briefing else 140, temperature=.2)
+        ], max_tokens=180 if is_briefing else 140, temperature=.2, background=True)
         short = strip_gpt_mentions(streaming.clean(short), allow_gpt=explicit)
         if 12 <= len(short) <= 560:
             return short

@@ -76,7 +76,7 @@ def validate_plan(steps):
 
 def draft(request):
     messages = [{'role': 'system', 'content': DIRECTION}, {'role': 'user', 'content': request}]
-    plan = json.loads(llm.chat(messages, max_tokens=620, schema=SCHEMA))
+    plan = json.loads(llm.chat(messages, max_tokens=620, schema=SCHEMA, background=True))
     if not isinstance(plan, dict) or plan.keys() != {'steps', 'missing'} or not isinstance(plan['missing'], str):
         raise ValueError('invalid routine')
     missing = ' '.join(plan['missing'].split())

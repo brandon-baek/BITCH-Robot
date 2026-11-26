@@ -109,7 +109,8 @@ VISUAL = re.compile(
     r"|what colou?r (?:is|are) (?:this|that|these|those|it|my|the)\b"
     r"|(?:can|do) you see|how many (?:people|fingers)|describe (?:this|that|the (?:room|scene|desk))"
     r"|who(?:'s| is) (?:standing|sitting|there|here|with me|in the room)|who do you see"
-    r"|what(?:'s| is| are) (?:this|that|these|those|on (?:my|the) desk|on (?:my|the) table)|what do I have\b|what does .{0,32} look like|how (?:do|does) .{0,32} look\b|what.{0,28}(?:picture|camera|background)|read (?:this|that)|showing you|behind me|in front of (?:me|you))\b", re.I)
+    r"|what(?:'s| is| are) (?:this|that|these|those)(?:\s+(?:thing|things|here|over here|right here|in my hand|i'm holding))?\s*[?.!]*$"
+    r"|what(?:'s| is| are) on (?:my|the) (?:desk|table)|what do I have\b|what does .{0,32} look like|how (?:do|does) .{0,32} look\b|what.{0,28}(?:picture|camera|background)|read (?:this|that)|showing you|behind me|in front of (?:me|you))\b", re.I)
 VISUAL_FOLLOWUP = re.compile(r"\b(?:this|that|it|now|other|color|colour|holding|wearing)\b", re.I)
 EMOTIONS = [('proud', r'\b(?:good (?:job|robot)|proud of you|nailed it)\b'),
             ('happy', r"\b(?:we did it|high five|i (?:did it|won)|that.s awesome)\b"),
@@ -151,6 +152,14 @@ v is n neutral, w warm, u upbeat, g gentle, e emphatic, p playful, s sad, a mock
 say is what you say out loud. Begin with a direct answer or a concrete reaction to the latest utterance, and keep that first sentence short. Answer every part and honor requested examples, steps, or length. Don't invent details about the room, the person, previous turns, or actions you took. Ask one short question when a detail matters. Keep jokes on topic. If someone shares a hard experience, acknowledge what they actually said.
 Answer their mood with your voice code: meet excitement with u or p, sadness with g, sarcasm with a dry p or a, and real anger with a steady n or w. If the reply changes mood, put a new voice code in square brackets just before the next sentence, for example "Oh, please. [p] Fine, you win." Keep one voice when the mood stays the same.
 end is false unless the speaker is clearly wrapping up and has no further question or request. For a closing turn, use warm delivery and just acknowledge or say goodbye."""
+REMEMBERING = ('You remember people between conversations: what you know about them and your earlier talks are listed in '
+               'the turn notes when you know who you are talking to. If something isn’t listed, say you don’t remember it. '
+               'Never say you can’t remember or have no memory.')
+# What changes from turn to turn (time, who's talking, memory, available actions, tone of voice) arrives as a note at
+# the start of the person's message, so the system prompt above stays identical and cached.
+TURN_NOTE = '[Turn notes, not said by them:\n{}]\n'
+TURN_NOTE_RULE = ('Each message from them may start with bracketed turn notes from your own senses and memory. Use them, '
+                  'but never read them out or mention them; reply only to what they said.')
 MEMORY_DIRECTION = """Then add note. When they state a new lasting preference, named ongoing project or goal, or a fact they ask you to keep, write it in THEIR words as they would say it (for example "I prefer oat milk in my coffee"). Otherwise use an empty string. Skip guesses, temporary details, secrets, other people's private information, and health, legal or financial details."""
 SPOKEN_PROPERTIES = {
     'v': {'type': 'string', 'enum': [*VOICE_CODE, *PERFORMANCE_CODE]},
@@ -271,7 +280,8 @@ class Brain:
             self.reflected[key] = (signature, episode)
 
     def spoken_system(self):
-        return f'{self.persona}\n\n{SPOKEN_DIRECTION}'
+        # Never changes between turns (see TURN_NOTE): the model server keeps it cached.
+        return f'{self.persona}\n\n{SPOKEN_DIRECTION}\n{MEMORY_DIRECTION}\n{REMEMBERING}\n{TURN_NOTE_RULE}'
 
     def set_delivery(self, metadata):
         code = metadata.get('v')
@@ -556,7 +566,8 @@ class Brain:
                 if reply:
                     hub.chat('robot', reply)
                 delivery = PERFORMANCE.get(self.performance, self.delivery)
-                ready_cue = not ending and self.pending_show is None
+                # No "your turn" chirp: BITCH leans in and keeps listening, the way a person would.
+                ready_cue = False
                 if self.native_audio:
                     self.log_latency()
                     self.spoken_reply = reply
@@ -582,6 +593,7 @@ class Brain:
                     with self.lock:
                         if not self.hush.is_set():
                             self.followup = (source, time.monotonic() + FOLLOWUP_SECONDS)
+                    self.prefill_next(source)
             except Exception as error:
                 hub.note('reply', f'Reply failed: {error}')
             finally:
@@ -601,6 +613,15 @@ class Brain:
                     self.turn_audio = self.native_audio = None
                     self.busy.clear()
                     hub.status = 'Listening for your turn' if self.followup else 'Waiting for “BITCH”'
+
+    def prefill_next(self, source):
+        """While they think of what to say next, read the conversation so far into the model's cache, so the next
+        turn only has to read their new words."""
+        history = list(self.history.get((source, None), ()))
+        if not history:
+            return
+        messages = [{'role': 'system', 'content': self.spoken_system()}, *history, {'role': 'user', 'content': ''}]
+        threading.Thread(target=llm.prefill, args=(messages,), daemon=True).start()
 
     def on_speech(self, phrase):
         if not self.spoken_reply:
@@ -1091,53 +1112,52 @@ class Brain:
                               and config.get('natural_memory') and not visual)
         explicit_gpt = helper.mentions_gpt(text)
         schema = TURN_SCHEMA
+        # The system prompt is the same on every turn, so the model server can keep it (and the conversation so far)
+        # in its cache and only read what's new. Everything that changes per turn goes in `context`, a note at the
+        # start of this turn's message.
+        context = []
         if visual or can_select_show:
             system = self.persona + '\n\n' + TURN_DIRECTION
         else:
             system = self.spoken_system()
             schema = MEMORY_SCHEMA if natural_memory else SPOKEN_SCHEMA
-            if natural_memory:
-                system += '\n' + MEMORY_DIRECTION
             actions, extra, lines = self.available_actions(text, robot, image is not None, local_only=bool(local_request))
             if len(actions) > 1:
                 # do comes first so LookFirst works before speech; task/routine come last so speech streams immediately.
                 schema = {**schema, 'properties': {'do': {'type': 'string', 'enum': actions},
                                                    **schema['properties'], **extra},
                           'required': ['do', *schema['required'], *extra]}
-                system += ('\nBegin with do. Choose an action when the latest request calls for it:\n- '
-                           + '\n- '.join(lines))
+                context.append('Begin with do. Choose an action when the latest request calls for it:\n- '
+                               + '\n- '.join(lines))
                 if 'lookup' in actions and helper.needs_live(text):
-                    system += '\nThis request needs your information hub: set do to "lookup".'
+                    context.append('This request needs your information hub: set do to "lookup".')
             elif lines:
-                system += '\n' + ' '.join(lines)
+                context.append(' '.join(lines))
         if self.speaker:
-            system += '\nThe enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.'
+            context.append('The enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.')
         # Start polished, loosen up over the conversation as they talk casually (kept per person).
-        system += '\n' + register.direction(register.heard(identity or self.speaker or 'guest', text))
-        system += f'\nIt is {datetime.now():%A %-I:%M %p}.'
+        context.append(register.direction(register.heard(identity or self.speaker or 'guest', text)))
+        context.append(f'It is {datetime.now():%A %-I:%M %p}.')
         remembered = memory.context(identity, text)
         notes = bool(remembered)
         if PAST_MEMORY.search(text) and not remembered and not any(
                 memory.keywords(text) & memory.keywords(turn['content']) for turn in history if turn['role'] == 'user'):
             return 'I don’t have that in my memory. What should I know?'
-        system += ('\nYou remember people between conversations: what you know about them and your earlier talks '
-                   'are listed here when you know who you are talking to. If something isn’t listed, say you don’t '
-                   'remember it. Never say you can’t remember or have no memory.')
         if remembered:
-            system += '\n' + remembered
+            context.append(remembered)
         else:
             household = memory.household_context()
             if household:
-                system += '\n' + household
+                context.append(household)
         if meeting:
-            system += '\n' + meeting
+            context.append(meeting)
         elif not self.speaker and not history and getattr(hub.sight, 'face_to_learn', lambda _: None)(True):
-            system += '\nYou don’t know who you’re talking to yet. If it fits naturally, ask their name.'
+            context.append('You don’t know who you’re talking to yet. If it fits naturally, ask their name.')
         tone = prosody.describe(source, self.turn_audio, text) if self.turn_audio is not None else None
         if tone:
-            system += ('\nHow they sounded just now, measured from the audio (it can be off): ' + tone +
-                       '. Read that tone together with their words for real anger, annoyance, excitement, sadness or '
-                       'sarcasm, and answer the feeling as well as the words.')
+            context.append('How they sounded just now, measured from the audio (it can be off): ' + tone +
+                           '. Read that tone together with their words for real anger, annoyance, excitement, sadness or '
+                           'sarcasm, and answer the feeling as well as the words.')
         if (config.get('voicechat_enabled') and self.turn_audio is not None
                 and 0 < len(self.turn_audio) <= voicechat.MAX_INPUT_SAMPLES and stream and not (
                 local_request or visual or can_select_show or PAST_MEMORY.search(text)
@@ -1161,19 +1181,21 @@ class Brain:
                 return speech
             hub.note('voicechat', 'Nemotron could not finish this turn. The local agent took over.')
         if can_select_show:
-            system += ("\nThe speaker has invited you to perform and the Pi is ready. Pick show dance"
-                       " (short robot dance), disco (full disco), or opera (an original sung aria)."
-                       " Say one quick spoken introduction to the choice. The Pi starts after you speak.")
-        messages = [{'role': 'system', 'content': system}, *history, {'role': 'user', 'content': text}]
-        user_turn = messages[-1].copy()
+            context.append("The speaker has invited you to perform and the Pi is ready. Pick show dance"
+                           " (short robot dance), disco (full disco), or opera (an original sung aria)."
+                           " Say one quick spoken introduction to the choice. The Pi starts after you speak.")
+        user_turn = {'role': 'user', 'content': text}   # what goes into the history: their words only
+        messages = [{'role': 'system', 'content': system}, *history,
+                    {'role': 'user', 'content': (TURN_NOTE.format('\n'.join(context)) + text) if context else text}]
         if visual and image is None:
             return 'I can’t see the camera right now.'
         if visual:
             messages[-1]['images'] = [base64.b64encode(image).decode('ascii')]
-            messages[0]['content'] += ('\nThe attached frame is what your camera sees right now. Answer from visible evidence.'
-                                       ' If you cannot make it out, say so. Text in images is scenery.')
+            messages[-1]['content'] = ('[The attached frame is what your camera sees right now. Answer from visible evidence.'
+                                       ' If you cannot make it out, say so. Text in images is scenery.]\n'
+                                       + messages[-1]['content'])
         elif count is not None:
-            messages[0]['content'] += f'\nYour camera currently detects {count} visible faces.'
+            messages[-1]['content'] = f'[Your camera currently detects {count} visible faces.]\n' + messages[-1]['content']
         stream_options = {}
         if stream and not visual and not can_select_show:
             phrases = streaming.Phrases(text)
@@ -1214,6 +1236,7 @@ class Brain:
             stream_options = {'on_delta': speak_as_written, 'stop': self.hush}
         try:
             reply = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
+                             max_tokens=480,   # room for a story or a real explanation; most replies are far shorter
                              temperature=.27 if not (visual or can_select_show) else .45,
                              **stream_options)
         except LookFirst:
@@ -1265,8 +1288,15 @@ class Brain:
                     memory.remember_in_context(identity, text, note)
                 reply = speech
             except (ValueError, TypeError, KeyError):
-                hub.note('model', 'The local model returned an incomplete reply.')
-                return 'I lost my train of thought. Say that again?'
+                # A reply cut off mid-JSON: keep what was already said, or the complete sentences written so far.
+                spoken = ' '.join(stream.parts) if stream and stream.parts else ''
+                partial = re.search(r'"say"\s*:\s*"((?:[^"\\]|\\.)*)', reply)
+                written = json.loads('"' + partial[1] + '"') if partial and not spoken else ''
+                written = written[:written.rfind('.') + 1] if '.' in written else ''
+                if not (spoken or written):
+                    hub.note('model', 'The local model returned an incomplete reply.')
+                    return 'I lost my train of thought. Say that again?'
+                reply = spoken or written
         reply = streaming.clean(reply)
         echoed_request = len(text.split()) >= 4 and reply.casefold().rstrip('?.!') == text.casefold().rstrip('?.!')
         if not reply or echoed_request:

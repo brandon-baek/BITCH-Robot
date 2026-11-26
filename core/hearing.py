@@ -15,6 +15,10 @@ from .people import people
 SR = 16000
 FRAME = 512
 WHISPER = 'mlx-community/whisper-large-v3-turbo'
+# Parakeet reads a sentence in about 0.1 s, Whisper in about 0.66 s, at the same accuracy (testing/asr_eval: 8.1% word
+# errors each over close, noisy and far-field speech). Whisper with the name hint is better at catching "BITCH" from
+# across the room (8/9 against 5/9), so it gets a second listen only when the name is needed and Parakeet missed it.
+PARAKEET = 'mlx-community/parakeet-tdt-0.6b-v2'
 # Example addresses steer Whisper toward the name. Measured on noisy far-field clips this raised
 # the name being heard from 69% to 97% (with the wake rules in brain.py) at zero false wakes.
 WAKE_HINT = "Hey BITCH. Yo BITCH. Okay BITCH. BITCH, look at this. What do you think, BITCH?"
@@ -260,7 +264,10 @@ class Hearing:
                         began, voiced = frame_at - len(clip) * FRAME / SR, sum(marks)
                 if not clip:
                     pre.append(frame)
-                    onset = onset + 1 if speech else 0
+                    # Just after BITCH spoke, its echo is still in the room: only sound clearly louder than that
+                    # echo can open a new turn. (While it speaks, the talk-over path below handles this.)
+                    echo_only = louder is not None and not can_interrupt and louder < OVERLAP * .7
+                    onset = onset + 1 if speech and not echo_only else 0
                     if onset >= 3:
                         talking_over = interrupted = can_interrupt
                         held = False
@@ -352,6 +359,14 @@ class Hearing:
         except Exception as error:
             hub.note('hearing', f'Whisper unavailable: {error}')
             return
+        try:
+            from parakeet_mlx import from_pretrained
+
+            self.parakeet = from_pretrained(PARAKEET)
+            self.read_fast(np.zeros(SR, np.float32))
+        except Exception as error:
+            self.parakeet = None
+            hub.note('hearing', f'Fast recognizer unavailable, using Whisper only: {error}')
         self.whisper_ready = True
         preview = None
         while True:
@@ -360,7 +375,7 @@ class Hearing:
             if clip.kind == 'barge':
                 if revision == hub.brain.revision and time.monotonic() - clip.queued < .9 and hub.brain.can_interrupt(source):
                     try:
-                        text = self.transcribe(mlx_whisper, clip.audio, prompt=False)
+                        text = self.listen(mlx_whisper, clip.audio, need_name=False)
                         _, voice_name = people.speaker(source, clip.audio, len(clip.audio)/SR, addressed=True)
                         hub.brain.interrupt(source, text, voice_name=voice_name, strong=clip.strong)
                     except (ValueError, RuntimeError, OSError):
@@ -374,7 +389,9 @@ class Hearing:
             stamp = (source, revision, began, clip.last_speech)
             if clip.kind == 'preview':
                 try:
-                    text = self.transcribe(mlx_whisper, clip.audio)
+                    if voice.is_echo(clip.audio, clip.last_speech):
+                        continue
+                    text = self.listen(mlx_whisper, clip.audio, need_name=not hub.brain.addressed('', source, began))
                     preview = (stamp, text) if text else None
                     if text and wake_only(text) and clip.voiced >= WAKE_ONLY_SPEECH:
                         # Just the name: answer with a chirp right away, keep listening for the rest.
@@ -392,7 +409,7 @@ class Hearing:
                 if enrolled:
                     continue
                 text = (preview[1] if preview and preview[0] == stamp
-                        else self.transcribe(mlx_whisper, clip.audio))
+                        else self.listen(mlx_whisper, clip.audio, need_name=not hub.brain.addressed('', source, began)))
                 preview = None
                 if text and wake_only(text) and clip.voiced < WAKE_ONLY_SPEECH:
                     continue
@@ -431,6 +448,42 @@ class Hearing:
             time.sleep(.025)
         return False
 
+
+    parakeet = None
+
+    @staticmethod
+    def level(audio):
+        # Bring distant, quiet speech up to a steady level (at most 8x, so noise stays noise).
+        frames = audio[:len(audio) // 320 * 320].reshape(-1, 320)
+        if len(frames):
+            level = float(np.percentile(np.sqrt(np.mean(frames ** 2, axis=1)), 90))
+            audio = np.clip(audio * min(8., .08 / max(level, 1e-5)), -1, 1).astype(np.float32)
+        return audio
+
+    def read_fast(self, audio):
+        import mlx.core as mx
+        from parakeet_mlx.audio import get_logmel
+
+        mel = get_logmel(mx.array(self.level(audio)), self.parakeet.preprocessor_config)
+        text = self.parakeet.generate(mel)[0].text.strip()
+        return text if re.search(r'[A-Za-z]', text) else ''
+
+    def listen(self, whisper, audio, *, need_name):
+        """What was said. Fast first; Whisper's name-hinted listen only when the name matters and was missed."""
+        if self.parakeet is None:
+            return self.transcribe(whisper, audio)
+        try:
+            text = self.read_fast(audio)
+        except Exception:
+            return self.transcribe(whisper, audio)
+        if need_name and not (text and wake_only(text)):
+            from .brain import wake_request
+
+            if not text or wake_request(text) is None:
+                second = self.transcribe(whisper, audio)
+                if second and wake_request(second) is not None:
+                    return second
+        return text
 
     @staticmethod
     def transcribe(engine, audio, *, prompt=True):
