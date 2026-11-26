@@ -112,7 +112,7 @@ def visible_activity(image):
 SCENE_SCHEMA = {
     'type': 'object',
     'properties': {
-        'emotion': {'type': 'string', 'enum': ['neutral', 'celebrating', 'happy', 'stressed', 'tired', 'focused']},
+        'emotion': {'type': 'string', 'enum': ['neutral', 'celebrating', 'happy', 'stressed', 'tired', 'sleeping', 'focused']},
         'activity': {'type': 'string', 'maxLength': 80},
         'notable': {'type': 'string', 'maxLength': 80},
     },
@@ -127,7 +127,8 @@ def observe_scene(image):
         {'role': 'system', 'content': (
             'Describe ONLY what is clearly visible in this desk camera frame. Return JSON.\n'
             '- emotion: celebrating (arms raised/fist pump/cheering), happy (clear big smile), stressed '
-            '(head in hands/rubbing temples/visibly tense), tired (yawning/head resting on desk), focused, or neutral.\n'
+            '(head in hands/rubbing temples/visibly tense), sleeping (eyes clearly closed with head resting down '
+            'on desk, chair, or pillow, visibly asleep), tired (yawning/droopy), focused, or neutral.\n'
             '- activity: 2 to 6 factual words for what the person is visibly doing.\n'
             '- notable: clearly visible shirt/outfit color & type or held object (e.g. "blue button-up shirt", '
             '"white shirt", "coffee mug"), or empty string if nothing stands out. Never guess.'

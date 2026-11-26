@@ -13,6 +13,18 @@ NAP_CMD = re.compile(
     r"lay down|lie down)|sleep with me|nap time|bedtime)\b", re.I)
 ALARM_CMD = re.compile(
     r"\b(?:wake me(?: up)?|set an? alarm|alarm for|need to be up|gotta be up|have to be up)\b", re.I)
+REMIND_CMD = re.compile(
+    r"\b(?:remind me|set a reminder)\s+(?:(?:every\s+\w+|on\s+\w+|weekdays?|daily|tomorrow|today)\s+)*"
+    r"(?:(?:at|by|for|in)\s+.+?)\s+(to|about)\s+(.+?)[.!?]*$"
+    r"|\b(?:remind me|set a reminder)\s+(to|about)\s+(.+?)\s+(?:(?:every\s+\w+|on\s+\w+|weekdays?|daily|tomorrow|today)\s+)*"
+    r"(?:at|by|for|in)\s+(.+?)[.!?]*$", re.I)
+CANCEL_SCHED_CMD = re.compile(
+    r"\b(?:cancel|delete|remove|clear|turn off)\s+(?:my\s+)?(?:(\d{1,2}(?::\d{2})?)\s*(?:a\.?m\.?|p\.?m\.?)?\s*)?"
+    r"(?:alarm|wake[- ]?up|reminder|schedule)(?:\s+(?:for|about)\s+(.+?))?[.!?]*$", re.I)
+LIST_SCHED_CMD = re.compile(r"\b(?:what(?:'s| is| are) my (?:alarms?|reminders?|daily routine|wake[- ]?up)|list my (?:alarms?|reminders?))\b", re.I)
+RECURRING = re.compile(
+    r"\b(every\s+day|daily|every\s+morning|weekdays?|on\s+weekdays|for\s+school|weekends?|"
+    r"every\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?)\b", re.I)
 WAKE_CMD = re.compile(
     r"^(?:(?:hey |okay |ok )?(?:i(?:'|’)m |i am )?(?:awake|up)|good morning|wake up|stop(?: the)? alarm|dismiss(?: the)? alarm|turn off(?: the)? alarm)[.!? ]*$",
     re.I)
@@ -23,6 +35,60 @@ DURATION = re.compile(
     r"(hours?|hrs?|minutes?|mins?|seconds?|secs?)\b", re.I)
 BACKUP_CONTACT = re.compile(
     r"\b(?:contact|text|message|call|ping|tell)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:to wake|if i don(?:'|’)t)", re.I)
+DELIVERY_SIGNAL = re.compile(
+    r"\b(?:delivered|out for delivery|package (?:arrived|was|is|delivered)|has arrived|arriving today|"
+    r"shipment (?:arrived|delivered|is)|at your (?:front )?door|left near)\b", re.I)
+_TRAILING_TIME = re.compile(
+    r"\s*(?:\b(?:on\s+weekdays|weekdays?|weekends?|every\s+(?:day|morning|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?|daily|tomorrow|today|tonight)\b)\s*$",
+    re.I)
+
+
+def parse_days(text):
+    """Parse recurrence wording ('weekdays', 'every Tuesday', 'daily') -> normalized days string or None."""
+    lower = (text or '').lower()
+    if 'weekday' in lower:
+        return 'mon,tue,wed,thu,fri'
+    if 'weekend' in lower:
+        return 'sat,sun'
+    if any(k in lower for k in ('every day', 'daily', 'every morning')):
+        return 'daily'
+    day_map = [('monday', 'mon'), ('tuesday', 'tue'), ('wednesday', 'wed'), ('thursday', 'thu'),
+               ('friday', 'fri'), ('saturday', 'sat'), ('sunday', 'sun')]
+    found = [short for full, short in day_map if re.search(rf'\bevery\s+{full}s?\b', lower)]
+    if found:
+        return ','.join(found)
+    if 'school' in lower and not any(k in lower for k in ('tomorrow', 'tonight', 'today')):
+        return 'mon,tue,wed,thu,fri'
+    return None
+
+
+def _extract_alarm_purpose(text):
+    """Extract an optional alarm reason like ('to', 'get ready for school') or ('for', 'school'), skipping clock times."""
+    cleaned = _TRAILING_TIME.sub('', text.strip().rstrip('.!?')).strip()
+    m = re.search(
+        r'\b(to|for)\s+(get ready for school|school|work|class|the gym|my flight|flight|practice|[a-z][a-z\s\'-]{2,40})$',
+        cleaned, re.I,
+    )
+    if not m:
+        return '', ''
+    prep, phrase = m[1].lower(), _TRAILING_TIME.sub('', m[2].strip()).strip()
+    if not phrase or re.match(r'^(?:\d|a\.?m\.?|p\.?m\.?|tomorrow|today|tonight|weekdays?|weekends?|daily|every\b)', phrase, re.I):
+        return '', ''
+    return prep, phrase
+
+
+def schedule_matches_day(days_str, dt):
+    days_str = (days_str or 'daily').strip().lower()
+    if days_str == 'daily':
+        return True
+    if days_str == 'weekdays':
+        return dt.weekday() < 5
+    if days_str == 'weekends':
+        return dt.weekday() >= 5
+    if days_str.startswith('once:'):
+        return days_str[5:] == dt.strftime('%Y-%m-%d')
+    today = memory.WEEKDAYS[dt.weekday()]
+    return today in {part.strip()[:3] for part in days_str.split(',') if part.strip()}
 
 
 def parse_wake_time(text, now_dt=None):
@@ -81,11 +147,13 @@ class Life:
         # Nap / Sleep companion & Smart Alarm state
         self.owner_name = 'Brandon'
         self.napping = False
+        self.auto_napping = False
         self.nap_owner = None
         self.nap_started_at = 0.0
         self.nap_expected_wake = None
         self.alarm_at = None
         self.alarm_owner = None
+        self.alarm_title = ''
         self.alarm_ringing = False
         self.alarm_started_ringing = 0.0
         self.alarm_last_nudge = 0.0
@@ -97,11 +165,18 @@ class Life:
         self.greeted_tracks = {}   # track_id -> monotonic timestamp
         self.awaiting_intro = None # (track_id, expires_monotonic)
 
-        # Multimodal observation state
+        # Multimodal observation, auto-sleep detection & notification watcher state
         self.last_scene_check = 0.0
+        self.last_wake_check = 0.0
         self.last_checkin_at = 0.0
         self.last_emotion_seen = None  # (emotion, timestamp)
+        self.sleep_sightings = 0
         self.last_observation = None
+        self.started_at = time.time()
+        self.notif_cursor = self.started_at
+        self.seen_notifs = {}          # key -> timestamp (ordered oldest-first for clean eviction)
+        self.last_notif_poll = 0.0
+        self.pending_highlights = []   # excited items/reminders queued while owner sleeps
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
@@ -142,6 +217,7 @@ class Life:
         with self.lock:
             self.last_chat = now
             self.present_quiet_s = 0.0
+            self.sleep_sightings = 0
             self.loneliness = max(0.0, self.loneliness - 0.65)
             self.valence = min(1.0, self.valence + (0.28 if happy else 0.14))
             self.arousal = min(1.0, max(self.arousal, 0.45) + (0.18 if happy else 0.08))
@@ -154,10 +230,19 @@ class Life:
                 memory.upsert_person(speaker, talked=True, seen=True)
                 self.greeted_names[speaker] = now
 
+    @staticmethod
+    def is_alarm_reply(text):
+        stripped = (text or '').strip()
+        return bool(
+            WAKE_CMD.fullmatch(stripped)
+            or SNOOZE_CMD.search(stripped)
+            or re.search(r"^(?:i(?:'|’)m up|stop|okay|ok|awake|got it|turn it off)[.!? ]*$", stripped, re.I)
+        )
+
     def handle_utterance(self, text, source, speaker=None):
         """Handle sleep/nap companion commands, alarms, wake-ups, and snoozing. Returns a reply or None."""
         who = speaker or self.primary_owner()
-        if self.alarm_ringing and (WAKE_CMD.fullmatch(text.strip()) or re.search(r"\b(?:i(?:'|’)m up|stop|okay|ok|awake|got it)\b", text, re.I)):
+        if self.alarm_ringing and (WAKE_CMD.fullmatch(text.strip()) or re.search(r"\b(?:i(?:'|’)m up|stop|okay|ok|awake|got it|turn it off)\b", text, re.I)):
             return self.dismiss_alarm(source, who)
         if snooze := SNOOZE_CMD.search(text):
             if self.alarm_ringing or self.alarm_at:
@@ -169,6 +254,47 @@ class Life:
             rhythm.wake_now(celebrate=False)
             self.on_interaction(text, who, happy=True)
             return f'Morning, {who}! I’m up.' if datetime.now().hour < 12 else f'Hey {who}, I’m awake.'
+
+        if LIST_SCHED_CMD.search(text):
+            items = memory.list_schedules(who)
+            lower_q = text.lower()
+            wants_rem = 'reminder' in lower_q
+            wants_alarm = 'alarm' in lower_q or 'wake' in lower_q
+            if wants_rem and not wants_alarm:
+                items = [it for it in items if it['kind'] == 'reminder']
+            elif wants_alarm and not wants_rem:
+                items = [it for it in items if it['kind'] == 'wakeup']
+            if not items:
+                return 'You don’t have any saved alarms or reminders with me yet.'
+            parts = []
+            for it in items[:8]:
+                h12 = (it['hour'] % 12) or 12
+                ampm = 'AM' if it['hour'] < 12 else 'PM'
+                parts.append(f"{it['title']} at {h12}:{it['minute']:02d} {ampm} ({it['days']})")
+            return 'Here’s what I have: ' + '; '.join(parts) + '.'
+
+        if cancel := CANCEL_SCHED_CMD.search(text):
+            query = (cancel[2] or cancel[1] or 'alarm').strip()
+            removed = memory.remove_schedule(who, query)
+            if self.alarm_at and ('alarm' in text.lower() or 'wake' in text.lower()):
+                with self.lock:
+                    self.alarm_at = None
+                    self.alarm_ringing = False
+                removed = max(removed, 1)
+            return 'Done, canceled.' if removed else 'I couldn’t find a matching alarm or reminder to cancel.'
+
+        if remind := REMIND_CMD.search(text):
+            target_ts = parse_wake_time(text)
+            if target_ts:
+                prep = (remind[1] or remind[3] or 'to').lower()
+                raw_title = (remind[2] or remind[4] or 'your reminder').strip()
+                title = _TRAILING_TIME.sub('', raw_title).strip() or 'your reminder'
+                dt = datetime.fromtimestamp(target_ts)
+                days = parse_days(text) or ('once:' + dt.strftime('%Y-%m-%d'))
+                memory.add_schedule(who, title, dt.hour, dt.minute, days=days, kind='reminder')
+                when_str = fmt_clock(target_ts)
+                recur = '' if days.startswith('once:') else f' ({days})'
+                return f'Got it — I’ll remind you {prep} {title} at {when_str}{recur}.'
 
         wants_nap = bool(NAP_CMD.search(text))
         wants_alarm = bool(ALARM_CMD.search(text))
@@ -183,7 +309,16 @@ class Life:
         if wants_alarm:
             if not target_ts:
                 return 'Sure — what time should I wake you up?'
-            return self.set_alarm(who, target_ts, backup_contact=backup_name)
+            days = parse_days(text)
+            prep, purpose = _extract_alarm_purpose(text)
+            if days:
+                dt = datetime.fromtimestamp(target_ts)
+                title = purpose or 'wake up'
+                memory.add_schedule(who, title, dt.hour, dt.minute, days=days, kind='wakeup')
+                label = 'weekdays' if days == 'mon,tue,wed,thu,fri' else days
+                reason_str = f' {prep} {purpose}' if purpose else ''
+                return f'Saved! I’ll wake you at {fmt_clock(target_ts)} on {label}{reason_str}.'
+            return self.set_alarm(who, target_ts, backup_contact=backup_name, title=purpose, prep=prep)
         return None
 
     def start_nap(self, owner, *, wake_at=None, backup_contact=None):
@@ -212,16 +347,34 @@ class Life:
             return f'Got it, {owner}. I’ll power down and nap with you, then wake you at {fmt_clock(wake_at)}.{extra}'
         return f'Sleep well, {owner}. I’ll rest my motors until you’re back up.'
 
-    def set_alarm(self, owner, wake_at, *, backup_contact=None):
+    def enter_auto_sleep(self, owner):
+        """Quietly enter sleep-companion mode when vision confirms the owner fell asleep on their own."""
+        now = time.time()
+        with self.lock:
+            if self.napping:
+                return
+            self.napping = True
+            self.auto_napping = True
+            self.nap_owner = owner
+            self.nap_started_at = now
+            self.arousal = 0.08
+            self.sleep_sightings = 0
+        memory.set_status(owner, f'{owner} appears to have fallen asleep around {fmt_clock(now)}.',
+                          ttl_seconds=8 * 3600, tag='nap')
+        rhythm.sleep_now()
+
+    def set_alarm(self, owner, wake_at, *, backup_contact=None, title='', prep='for'):
         with self.lock:
             self.alarm_at = wake_at
             self.alarm_owner = owner
+            self.alarm_title = title
             self.alarm_ringing = False
             self.alarm_escalated = False
             if backup_contact:
                 self.alarm_backup_contact = backup_contact
         extra = f' If you sleep through it, I’ll ask to reach {backup_contact}.' if backup_contact else ''
-        return f'Alarm set for {fmt_clock(wake_at)}, {owner}.{extra}'
+        for_note = f' {prep or "for"} {title}' if title else ''
+        return f'Alarm set for {fmt_clock(wake_at)}{for_note}, {owner}.{extra}'
 
     def snooze_alarm(self, minutes, owner):
         target = time.time() + max(1, min(120, minutes)) * 60
@@ -251,11 +404,16 @@ class Life:
             who = owner or self.nap_owner or self.primary_owner()
             since = self.nap_started_at or (time.time() - 3600)
             self.napping = False
+            self.auto_napping = False
             self.nap_owner = None
             self.nap_expected_wake = None
             self.alarm_ringing = False
             self.alarm_at = None
+            self.alarm_title = ''
             self.alarm_escalated = False
+            self.sleep_sightings = 0
+            highlights = list(self.pending_highlights)
+            self.pending_highlights.clear()
             self.valence = min(1.0, self.valence + 0.5)
             self.arousal = 0.78
             self.loneliness = 0.0
@@ -264,6 +422,7 @@ class Life:
         rhythm.wake_now(celebrate=True)
 
         missed = notifications.summary(since=since, limit=5)
+        highlight_note = (' ' + ' '.join(highlights[:2])) if highlights else ''
         robot = hub.get('robot')
         if trigger_briefing and robot and getattr(robot, 'handoff', False) and hub.brain:
             prompt = (f'Give {who} a short, cheerful wake-up briefing of anything important they missed '
@@ -271,9 +430,13 @@ class Life:
             if missed:
                 prompt += f'\nNotifications that arrived while they slept: {missed}'
             helper.start(hub.brain, source, who, prompt, (), user_text='Wake-up briefing')
+            if highlights:
+                return f'Welcome back, {who}!{highlight_note} I’m pulling together the rest of your briefing too.'
             if missed:
                 return f'Welcome back, {who}! You got a few notifications while you were out — pulling together your full wake-up briefing now.'
             return f'Welcome back, {who}! Let me pull together what you missed while you were asleep.'
+        if highlights:
+            return f'Welcome back, {who}!{highlight_note}'
         if missed:
             return f'Welcome back, {who}! While you were asleep: {missed}'
         return f'Welcome back, {who}! Hope that was a good rest.'
@@ -298,7 +461,9 @@ class Life:
             last_tick = now_mono
             try:
                 self._tick_mood(now_mono, dt)
+                self._tick_schedule(now_mono)
                 self._tick_alarm(now_mono)
+                self._tick_notifications(now_mono)
                 self._tick_arrivals(now_mono)
                 self._tick_observations(now_mono)
             except Exception as error:
@@ -347,8 +512,10 @@ class Life:
         if due_nudge and brain and not brain.busy.is_set():
             with self.lock:
                 self.alarm_last_nudge = now_mono
-            line = (f'Hey {who}, time to get up! Say "I’m up" to turn off the alarm.'
-                    if since_start < 40 else f'{who}! Seriously, time to wake up!')
+                purpose = self.alarm_title
+            for_part = f' — time to {purpose}' if purpose and purpose.lower() != 'wake up' else ''
+            line = (f'Rise and shine, {who}{for_part}! Say "I’m up" to turn off the alarm.'
+                    if since_start < 40 else f'{who}! Seriously, time to get up{for_part}!')
             brain.announce(source, line, heard=False, chime=True)
         if should_escalate and brain:
             with self.lock:
@@ -362,6 +529,110 @@ class Life:
                     (), user_text=f'Wake-up backup for {contact}',
                 )
             brain.announce(source, f'{who}, you still haven’t gotten up — I’m prepping a wake-up message for {contact}.', chime=True)
+
+    def _tick_schedule(self, now_mono, now_dt=None):
+        """Fire recurring wake-ups (like 8:00 AM weekdays for school) and scheduled reminders on time."""
+        dt = now_dt or datetime.now().astimezone()
+        now_wall = dt.timestamp()
+        current_min = dt.hour * 60 + dt.minute
+        brain = hub.brain
+        ears = hub.selected('ears')
+        source = ears.id if ears else 'app'
+        for item in memory.list_schedules():
+            if not schedule_matches_day(item['days'], dt):
+                continue
+            fire_min = item['hour'] * 60 + item['minute'] - int(item['lead_minutes'] or 0)
+            if not (0 <= current_min - fire_min <= 2):
+                continue
+            if now_wall - float(item['last_fired'] or 0) < 12 * 3600:
+                continue
+            memory.mark_schedule_fired(item['id'], when=now_wall, remove_if_once=True)
+            who = item['owner'] or self.primary_owner()
+            title = item['title']
+            if item['kind'] == 'wakeup':
+                with self.lock:
+                    self.alarm_at = now_wall
+                    self.alarm_owner = who
+                    self.alarm_title = title
+                    self.alarm_ringing = True
+                    self.alarm_started_ringing = now_mono
+                    self.alarm_last_nudge = 0.0
+                    self.alarm_escalated = False
+                    rhythm.wake_now(celebrate=False)
+                continue
+            lead = int(item['lead_minutes'] or 0)
+            msg = (f'Heads up, {who} — {title} starts in {lead} minutes.'
+                   if lead > 0 else f'Quick reminder, {who}: {title}.')
+            if self.napping or rhythm.state == 'asleep':
+                with self.lock:
+                    self.pending_highlights.append(msg)
+            elif brain:
+                self.set_pose('notice', 1.8)
+                brain.announce(source, msg, chime=True)
+
+    def _tick_notifications(self, now_mono, *, force=False):
+        """Watch incoming Mac/phone notifications and react excitedly when one matches your memories (e.g. Amazon package!)."""
+        if not force and now_mono - self.last_notif_poll < 8.0:
+            return
+        self.last_notif_poll = now_mono
+        items = notifications.recent(since=max(self.started_at, self.notif_cursor - 5.0), limit=10)
+        if not items:
+            return
+        owner = self.primary_owner()
+        brain = hub.brain
+        ears = hub.selected('ears')
+        source = ears.id if ears else 'app'
+        newest_ts = self.notif_cursor
+        for item in reversed(items):
+            key = (item['app'], item['title'], item['body'], int(item['at']))
+            if key in self.seen_notifs:
+                continue
+            self.seen_notifs[key] = item['at']
+            while len(self.seen_notifs) > 200:
+                self.seen_notifs.pop(next(iter(self.seen_notifs)))
+            newest_ts = max(newest_ts, item['at'])
+            notif_text = f"{item['app']}: {item['title']} {item['body']}".strip()
+            hit = memory.notification_match(owner, notif_text)
+            is_delivery = bool(DELIVERY_SIGNAL.search(notif_text))
+            if not (hit or is_delivery):
+                continue
+            if hit:
+                memory.mark_used(hit['id'])
+            # Compose a natural, excited reaction referencing what Brandon talked about.
+            detail = item['body'] or item['title']
+            if hit:
+                try:
+                    line = llm.chat([
+                        {'role': 'system', 'content': (
+                            f'You are BITCH, {owner}’s expressive Pixar-like desk robot. '
+                            f'A notification just arrived ({notif_text}) and it matches something {owner} talked about earlier: '
+                            f'"{hit["text"]}". Write ONE excited, natural spoken reaction (1–2 crisp sentences, under 35 words). '
+                            'Focus ONLY on the notification and the matching item/event — ignore unrelated details in the memory. '
+                            'No stage directions, no emoji, no ChatGPT mentions.'
+                        )},
+                        {'role': 'user', 'content': 'React aloud.'},
+                    ], max_tokens=70, temperature=0.5)
+                    line = streaming.clean(line)
+                    if not (10 <= len(line) <= 280):
+                        line = ''
+                except Exception:
+                    line = ''
+                if not line:
+                    line = f'Ooh, {owner}! You just got a {item["app"]} notification: {detail}!'
+            else:
+                line = f'Hey {owner}, exciting news from {item["app"]} — {detail}!'
+
+            if self.napping or rhythm.state == 'asleep':
+                with self.lock:
+                    self.pending_highlights.append(line)
+            elif brain and (force or self._can_speak_proactively()):
+                with self.lock:
+                    self.valence = min(1.0, self.valence + 0.50)
+                    self.arousal = 0.90
+                    self.loneliness = max(0.0, self.loneliness - 0.35)
+                self.set_pose('victory', 2.6)
+                brain.announce(source, line, chime=True)
+        self.notif_cursor = newest_ts
 
     def _can_speak_proactively(self):
         brain, hearing = hub.brain, hub.hearing
@@ -386,16 +657,28 @@ class Life:
             if entry['name']:
                 memory.upsert_person(entry['name'], seen=True)
 
-        # Wake from nap if the napping owner returns & looks at BITCH after >= 3 minutes.
+        # Wake from nap if the napping owner returns & looks awake after >= 3 minutes.
         with self.lock:
             napping = self.napping
+            auto_nap = self.auto_napping
             nap_owner = self.nap_owner or self.primary_owner()
             nap_age = time.time() - self.nap_started_at if napping else 0.0
 
         ears = hub.selected('ears')
         source = ears.id if ears else 'app'
         if napping and nap_age >= 180 and any(p['name'] == nap_owner and p['face_fresh'] for p in people_list):
-            if hub.brain and not hub.brain.busy.is_set():
+            still_sleeping = False
+            if snapshot.get('image') is not None and (auto_nap or now - self.last_wake_check >= 45.0):
+                if auto_nap and now - self.last_wake_check < 45.0:
+                    still_sleeping = True
+                else:
+                    self.last_wake_check = now
+                    try:
+                        obs = gaze.observe_scene(snapshot['image'])
+                        still_sleeping = obs.get('emotion') == 'sleeping'
+                    except Exception:
+                        still_sleeping = auto_nap
+            if not still_sleeping and hub.brain and not hub.brain.busy.is_set():
                 reply = self.wake_from_nap(source, nap_owner)
                 hub.brain.announce(source, reply, chime=True)
                 return
@@ -480,12 +763,15 @@ class Life:
             hub.brain.announce(source, ' '.join(parts), chime=False)
 
     def _tick_observations(self, now):
-        """Multimodal scene check-in: spot celebrating/stressed moods and visual memory callbacks."""
+        """Multimodal scene check-in: auto-sleep detection, celebrating/stressed moods, and visual memory callbacks."""
         if self.napping or rhythm.state == 'asleep':
             return
-        if now - self.last_scene_check < 45.0 or now - self.last_checkin_at < 300.0:
+        if now - self.last_scene_check < 45.0:
             return
-        if not self._can_speak_proactively():
+        brain, hearing = hub.brain, hub.hearing
+        if brain and (brain.busy.is_set() or brain.followup_seconds()):
+            return
+        if hearing and hearing.capture:
             return
         sight = hub.sight
         if not sight:
@@ -503,7 +789,28 @@ class Life:
         ears = hub.selected('ears')
         source = ears.id if ears else 'app'
 
-        # 1. Cross-modal memory callback (e.g. spotting a blue/white shirt and teasing about last week's debate!).
+        # 1. Automatic sleep detection runs silently (never blocked by mute or recent check-ins).
+        emotion = obs.get('emotion', 'neutral')
+        prev = self.last_emotion_seen
+        self.last_emotion_seen = (emotion, now)
+        if emotion == 'sleeping':
+            quiet_speech = not hearing or (not hearing.capture and now - hearing.activity_at >= 60)
+            if quiet_speech:
+                with self.lock:
+                    self.sleep_sightings += 1
+                    count_sleep = self.sleep_sightings
+                if count_sleep >= 2:
+                    self.enter_auto_sleep(owner)
+                    return
+            return
+        with self.lock:
+            self.sleep_sightings = 0
+
+        # Proactive spoken observations respect the 5-minute check-in cooldown and audio/mute gates.
+        if now - self.last_checkin_at < 300.0 or not self._can_speak_proactively():
+            return
+
+        # 2. Cross-modal memory callback (e.g. spotting a blue/white shirt and teasing about last week's debate!).
         scene_desc = ' '.join(part for part in (obs.get('activity'), obs.get('notable')) if part).strip()
         callback = memory.visual_callbacks(owner, scene_desc) if scene_desc else None
         if callback and self._can_speak_proactively():
@@ -513,13 +820,13 @@ class Life:
                         f'You are BITCH, {owner}’s sassy, observant Pixar-like desk robot. '
                         f'Right now your camera sees {owner}: "{scene_desc}". '
                         f'You remember from earlier: "{callback["text"]}". '
-                        'Write ONE short, witty, natural spoken line (at most 2 sentences) playfully referencing '
+                        'Write ONE short, witty, natural spoken line (1–2 crisp sentences, under 35 words) playfully referencing '
                         'what you see and that memory. No stage directions, no emoji, no ChatGPT mentions.'
                     )},
                     {'role': 'user', 'content': 'Say your comment aloud.'},
                 ], max_tokens=70, temperature=0.55)
                 line = streaming.clean(line)
-                if 10 <= len(line) <= 220:
+                if 10 <= len(line) <= 280:
                     memory.mark_used(callback['id'])
                     self.last_checkin_at = now
                     self.set_pose('curious', 2.2)
@@ -528,10 +835,7 @@ class Life:
             except Exception:
                 pass
 
-        # 2. Emotional check-ins (celebrating or stressed — require confirmation so we don't misfire!).
-        emotion = obs.get('emotion', 'neutral')
-        prev = self.last_emotion_seen
-        self.last_emotion_seen = (emotion, now)
+        # 3. Emotional check-ins (celebrating or stressed — require confirmation so we don't misfire!).
         if emotion == 'celebrating':
             time.sleep(1.5)
             image2, count2 = sight.current_scene()

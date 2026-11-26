@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -889,6 +890,246 @@ class MotionTests(unittest.TestCase):
         self.assertFalse(memory.active_statuses('NapFixture'))
         rhythm.wake_now()
 
+    def test_auto_sleep_detection_and_safe_wake_guard(self):
+        from core import life as life_mod
+        from core.rhythm import rhythm
+
+        rhythm.wake_now()
+        mgr = life_mod.Life()
+        mgr.last_checkin_at = time.monotonic()   # even right after a check-in, auto-sleep must still work!
+        fake_sight = SimpleNamespace(
+            solo_recognized=lambda: 'AutoSleepFixture',
+            current_scene=lambda: (b'frame', 1),
+            people_snapshot=lambda: {
+                'camera': 'cam', 'received': time.monotonic(), 'image': b'frame',
+                'people': [{'id': 1, 'name': 'AutoSleepFixture', 'face_fresh': True, 'age': 10.0,
+                            'center': (0.5, 0.5), 'box': (0.4, 0.3, 0.2, 0.2)}],
+            },
+        )
+        fake_hearing = SimpleNamespace(ready=True, capture=None, activity_at=time.monotonic() - 120)
+        fake_brain = SimpleNamespace(busy=threading.Event(), followup_seconds=lambda: 0.0, announce=Mock())
+        with (patch.object(hub, 'sight', fake_sight), patch.object(hub, 'hearing', fake_hearing),
+              patch.object(hub, 'brain', fake_brain), patch.object(config, 'get', side_effect=lambda k, d=None: True if k == 'muted' else d),
+              patch.object(life_mod.gaze, 'observe_scene', return_value={'emotion': 'sleeping', 'activity': 'head down', 'notable': ''})):
+            t0 = time.monotonic() + 100.0
+            mgr._tick_observations(t0)
+            self.assertFalse(mgr.napping)   # 1st sighting alone does not sleep
+            mgr._tick_observations(t0 + 50.0)
+            self.assertTrue(mgr.napping)
+            self.assertTrue(mgr.auto_napping)
+            self.assertEqual(rhythm.state, 'asleep')
+            # Still sleeping 5 minutes later with face in view -> MUST NOT falsely wake up!
+            mgr.nap_started_at = time.time() - 300
+            mgr._tick_arrivals(t0 + 350.0)
+            self.assertTrue(mgr.napping)
+            fake_brain.announce.assert_not_called()
+        # Once visibly awake, _tick_arrivals wakes Brandon and celebrates!
+        with (patch.object(hub, 'sight', fake_sight), patch.object(hub, 'hearing', fake_hearing),
+              patch.object(hub, 'brain', fake_brain),
+              patch.object(life_mod.gaze, 'observe_scene', return_value={'emotion': 'neutral', 'activity': 'sitting up', 'notable': ''})):
+            mgr._tick_arrivals(t0 + 420.0)
+            self.assertFalse(mgr.napping)
+            self.assertEqual(mgr.active_pose(), 'victory')
+            fake_brain.announce.assert_called_once()
+        memory.clear_status('AutoSleepFixture')
+        rhythm.wake_now()
+
+    def test_daily_school_schedule_reminders_and_alarm_dismissal(self):
+        from datetime import datetime
+        from core import life as life_mod
+        from core.rhythm import rhythm
+
+        owner = 'ScheduleFixture'
+        mgr = life_mod.Life()
+        try:
+            r1 = mgr.handle_utterance('Wake me up at 8:00 AM to get ready for school', 'desk', owner)
+            self.assertIn('8:00 AM', r1)
+            self.assertIn('weekdays', r1)
+            self.assertIn('to get ready for school', r1)
+
+            r2 = mgr.handle_utterance('Wake me up tomorrow at 8:00 AM for school', 'desk', owner)
+            self.assertIn('Alarm set for 8:00 AM for school', r2)
+            self.assertEqual(len(memory.list_schedules(owner)), 1)   # tomorrow is one-off, not added to recurring table
+
+            r3 = mgr.handle_utterance('Set an alarm for 7 AM', 'desk', owner)
+            self.assertIn('7:00 AM', r3)
+            self.assertNotIn('to 7 AM', r3)
+
+            r4 = mgr.handle_utterance('Remind me at 4:30 PM about my dentist appointment', 'desk', owner)
+            self.assertIn('about my dentist appointment', r4)
+            self.assertIn('4:30 PM', r4)
+
+            r5 = mgr.handle_utterance('Remind me every weekday at 7:45 AM to grab my charger', 'desk', owner)
+            self.assertIn('to grab my charger', r5)
+            self.assertIn('mon,tue,wed,thu,fri', r5)
+
+            listed_alarms = mgr.handle_utterance('What are my alarms?', 'desk', owner)
+            self.assertIn('get ready for school', listed_alarms)
+            self.assertNotIn('grab my charger', listed_alarms)
+            listed_rems = mgr.handle_utterance('What are my reminders?', 'desk', owner)
+            self.assertIn('grab my charger', listed_rems)
+            self.assertIn('dentist appointment', listed_rems)
+            self.assertIn('Known schedule', memory.context(owner, 'alarm'))
+
+            # Saturday 8:00 AM -> weekday school alarm must NOT fire!
+            fake_brain = SimpleNamespace(busy=threading.Event(), announce=Mock())
+            mgr.alarm_ringing = False
+            with patch.object(hub, 'brain', fake_brain):
+                sat_8am = datetime(2026, 11, 28, 8, 0, 0).astimezone()   # Saturday
+                mgr._tick_schedule(time.monotonic(), now_dt=sat_8am)
+                self.assertFalse(mgr.alarm_ringing)
+                # Monday 8:00 AM -> weekday school alarm FIRES!
+                mon_8am = datetime(2026, 11, 30, 8, 0, 0).astimezone()   # Monday
+                mgr._tick_schedule(time.monotonic(), now_dt=mon_8am)
+                self.assertTrue(mgr.alarm_ringing)
+                self.assertEqual(mgr.active_pose(), 'alarm')
+                # Alarm ringing allows hands-free dismissal & snooze without wake word!
+                with patch.object(life_mod, 'life', mgr), patch('core.brain.life', mgr):
+                    b = Brain()
+                    self.assertTrue(b.addressed("I'm up", 'desk', time.monotonic()))
+                    self.assertTrue(b.addressed("Snooze 10 minutes", 'desk', time.monotonic()))
+                    self.assertFalse(b.addressed("Random background chatter", 'desk', time.monotonic()))
+                # Dismissing turns off alarm and celebrates.
+                done = mgr.handle_utterance("I'm up", 'desk', owner)
+                self.assertFalse(mgr.alarm_ringing)
+                self.assertIn('Alarm off', done)
+                # Monday 8:01 AM -> does NOT double-fire within 12h.
+                mgr._tick_schedule(time.monotonic(), now_dt=datetime(2026, 11, 30, 8, 1, 0).astimezone())
+                self.assertFalse(mgr.alarm_ringing)
+                # Reminder while napping queues into pending_highlights for wake-up!
+                mgr.napping = True
+                mgr.nap_owner = owner
+                mgr._tick_schedule(time.monotonic(), now_dt=datetime(2026, 11, 30, 7, 45, 0).astimezone())
+                self.assertTrue(any('grab my charger' in h for h in mgr.pending_highlights))
+                wake_msg = mgr.wake_from_nap('desk', owner, trigger_briefing=False)
+                self.assertIn('grab my charger', wake_msg)
+
+            canceled = mgr.handle_utterance('Cancel my 8:00 alarm', 'desk', owner)
+            self.assertIn('Done', canceled)
+        finally:
+            memory.remove_schedule(owner, 'all')
+            memory.clear_status(owner)
+            rhythm.wake_now()
+
+    def test_memory_aware_excited_notification_reactions(self):
+        from core import life as life_mod, notifications
+        from core.rhythm import rhythm
+
+        owner = 'PackageFixture'
+        rhythm.wake_now()
+        with notifications.lock:
+            notifications.pushed.clear()
+        mgr = life_mod.Life()
+        mgr.owner_name = owner
+        mgr.started_at = mgr.notif_cursor = time.time() - 0.1
+        fake_brain = SimpleNamespace(busy=threading.Event(), followup_seconds=lambda: 0.0, announce=Mock())
+        try:
+            memory.remember(owner, 'Ordered a lazy Susan bearing for the robot base', importance=4)
+            # Promo spam must NOT match or interrupt!
+            self.assertIsNone(memory.notification_match(owner, 'Amazon: 20% off Prime Day deals today!'))
+            notifications.push('Amazon', 'Prime Day Deals', 'Save 20% on kitchen gadgets today!')
+            with (patch.object(hub, 'brain', fake_brain), patch.object(mgr, 'primary_owner', return_value=owner)):
+                mgr._tick_notifications(time.monotonic() + 20.0, force=True)
+            fake_brain.announce.assert_not_called()
+
+            # Real Amazon delivery notification matches the remembered order and triggers excited victory reaction!
+            hit = memory.notification_match(owner, 'Amazon: Your package has been delivered!')
+            self.assertIsNotNone(hit)
+            self.assertIn('lazy susan', hit['text'].lower())
+            notifications.push('Amazon', 'Delivered', 'Your package was delivered to your front door!')
+            with (patch.object(hub, 'brain', fake_brain), patch.object(mgr, 'primary_owner', return_value=owner),
+                  patch.object(life_mod.llm, 'chat', return_value='Ooh PackageFixture, your lazy Susan bearing just arrived!')):
+                mgr._tick_notifications(time.monotonic() + 40.0, force=True)
+            fake_brain.announce.assert_called_once()
+            self.assertIn('lazy Susan', fake_brain.announce.call_args.args[1])
+            self.assertEqual(mgr.active_pose(), 'victory')
+            # Second poll deduplicates the same notification.
+            with (patch.object(hub, 'brain', fake_brain), patch.object(mgr, 'primary_owner', return_value=owner)):
+                mgr._tick_notifications(time.monotonic() + 60.0, force=True)
+            self.assertEqual(fake_brain.announce.call_count, 1)
+
+            # Delivery while sleeping queues for wake-up briefing!
+            mgr.napping = True
+            mgr.nap_owner = owner
+            notifications.push('UPS', 'Package Arrived', 'Delivered at front porch')
+            with (patch.object(hub, 'brain', fake_brain), patch.object(mgr, 'primary_owner', return_value=owner)):
+                mgr._tick_notifications(time.monotonic() + 80.0, force=True)
+            self.assertEqual(len(mgr.pending_highlights), 1)
+            wake_msg = mgr.wake_from_nap('desk', owner, trigger_briefing=False)
+            self.assertIn('UPS', wake_msg)
+        finally:
+            memory.forget(owner, 'everything')
+            rhythm.wake_now()
+
+    def test_multimodal_arrivals_mom_during_nap_and_group_greetings(self):
+        from core import life as life_mod
+        from core.rhythm import rhythm
+
+        rhythm.wake_now()
+        mgr = life_mod.Life()
+        mgr.owner_name = 'Brandon'
+        mgr.napping = True
+        mgr.nap_owner = 'Brandon'
+        mgr.nap_started_at = time.time() - 30
+        memory.set_status('Brandon', 'Brandon is taking a nap right now and should be up around 4:00 PM', ttl_seconds=3600, tag='nap')
+        fake_brain = SimpleNamespace(busy=threading.Event(), followup_seconds=lambda: 0.0, announce=Mock())
+        fake_hearing = SimpleNamespace(ready=True, capture=None, activity_at=0.0)
+        fake_sight = SimpleNamespace(
+            direct=Mock(return_value='accepted'),
+            people_snapshot=lambda: {
+                'camera': 'cam', 'received': time.monotonic(), 'image': b'jpg',
+                'people': [{'id': 77, 'name': None, 'face_fresh': True, 'age': 3.5,
+                            'center': (0.6, 0.4), 'box': (0.5, 0.3, 0.2, 0.2)}],
+            },
+        )
+        try:
+            with (patch.object(hub, 'sight', fake_sight), patch.object(hub, 'brain', fake_brain),
+                  patch.object(hub, 'hearing', fake_hearing), patch.object(hub, 'selected', return_value=SimpleNamespace(id='desk')),
+                  patch.object(config, 'get', side_effect=lambda k, d=None: {'check_ins': True, 'muted': False, 'volume': 80}.get(k, d))):
+                mgr._tick_arrivals(time.monotonic() + 50.0)
+            fake_brain.announce.assert_called_once()
+            announced = fake_brain.announce.call_args.args[1]
+            self.assertIn('taking a nap', announced)
+            self.assertIn('who are you', announced.lower())
+            self.assertIsNotNone(mgr.awaiting_intro)
+
+            # Mom answers "I'm his mom, Sarah" -> enrolls Sarah with relation "Brandon’s mom"!
+            b = Brain()
+            with patch.object(hub, 'sight', None), patch('core.people.people.learn'), patch('core.brain.life', mgr):
+                answer, note = b.meet("I'm his mom, Sarah", 'desk')
+            self.assertIsNone(answer)
+            self.assertIn('Sarah', note)
+            self.assertEqual(memory.person_info('Sarah')['relation'], 'Brandon’s mom')
+
+            # Awake group arrival (1 known + 2 unknown) -> greets known, describes unknown, asks relation.
+            mgr.napping = False
+            mgr.last_checkin_at = 0.0
+            fake_brain.announce.reset_mock()
+            group_sight = SimpleNamespace(
+                direct=Mock(return_value='accepted'),
+                people_snapshot=lambda: {
+                    'camera': 'cam', 'received': time.monotonic(), 'image': b'jpg',
+                    'people': [
+                        {'id': 1, 'name': 'Brandon', 'face_fresh': True, 'age': 4.0, 'center': (0.2, 0.4), 'box': (0.1, 0.3, 0.15, 0.2)},
+                        {'id': 2, 'name': None, 'face_fresh': True, 'age': 4.0, 'center': (0.5, 0.4), 'box': (0.4, 0.3, 0.22, 0.2)},
+                        {'id': 3, 'name': None, 'face_fresh': True, 'age': 4.0, 'center': (0.8, 0.4), 'box': (0.7, 0.3, 0.16, 0.2)},
+                    ],
+                },
+            )
+            with (patch.object(hub, 'sight', group_sight), patch.object(hub, 'brain', fake_brain),
+                  patch.object(hub, 'hearing', fake_hearing), patch.object(hub, 'selected', return_value=SimpleNamespace(id='desk')),
+                  patch.object(life_mod.gaze, 'describe_person', return_value='in the red hoodie'),
+                  patch.object(config, 'get', side_effect=lambda k, d=None: {'check_ins': True, 'muted': False, 'volume': 80}.get(k, d))):
+                mgr._tick_arrivals(time.monotonic() + 200.0)
+            fake_brain.announce.assert_called_once()
+            line = fake_brain.announce.call_args.args[1]
+            self.assertIn('Hey Brandon!', line)
+            self.assertIn('in the red hoodie', line)
+            self.assertIn('how do you know Brandon', line)
+        finally:
+            memory.clear_status('Brandon')
+            rhythm.wake_now()
+
 
 class CharacterTests(unittest.TestCase):
     def test_idle_gesture_moves_distinct_joints_and_returns_to_the_gaze(self):
@@ -1065,8 +1306,48 @@ class ConnectionTests(unittest.TestCase):
                     self.assertTrue(link.receive_json()['device'].startswith('web-'))
                 self.assertEqual(phone.post('/api/settings', json={'robot_key': 'someone'}).status_code, 400)
 
+    def test_server_wake_notify_and_state_endpoints(self):
+        from fastapi.testclient import TestClient
+        from core.server import app
+        from core import life as life_mod, notifications
+        from core.rhythm import rhythm
+
+        brain = Brain()
+        memory.upsert_person('MomApiFixture', relation='Brandon’s mom')
+        with patch.object(hub, 'brain', brain), patch.object(hub, 'hearing', SimpleNamespace(ready=False, activity_at=0.0)):
+            with TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)) as local:
+                self.assertEqual(local.post('/api/notify', json={'app': 'Amazon', 'title': 'Delivered', 'body': 'At door'}).status_code, 200)
+                self.assertEqual(local.post('/api/notify', json={'app': 'Empty'}).status_code, 400)
+                self.assertIn('At door', notifications.summary(limit=5))
+                rhythm.sleep_now()
+                self.assertEqual(rhythm.state, 'asleep')
+                self.assertEqual(local.post('/api/wake').status_code, 200)
+                self.assertEqual(rhythm.state, 'engaged')
+                st = local.get('/api/state').json()
+                self.assertIn('life', st)
+                self.assertIn('rhythm', st)
+                self.assertFalse(st['life']['sleeping'])
+
 
 class PiProtocolTests(unittest.TestCase):
+    def test_desktop_chatgpt_url_and_prompt_helpers(self):
+        import desktop_chatgpt as dc
+
+        self.assertTrue(dc.is_home_address('chatgpt.com'))
+        self.assertTrue(dc.is_home_address('https://chatgpt.com/?model=auto'))
+        self.assertFalse(dc.is_home_address('https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc'))
+        self.assertEqual(
+            dc.chat_url('chatgpt.com/c/12345678-1234-1234-1234-123456789abc/'),
+            'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc',
+        )
+        self.assertIsNone(dc.chat_url('https://evil.example/c/12345678-1234-1234-1234-123456789abc'))
+        prompt = macros.format_prompt('Give me a quick morning briefing for Tuesday.')
+        self.assertTrue(dc.prompt_matches('Give me a quick morning briefing for Tuesday.', prompt))
+        self.assertFalse(dc.prompt_matches('Unrelated chat message.', prompt))
+        env = dc.desktop_env()
+        self.assertEqual(env.get('ACCESSIBILITY_ENABLED'), '1')
+        self.assertNotIn('NO_AT_BRIDGE', env)
+
     def test_chatgpt_macro_targets_only_the_new_chat_url(self):
         from desktop_chatgpt import matches_address
 

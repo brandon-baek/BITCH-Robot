@@ -86,7 +86,7 @@ LEAD = r"(?i:(?:(?:hi|hey|hello|oh|so|well|okay|ok|and)[,!.]?\s+)*)"
 NAME_WORD = r"([A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)?)(?=[\s.,!?]|$)"
 SELF_INTRO = re.compile(r"^" + LEAD + r"(?i:my name(?:'s|’s| is)|i'm|i’m|i am|call me|it's me,?|it’s me,?)\s+" + NAME_WORD)
 RELATION_INTRO = re.compile(
-    r"(?i:\b(?:i(?:'|’)m|i am)\s+([A-Z][a-z]+)(?:'|’)s\s+(mom|mother|dad|father|sister|brother|friend|roommate|partner|girlfriend|boyfriend|cousin|aunt|uncle|grandma|grandpa)(?:,?\s+" + NAME_WORD + r")?)"
+    r"(?i:\b(?:i(?:'|’)m|i am)\s+(?:([A-Z][a-z]+)(?:'|’)s|his|her|their)\s+(mom|mother|dad|father|sister|brother|friend|roommate|partner|girlfriend|boyfriend|cousin|aunt|uncle|grandma|grandpa)(?:,?\s+" + NAME_WORD + r")?)"
 )
 RELATION_AFTER = re.compile(
     r"(?i:,\s*(?:([A-Z][a-z]+)(?:'|’)s|his|her|their|your)\s+(mom|mother|dad|father|sister|brother|friend|roommate|partner|girlfriend|boyfriend|cousin|aunt|uncle|grandma|grandpa))"
@@ -276,7 +276,8 @@ class Brain:
         with self.lock:
             robot = hub.get('robot')
             show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
-            return bool(wake_request(text) is not None or show_stop or
+            alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
+            return bool(wake_request(text) is not None or show_stop or alarm_stop or
                         self.followup and self.followup[0] == source and heard_at < self.followup[1])
 
     def submit(self, text, source, heard_at=None, *, name=None, face=None, face_by='face', speech_end=None, audio=None):
@@ -289,7 +290,8 @@ class Brain:
             followup = self.followup and self.followup[0] == source and now < self.followup[1]
             robot = hub.get('robot')
             show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
-            if wake is None and not show_stop and (not followup or name and self.speaker and name != self.speaker):
+            alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
+            if wake is None and not show_stop and not alarm_stop and (not followup or name and self.speaker and name != self.speaker):
                 return False
             continuation = self.continuation
             self.continuation = None
@@ -829,7 +831,7 @@ class Brain:
             return None, None
         relation = None
         if rel_match:
-            of_who, role_word, explicit_name = rel_match[1], rel_match[2].lower(), rel_match[3]
+            of_who, role_word, explicit_name = rel_match[1] or life.primary_owner(), rel_match[2].lower(), rel_match[3]
             relation = f"{of_who}’s {role_word}"
             name = explicit_name or role_word.capitalize()
         else:
