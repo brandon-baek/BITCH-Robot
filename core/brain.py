@@ -13,6 +13,7 @@ import uuid
 
 from . import config, gaze, helper, llm, memory, notifications, prosody, skills, streaming, voice, voicechat
 from .register import register
+from . import tools
 from .hub import hub
 from .life import life
 
@@ -231,11 +232,19 @@ PENDING_UPDATE = re.compile(
     r"^(?:(?:any|got an?) (?:news|update|answer|word)(?: on that| yet)?|did (?:that|it) come back(?: yet)?|"
     r"is (?:that|my) (?:briefing|answer|lookup) ready)[.!?]*$", re.I)
 LOOK_FIRST = re.compile(r'^\s*\{\s*(?:"to"\s*:\s*"me"\s*,\s*)?"do"\s*:\s*"look"')
+TOOL_FIELDS = set(tools.schema_fields(tools.TOOLS))
 NOT_FOR_ME = re.compile(r'^\s*\{\s*"to"\s*:\s*"them"')
 
 
 class LookFirst(Exception):
     """The model chose to look through the camera before answering."""
+
+
+class ToolFirst(Exception):
+    """The model chose a tool that fetches facts; get them before saying anything."""
+    def __init__(self, turn):
+        super().__init__(turn.get('do'))
+        self.turn = turn
 
 
 class NotForMe(Exception):
@@ -343,6 +352,27 @@ class Brain:
             self.delivery = delivery
         if isinstance(performance, str) and performance in PERFORMANCE:
             self.performance = performance
+
+    def answer_with_tool(self, turn, text, source, identity, stream):
+        """Get the facts (weather, a list, timers), then answer from them."""
+        name = turn.get('do')
+        result = tools.run(name, turn, {'source': source, 'speaker': identity})
+        hub.note('tools', f'{name}: {result[:160]}')
+        self.tool_result = (name, result)
+        try:
+            return self.reply(text, source, stream=stream)
+        finally:
+            self.tool_result = None
+
+    def tool_failure(self, action, outcome, text, source, identity, stream):
+        if stream and stream.parts:
+            # Already confirmed out loud: correct it plainly.
+            return ' '.join(stream.parts) + ' Actually, scratch that, it didn’t work.'
+        self.tool_result = (action, outcome)
+        try:
+            return self.reply(text, source, stream=stream)
+        finally:
+            self.tool_result = None
 
     def not_for_me(self, source, text):
         """Stay quiet for a line meant for someone else, but keep it in mind for the next turn."""
@@ -1048,12 +1078,22 @@ class Brain:
                 actions.append('routine')
                 extra['routine'] = {'type': 'string', 'enum': routines}
                 lines.append('routine: they ask for one of your saved routines. Put its name in routine.')
+        offered = [] if getattr(self, 'tool_result', None) else tools.offered(text)
+        if offered:
+            actions += [tool.name for tool in offered]
+            extra.update(tools.schema_fields(offered))
+            lines.append('Tools you really have (the code does them; never say one happened unless you chose it):\n- '
+                         + '\n- '.join(tool.line for tool in offered)
+                         + '\nFill the chosen tool’s fields. Leave other tool fields empty ("", 0 or []). '
+                         'For an action tool, say is a short confirmation in your own words.')
         hub_relevant = not local_only and (
             CHATGPT.search(text) or helper.should_lookup(text) or not helper.LOCAL_TALK.search(text)
         )
         if robot and getattr(robot, 'handoff', False) and hub_relevant:
             actions.append('lookup')
             extra['task'] = {'type': 'string', 'maxLength': 600}
+            if any(tool.name == 'weather' for tool in offered):
+                lines.append('For weather, use the weather tool, not lookup.')
             gpt_note = ' They explicitly asked for ChatGPT, so set do to lookup.' if CHATGPT.search(text) else (
                 ' Never mention ChatGPT unless they explicitly brought it up.' if not explicit_gpt else ''
             )
@@ -1068,7 +1108,7 @@ class Brain:
                 'answer and do NOT mention checking calendar, email, or specific apps unless asked about them.'
                 + gpt_note
             )
-        elif helper.OUTSIDE.search(text) and not local_only:
+        elif helper.OUTSIDE.search(text) and not local_only and not any(tool.data for tool in offered):
             lines.append('Your live information lookup is offline right now because the Pi is disconnected. '
                          'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
@@ -1211,17 +1251,26 @@ class Brain:
                 # do comes first so LookFirst works before speech; task/routine come last so speech streams immediately.
                 first = {key: value for key, value in schema['properties'].items() if key == 'to'}
                 rest = {key: value for key, value in schema['properties'].items() if key != 'to'}
-                schema = {**schema, 'properties': {**first, 'do': {'type': 'string', 'enum': actions}, **rest, **extra},
-                          'required': [*first, 'do', *(key for key in schema['required'] if key != 'to'), *extra]}
+                # Tool fields come right after do, so the code has them before any words are spoken.
+                early = {key: value for key, value in extra.items() if key in TOOL_FIELDS}
+                late = {key: value for key, value in extra.items() if key not in TOOL_FIELDS}
+                schema = {**schema, 'properties': {**first, 'do': {'type': 'string', 'enum': actions}, **early, **rest, **late},
+                          'required': [*first, 'do', *early, *(key for key in schema['required'] if key != 'to'), *late]}
                 context.append('Begin with do. Choose an action when the latest request calls for it:\n- '
                                + '\n- '.join(lines))
-                if 'lookup' in actions and helper.needs_live(text):
+                if 'lookup' in actions and helper.needs_live(text) and not any(tool.data for tool in tools.offered(text)):
                     context.append('This request needs your information hub: set do to "lookup".')
             elif lines:
                 context.append(' '.join(lines))
         if getattr(self, 'cut_off', False):
             self.cut_off = False
             context.append('They just cut you off mid-answer. Drop what you were saying and respond to this instead.')
+        if getattr(self, 'tool_result', None):
+            name, result = self.tool_result
+            context.append(f'Result of your {name} tool, real data to answer from (never add numbers it doesn’t have): '
+                           f'{result}' if not result.startswith('FAILED') else
+                           f'Your {name} tool couldn’t answer yet: {result[8:]} Handle that in one short, natural line '
+                           'without guessing or calling it broken.')
         overheard = self.overheard_note()
         if overheard:
             context.append(overheard)
@@ -1299,6 +1348,8 @@ class Brain:
                 if NOT_FOR_ME.match(content):
                     raise NotForMe
                 parts, metadata = phrases.feed(content)
+                if metadata.get('do') in tools.BY_NAME and tools.BY_NAME[metadata['do']].data:
+                    raise ToolFirst(metadata)
                 if metadata.get('do') == 'look' or not parts and LOOK_FIRST.match(content):
                     raise LookFirst
                 is_lookup = metadata.get('do') in ('lookup', 'chatgpt')
@@ -1335,6 +1386,8 @@ class Brain:
                              **stream_options)
         except NotForMe:
             return self.not_for_me(source, text)
+        except ToolFirst as first:
+            return self.answer_with_tool(first.turn, text, source, identity, stream)
         except LookFirst:
             if use_camera:
                 raise RuntimeError('the model asked to look twice')
@@ -1364,6 +1417,14 @@ class Brain:
                 if can_select_show and show in ('dance', 'disco', 'opera'):
                     self.pending_show = (show, None)
                 action = turn.get('do', 'none')
+                if action in tools.BY_NAME:
+                    if tools.BY_NAME[action].data:
+                        return self.answer_with_tool(turn, text, source, identity, stream)
+                    outcome = tools.run(action, turn, {'source': source, 'speaker': identity})
+                    hub.note('tools', f'{action}: {outcome}')
+                    if outcome.startswith('FAILED'):
+                        # It didn't happen: never let the confirmation stand.
+                        speech = self.tool_failure(action, outcome, text, source, identity, stream)
                 if action == 'look' and not visual and not use_camera:
                     return self.reply(text, source, stream=stream, use_camera=True)
                 if action in ('dance', 'disco', 'opera') and not self.performance_problem(robot):

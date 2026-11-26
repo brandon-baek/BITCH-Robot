@@ -277,6 +277,34 @@ class WakeTests(unittest.TestCase):
             _, focus = attention.update(boxes, 1. + step * .5)
             self.assertEqual(focus, emma)
 
+    def test_tools_do_real_work_and_failures_are_never_confirmed(self):
+        from core import tools
+        tools.save_lists({})
+        context = {'source': 'desk', 'speaker': 'Brandon'}
+        self.assertIn('milk', tools.run('list_add', {'list_add_list': 'the list', 'list_add_items': ['milk', 'Eggs']}, context))
+        self.assertEqual(tools.load_lists(), {'shopping': ['milk', 'Eggs']})
+        self.assertIn('eggs', tools.run('list_remove', {'list_remove_list': 'the', 'list_remove_items': ['eggs']}, context).lower())
+        self.assertIn('milk', tools.run('list_read', {'list_read_list': ''}, context))
+        with patch.object(tools.timers, 'ring'):
+            self.assertTrue(tools.run('timer', {'timer_seconds': 90, 'timer_label': 'tea'}, context).startswith('Timer set'))
+            self.assertIn('tea', tools.run('check_timers', {}, context))
+            self.assertTrue(tools.run('timer', {'timer_seconds': 0, 'timer_label': ''}, context).startswith('FAILED'))
+            self.assertIn('Canceled 1', tools.run('cancel_timer', {'cancel_timer_label': 'tea'}, context))
+        with patch.dict(config.stored, {'home_place': None}):
+            self.assertIn('home location is not set', tools.run('weather', {'weather_place': '', 'weather_day': 'now'}, context))
+        # A failed action tool: the model's confirmation is replaced by an honest answer.
+        brain = Brain()
+        replies = iter(['{"do":"timer","timer_seconds":0,"timer_label":"","v":"n","say":"Timer set.","end":false}',
+                        '{"v":"n","say":"How long should it be?","end":false}'])
+        with patch.object(hub, 'sight', None), patch('core.brain.llm.chat', side_effect=lambda *a, **k: next(replies)) as chat:
+            self.assertEqual(brain.reply('Set a timer please.', 'desk'), 'How long should it be?')
+            self.assertIn('timer tool couldn’t answer', chat.call_args.args[0][-1]['content'])
+        # Weather fields come before say, so the facts are fetched before any words.
+        robot = SimpleNamespace(handoff=True, motion_enabled=True, show_active=False, online=True)
+        actions, extra, _ = brain.available_actions('Will it rain tomorrow?', None, False)
+        self.assertIn('weather', actions)
+        self.assertIn('weather_place', extra)
+
     def test_new_question_overrides_model_closure(self):
         brain = Brain()
         with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):
