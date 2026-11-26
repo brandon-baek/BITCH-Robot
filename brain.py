@@ -774,6 +774,40 @@ class Body:
                 file.close()
                 return False
 
+    def speak_stream(self, chunks):
+        """Play 24 kHz mono 16-bit PCM as it arrives from the Mac, so the first words start before the reply is
+        finished. Uses the same pw-cat pipe as the speaker keepalive."""
+        command = shutil.which('pw-cat')
+        if not command or self.sink is None:
+            for _ in chunks:   # drain, so the connection ends cleanly
+                pass
+            return False
+        with self.lock:
+            if self.show:
+                for _ in chunks:
+                    pass
+                return False
+            self._stop()
+            args = [command, '--playback', '--rate=24000', '--channels=1', '--format=s16', '--latency=60ms']
+            if self.sink:
+                args.extend(['--target', self.sink])
+            player = self.player = subprocess.Popen([*args, '-'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                                    stderr=subprocess.DEVNULL)
+        alive = True
+        for data in chunks:
+            if not alive:
+                continue   # hushed: keep reading so the Mac's request finishes
+            try:
+                player.stdin.write(data)
+                player.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                alive = False
+        try:
+            player.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        return True
+
     def run(self):
         motion = None
         last = time.monotonic()
@@ -843,6 +877,21 @@ def listen(motion_enabled=True):
             self.end_headers()
             self.wfile.write(data)
 
+        def chunks(self, limit):
+            """The pieces of a chunked request body as they arrive."""
+            total = 0
+            while True:
+                size = int(self.rfile.readline(64).split(b';')[0].strip() or b'0', 16)
+                if size == 0:
+                    self.rfile.readline(64)
+                    return
+                total += size
+                if total > limit:
+                    raise ValueError('stream too long')
+                data = self.rfile.read(size)
+                self.rfile.readline(8)
+                yield data
+
         def authorized(self):
             if hmac.compare_digest(self.headers.get('Authorization', '').encode(), ('Bearer ' + key).encode()):
                 return True
@@ -883,7 +932,7 @@ def listen(motion_enabled=True):
                     body.refresh_output()
                     ambient = body.ambient_process
                     self.respond(200, {'audio': body.sink is not None, 'audio_route': body.audio_label,
-                                       'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
+                                       'playback_monitor': True, 'speak_stream': bool(shutil.which('pw-cat')), 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
                                        'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
                                        'motion': body.motion_enabled, 'gestures': 1, 'rhythm': 1, 'pixar': 1,
@@ -918,6 +967,17 @@ def listen(motion_enabled=True):
                 self.end_headers()
                 return
             if not self.authorized():
+                return
+            if self.path == '/speak_stream':
+                if self.headers.get('Transfer-Encoding', '').casefold() != 'chunked':
+                    self.respond(400, {'error': 'expected a chunked stream'})
+                    return
+                try:
+                    played = body.speak_stream(self.chunks(limit=80 * 24000 * 2))
+                except (ValueError, OSError) as error:
+                    self.respond(400, {'error': str(error)})
+                    return
+                self.respond(200 if played else 503, {'ok': played})
                 return
             if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive', '/show'):
                 self.respond(404, {'error': 'unknown command'})

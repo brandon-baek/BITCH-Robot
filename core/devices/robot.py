@@ -1,4 +1,5 @@
 """Fixed commands sent to the paired Pi."""
+import http.client
 import json
 import threading
 import time
@@ -8,6 +9,12 @@ import urllib.request
 from .base import Device
 from ..rhythm import rhythm
 from .. import config
+
+
+def address(host):
+    """'raspberrypi.local' -> ('raspberrypi.local', 8765); a test Pi can say 'host:port'."""
+    name, _, port = host.rpartition(':') if host.count(':') == 1 else (host, '', '')
+    return (name, int(port)) if port.isdigit() else (host, 8765)
 
 
 class Robot(Device):
@@ -40,7 +47,7 @@ class Robot(Device):
         host, key = config.get('robot_host'), config.get('robot_key')
         if not host or not key:
             return None
-        request = urllib.request.Request(f'http://{host}:8765/{path}', data=data, headers={
+        request = urllib.request.Request(f'http://{address(host)[0]}:{address(host)[1]}/{path}', data=data, headers={
             'Authorization': 'Bearer ' + key, 'Content-Type': content_type,
         })
         try:
@@ -64,6 +71,7 @@ class Robot(Device):
             self.handoff = bool(result and result.get('handoff', 0) >= 2)
             self.auto_handoff = bool(result and result.get('handoff', 0) >= 3)
             self.audio_monitor = bool(result and result.get('playback_monitor'))
+            self.streams = bool(result and result.get('speak_stream'))
             self.expressive = bool(result and result.get('character'))
             self.performance = bool(result and result.get('performance', 0) >= 2)
             self.emotive_performance = bool(result and result.get('performance', 0) >= 3)
@@ -133,7 +141,51 @@ class Robot(Device):
     def speak(self, wav):
         return bool(self.request('speak', wav, 'audio/wav', timeout=4))
 
+    streams = False      # the Pi can play speech as it arrives
+    streaming = None     # (thread, stop event) while a live line is being sent
+
+    def speak_stream(self, chunks):
+        """Send 24 kHz mono PCM to the Pi's speaker as it is generated (chunked HTTP), so the first words play
+        before the whole reply is rendered."""
+        host, key = config.get('robot_host'), config.get('robot_key')
+        if not (self.streams and self.online and host and key):
+            return False
+        self.stop_stream()
+        stop = threading.Event()
+
+        def run():
+            connection = http.client.HTTPConnection(*address(host), timeout=10)
+            try:
+                connection.putrequest('POST', '/speak_stream')
+                connection.putheader('Authorization', 'Bearer ' + key)
+                connection.putheader('Content-Type', 'audio/L16; rate=24000; channels=1')
+                connection.putheader('Transfer-Encoding', 'chunked')
+                connection.endheaders()
+                for data in chunks:
+                    if stop.is_set():
+                        break
+                    if data:
+                        connection.send(b'%x\r\n%s\r\n' % (len(data), data))
+                connection.send(b'0\r\n\r\n')
+                connection.getresponse().read()
+            except (OSError, http.client.HTTPException) as error:
+                self.connection_error = f'speech stream: {error}'
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=run, daemon=True)
+        self.streaming = (thread, stop)
+        thread.start()
+        return True
+
+    def stop_stream(self):
+        if self.streaming:
+            self.streaming[1].set()
+            self.streaming = None
+
     def playing(self):
+        if self.streaming and self.streaming[0].is_alive():
+            return True
         if self.audio_monitor:
             result = self.request('playback', timeout=.45)
             if result is not None:
@@ -141,6 +193,7 @@ class Robot(Device):
         return None
 
     def hush(self):
+        self.stop_stream()
         result = self.post('stop', {})
         if result:
             self.show_active = False

@@ -1680,6 +1680,66 @@ class PiProtocolTests(unittest.TestCase):
             self.assertEqual(macros.handoff_status(uncertain['id'])['state'], 'send_unverified')
             self.assertEqual(macros.handoff_status(manual['id'])['state'], 'queued')
 
+    def test_speech_streams_to_the_pi_speaker_as_it_is_made(self):
+        from core.devices.robot import Robot
+        with tempfile.TemporaryDirectory() as folder, socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+            reservation.close()
+            root = Path(__file__).resolve().parent.parent
+            tools_dir, heard = Path(folder) / 'bin', Path(folder) / 'heard.pcm'
+            tools_dir.mkdir()
+            # Stand-ins for PipeWire's players: pw-cat keeps whatever it is given.
+            (tools_dir / 'pw-cat').write_text(f'#!/bin/sh\ncat > {heard}\n')
+            (tools_dir / 'pw-play').write_text('#!/bin/sh\nexit 0\n')
+            for tool in tools_dir.iterdir():
+                tool.chmod(0o755)
+            home = Path(folder) / 'pi'
+            env = dict(os.environ, HOME=folder, BITCH_PI_HOME=str(home), BITCH_PI_SPEAKER='default',
+                       PATH=f'{tools_dir}:{os.environ["PATH"]}', PYTHONPATH=str(root / 'testing' / 'fakes'))
+            process = subprocess.Popen([sys.executable, '-c', f'import brain; brain.PORT={port}; brain.listen()'],
+                                       cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.addCleanup(lambda: (process.terminate(), process.wait(timeout=5)) if process.poll() is None else None)
+            for _ in range(40):
+                try:
+                    with socket.create_connection(('127.0.0.1', port), 0.1):
+                        break
+                except OSError:
+                    time.sleep(0.1)
+            key = (home / 'robot.key').read_text()
+            robot = Robot()
+            with patch.dict(config.stored, {'robot_host': f'127.0.0.1:{port}', 'robot_key': key}):
+                ping = robot.request('ping')
+                self.assertTrue(ping['speak_stream'])
+                robot.online, robot.streams = True, True
+                pieces = [bytes([n]) * 4800 for n in range(1, 6)]
+
+                def slowly():
+                    for piece in pieces:
+                        time.sleep(.05)   # as the voice model writes it
+                        yield piece
+                self.assertTrue(robot.speak_stream(slowly()))
+                robot.streaming[0].join(5)
+                deadline = time.monotonic() + 3
+                while (not heard.exists() or heard.stat().st_size < 24000) and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertEqual(heard.read_bytes(), b''.join(pieces))
+                # Hushed mid-reply (someone talked over BITCH): both ends stop promptly.
+                def endless():
+                    while True:
+                        time.sleep(.02)
+                        yield b'\x01\x00' * 480
+                self.assertTrue(robot.speak_stream(endless()))
+                time.sleep(.3)
+                thread = robot.streaming[0]
+                robot.hush()
+                thread.join(3)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(robot.request('playback')['playing'], False)
+                # A Pi without streaming: the Mac falls back to sending the whole reply.
+                robot.streams = False
+                self.assertFalse(robot.speak_stream(iter([b'xx'])))
+
     def test_paired_protocol_motion_idle_and_local_inbox(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
