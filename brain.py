@@ -113,10 +113,13 @@ WEIGHTED_MODES = {'sad', 'lonely', 'doze', 'yawn', 'speak-gentle'}
 DEEP_ARM_MODES = {'doze', 'lonely', 'sad', 'yawn'}
 IDLE_BEATS = ('curious', 'glance', 'shy', 'stretch', 'peek')
 ROOM_BEATS = ('survey', 'stretch', 'glance', 'sad', 'peek')
-SOFTNESS = {'doze': .4, 'stretch': .7, 'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
-            'happy': 1.85, 'recognize': 1.85, 'notice': 1.8, 'double-take': 1.88,
-            'speak-annoyed': 2.05, 'speak-amused': 2.17, 'speak-surprised': 2.12, 'speak-gentle': .82, 'speak-farewell': 1.15, 'speak-upbeat': 2.1,
-            'speak-emphatic': 1.85, 'speak-playful': 1.78, 'speaking': 1.58}
+# How springy each state feels. Gestures carry their own timing, so these stay close to 1.
+SOFTNESS = {'doze': .45, 'stretch': .8, 'sad': .6, 'lonely': .6, 'yawn': .6, 'shy': .9, 'speak-gentle': .85,
+            'scared': 1.5, 'alarm': 1.4, 'victory': 1.3, 'happy': 1.25, 'recognize': 1.25, 'notice': 1.25,
+            'double-take': 1.25}
+# These can cut a gesture short. Anything else waits until the current gesture has made its point.
+URGENT = {'listen', 'attend', 'notice', 'alarm', 'scared', 'park', 'aim', 'show'}
+LOUD = {'victory', 'alarm', 'scared'}   # the only states allowed to move fast
 # Separate quick head accents from the heavier arm's slower weight transfer.
 SPEECH_WEIGHT = {'speak-gentle': .68, 'speak-upbeat': 1.2, 'speak-emphatic': 1.16,
                  'speak-annoyed': 1.15, 'speak-amused': 1.25, 'speak-surprised': 1.18, 'speak-playful': 1.12, 'speak-farewell': .8}
@@ -217,14 +220,17 @@ class Motion:
         # and gentle smooth base tracking when calmly following a face.
         base_scale = min(1., max(0., desk.BASE_SPEED))
         if mode in WEIGHTED_MODES:
-            actor.speed = (.55 * base_scale, .92, 1.25, 1.75)
-            actor.accel = (1.8, 2.8, 4.2, 7.0)
+            actor.speed = (.5 * base_scale, .8, 1.1, 1.6)
+            actor.accel = (1.6, 2.4, 3.8, 6.0)
+        elif mode in LOUD:
+            actor.speed = (1.4 * base_scale, 2.0, 3.0, 4.4)
+            actor.accel = (4.5, 7.0, 11.0, 18.0)
         elif mode in SOCIAL or mode == 'scan':
-            actor.speed = (1.65 * base_scale, 2.45, 3.6, 5.4)
-            actor.accel = (5.8, 9.5, 15.0, 26.0)
+            actor.speed = (.9 * base_scale, 1.3, 2.2, 3.2)
+            actor.accel = (2.6, 4.2, 7.5, 12.0)
         else:
-            actor.speed = (.58 * base_scale, 1.15, 2.0, 3.4)
-            actor.accel = (1.55, 3.0, 8.0, 15.0)
+            actor.speed = (.58 * base_scale, 1.0, 1.8, 3.0)
+            actor.accel = (1.55, 3.0, 6.5, 12.0)
         if score_frame is not None:
             pose, stiffness, idle = score_frame
             actor.idle_amt = idle * .35
@@ -233,6 +239,10 @@ class Motion:
             self.mode, self.beat = 'show', 'Performing'
             self.restoring = False
             return
+        if (mode != self.mode and mode not in URGENT and self.social_phrase is not None
+                and now - self.social_at < self.social_phrase.commit):
+            # Let the current gesture make its point before the next one starts, so it reads as one idea.
+            mode = self.mode
         following = mode == 'watch' or mode in SOCIAL
         changed = mode != self.mode
         if changed and (mode == 'look-target' or self.mode == 'look-target'):
@@ -244,7 +254,7 @@ class Motion:
             self.idle_phrase = None
             self.social_phrase = None
             self.social_at = now
-            self.next_beat = now + (self.rng.uniform(16., 42.) if calm else self.rng.uniform(2.2, 4.8))
+            self.next_beat = now + (self.rng.uniform(16., 42.) if calm else self.rng.uniform(5., 9.))
             if mode == 'scan':
                 self.scan_base = desk.cur[0]
             self.mode = mode
@@ -279,8 +289,8 @@ class Motion:
                 direction = self.gesture_side
             age = now - self.social_at
             if self.social_phrase is not None:
-                # Re-synthesize alarm and sustained speaking phrases smoothly so long turns stay fresh!
-                if (mode == 'alarm' or mode in SPEECH) and age >= self.social_phrase.duration + 0.15:
+                # The alarm repeats while it rings. Everything else plays once and holds its last pose.
+                if mode == 'alarm' and age >= self.social_phrase.duration + 0.15:
                     self.social_at = now
                     age = 0.0
                     self.gesture_side = -self.gesture_side
@@ -306,9 +316,10 @@ class Motion:
                     self.idle_phrase = (phrase, now)
                     self.idle_anchor = base, neck
                     loneliness = float((mood or {}).get('loneliness', 0.0))
+                    # Mostly still, with an occasional gesture: that's what reads as alive rather than busy.
                     gap = (self.rng.uniform(22, 58) if calm
-                           else self.rng.uniform(3.2, 6.2) if loneliness > 0.5
-                           else self.rng.uniform(2.5, 5.2))
+                           else self.rng.uniform(9, 16) if loneliness > 0.5
+                           else self.rng.uniform(6, 13))
                     self.next_beat = now + phrase.duration + gap
             if self.idle_beat:
                 frames, start, direction = self.idle_beat
@@ -344,7 +355,7 @@ class Motion:
         # Blend baseline down during active phrases so crafted silhouettes never double-stack or saturate.
         if mood and mode not in ('park', 'aim', 'doze', 'yawn') and not (calm and active_phrase is None and frames is None):
             mb, ma, mn, mh, mst = character.mood_baseline(mood, now, self.noise.sample(now))
-            blend = 0.25 if active_phrase is not None else 1.0
+            blend = 0.35 if active_phrase is not None else 1.0
             if mode not in SPEECH:
                 base += mb * blend
             arm += ma * blend
@@ -353,29 +364,30 @@ class Motion:
             stiff_mult *= (1.0 + (mst - 1.0) * (0.5 if active_phrase is not None else 1.0))
             # Velocity-coupled arc: turning the base subtly leads with a curious head tilt & upward lift.
             if following and mode not in SPEECH and self.cue_at is None:
-                tilt += clamp(actor.v[0] * 0.26, 0.20)
-                neck += min(0.08, abs(actor.v[0]) * 0.08)
+                tilt += clamp(actor.v[0] * 0.18, 0.12)
+                neck += min(0.05, abs(actor.v[0]) * 0.05)
 
         if mode in SPEECH:
             weight = SPEECH_WEIGHT.get(mode, 1.)
-            lean_response = 1 - math.exp(-dt / (.20 if energy > self.lean else .34))
+            # Talking: the syllable nods (accent) and word gestures from the Mac are the only moving layer
+            # on top of the held delivery posture. One clear beat per stressed word, nothing else.
+            lean_response = 1 - math.exp(-dt / (.30 if energy > self.lean else .5))
             self.lean += (energy - self.lean) * lean_response
-            neck += accent * weight * 1.25 + .08 * energy + gesture[1] * .55
-            arm += weight * (.22 * self.lean - .22 * accent) + gesture[1] * 1.15
-            tilt += direction * weight * (.14 * energy + 1.05 * accent) + gesture[0] * 1.15
-            if mode not in ('speaking', 'speak-gentle'):
-                base -= direction * .065 * self.lean
+            neck += accent * weight * .9 + gesture[1] * .5
+            arm += weight * (.08 * self.lean - .17 * accent) + gesture[1] * .8   # the body rocks a little with each nod
+            tilt += direction * weight * .7 * accent + gesture[0] * .9
         elif mode == 'listen':
-            self.lean += (energy - self.lean) * (1 - math.exp(-dt / .28))
-            arm += .14 * self.lean
-            neck += .18 * self.lean
-            tilt += .15 * self.lean
+            # Listening is still: a slow lean that follows how much they're saying, not each syllable.
+            self.lean += (energy - self.lean) * (1 - math.exp(-dt / .9))
+            arm += .05 * self.lean
+            neck += .05 * self.lean
+            tilt += .05 * self.lean
         else:
             self.lean = 0.
             if energy > 0 and following:
-                neck += .18 * energy
-                arm += .15 * energy
-                tilt -= .20 * energy
+                neck += .10 * energy
+                arm += .06 * energy
+                tilt -= .10 * energy
         if self.cue_at is not None:
             elapsed = now - self.cue_at
             side = math.copysign(1, self.throw)
@@ -403,7 +415,7 @@ class Motion:
             actor.idle_amt = 0
         if self.cue_at is not None and now - self.cue_at < .14:
             actor.idle_amt = 0
-        stiff = max(.35, min(3.2, SOFTNESS.get(self.beat, 1.12) * stiff_mult))
+        stiff = max(.35, min(2.2, SOFTNESS.get(self.beat, 1.0) * stiff_mult))
         if self.restoring:
             if abs(REST[1] - desk.cur[1]) > .02:
                 base, arm, neck, tilt = desk.cur[0], REST[1], desk.cur[2], desk.cur[3]

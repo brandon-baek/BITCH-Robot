@@ -16,6 +16,9 @@ from .pointing import MODEL as POINTING_MODEL, Pointing
 MAX_BASE = 0.55
 MIN_NECK, MAX_NECK = -0.88, -0.43
 REST_NECK = -0.8
+FLICKER = .8          # seconds a face can vanish before BITCH goes looking for it
+RETURN_AFTER = 6.     # seconds away before coming back earns a double take
+SIGHT_REACTIONS = {'double-take', 'seek', 'recognize', 'mirror-left', 'mirror-right'}
 THINK_BEFORE_PONDER = .9   # seconds of thinking before the look-away ponder pose
 
 
@@ -639,16 +642,20 @@ class Sight:
                 last_camera, last_focus, last_aim, noticed_until = camera_id, None, None, 0.
             calibration = config.get('camera_calibration').get(camera_id) if camera_id else None
             attention_aim = aim_at(*target[1:], calibration) if target else None
+            held = None
             if target and idle and not preview:
                 if focus != last_focus:
-                    # Reserve the large double take for a new or returning target after a break.
-                    if not last_aim or now - last_aim[2] > 1.15:
+                    # The double take is for someone arriving after a real absence, not a detection blink.
+                    if not last_aim or now - last_aim[2] > RETURN_AFTER:
                         noticed_until = now + 1.45
                     last_focus = focus
                 last_aim = (*attention_aim, now)
                 if not social and now < noticed_until:
                     social = 'double-take'
-            elif last_aim and not social and now - last_aim[2] < 2.25:
+            elif last_aim and not social and now - last_aim[2] < FLICKER:
+                # Face detection blinks for a frame or two; keep looking where they were.
+                held = attention_aim = last_aim[:2]
+            elif last_aim and not social and now - last_aim[2] < 3.0:
                 social = 'seek'
                 attention_aim = last_aim[:2]
                 last_focus = None
@@ -658,6 +665,9 @@ class Sight:
             engaged = bool(brain and (brain.busy.is_set() or brain.followup_seconds())) or phase in ('Listening', 'Understanding')
             state, beat = rhythm.update(target is not None, engaged, brain.last_interaction if brain else 0., now)
             calm = state in ('attentive', 'glancing')
+            if state in ('resting', 'asleep') and not engaged and social in SIGHT_REACTIONS:
+                # Asleep or resting, a face flickering in and out of view is not a reason to power the motors.
+                social = None
             if not social and life_pose:
                 social = life_pose
             if not social and beat and idle and robot and getattr(robot, 'rhythm', False):
@@ -715,7 +725,7 @@ class Sight:
                     robot.look('park')
                     last_park = now
                 drive = {'mode': 'Idle motion off' if not idle else 'Asleep' if state == 'asleep' else 'Resting'}
-            elif target:
+            elif target or held:
                 base, neck = attention_aim
                 result = robot.look('watch', base, neck, calm=calm, mood=mood, sfx_volume=sfx_volume)
                 drive = {'mode': ('Glancing up' if state == 'glancing' else 'Watching quietly' if calm else 'Watching')

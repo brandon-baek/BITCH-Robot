@@ -1,30 +1,41 @@
-"""Procedural Pixar-style full-body character motion engine for BITCH's 4-joint puppet.
+"""BITCH's body language: short, readable gestures built the way animators block a shot.
 
-Calibrated directly against BITCH's measured 3D MuJoCo physics model (sim/params.py & sim/model.py):
-  - +base turns left (90 deg/unit), +arm leans forward/down (45 deg/unit),
-    +neck pitches head up (45 deg/unit), +head rolls/tilts (45 deg/unit).
-  - Gaze-stabilized body translation: world head pitch = (neck - arm) * 45 deg.
-    Matching d_neck ~= d_arm lets BITCH lunge 100+ mm closer, stand tall upright,
-    or recoil far back while keeping its googly eyes locked straight on you.
-  - Every gesture is synthesized fresh with Disney/Pixar principles: anticipation,
-    follow-through/overshoot, kinematic chain lag (head -> neck -> arm -> base),
-    timing/weight contrast (snappy pops vs heavy weighted droops), and continuous
-    non-repeating organic breathing + emotional posture.
+Joints, in desk.py units (see sim/params.py):
+  base  +turns left   (90 deg per unit)
+  arm   +leans forward and down (45 deg per unit)
+  neck  +pitches the head up    (45 deg per unit)
+  head  +rolls / tilts           (45 deg per unit)
 
-Runs natively at 50 Hz on a Raspberry Pi 4 (<0.5 ms/step) while keeping MG90S
-servos collision-free, under 50% stall torque, and zero-power when calm/asleep.
+Leaning the arm while moving the neck by the same amount keeps the eyes level ("gaze-stabilized"), so
+`pose(lean=...)` moves the whole body closer without breaking eye contact, and `look=` is the head pitch on top.
+
+The rules every gesture follows (classic animation principles, applied to four servos):
+  1. One idea at a time. Each gesture has a single lead action (a tilt, a lean, a turn) and the other
+     joints only support it. Nothing waggles back and forth unless the meaning is a shake or a laugh.
+  2. Eyes lead, body follows. The head starts first, then the neck, the arm, and the heavy base last
+     (`lag`), so motion flows through the body instead of every joint starting on the same frame.
+  3. Hold the pose. A key pose is held long enough to read before the next move.
+  4. Conversation poses are held states (listen, attend, speak-*); the small word-timed nods from the Mac
+     ride on top. Idle gestures go out and come back home.
+  5. Small variation (about 10%) keeps it alive without changing what a gesture means.
+
+Runs at 50 Hz on the Pi 4. Ranges are checked against the MuJoCo model in sim/ (no collisions, low torque).
 """
 import math
-import random
 
 REST = (0.0, -0.8, -0.8, 0.0)
 BASE_LIMIT = 0.55
 NECK_MIN, NECK_MAX = -0.88, -0.43
 
-# MuJoCo-verified collision-free & torque-safe (<35% stall) full-body envelope.
+# MuJoCo-verified collision-free and torque-safe envelope.
 LIVE_LO = (-0.86, -1.24, -0.98, -0.84)
 LIVE_HI = (0.86, 0.42, 0.58, 0.84)
-SLEEP_ARM_MAX = 0.86   # deep curled-down slump for doze/lonely/yawn (still >75 mm above lid, 0 collisions)
+SLEEP_ARM_MAX = 0.86   # deep slump for dozing and loneliness (still >75 mm above the box lid)
+
+# Who moves first. Seconds of delay per joint (base, arm, neck, head).
+HEAD_FIRST = (0.16, 0.09, 0.04, 0.0)    # look with the eyes, then the body follows
+BODY_FIRST = (0.0, 0.0, 0.10, 0.16)     # big body moves (stretch, yawn): the head drags behind
+TOGETHER = (0.0, 0.0, 0.0, 0.0)         # startle: everything at once
 
 
 def clamp(value, lo, hi):
@@ -34,6 +45,11 @@ def clamp(value, lo, hi):
 def smoothstep(t):
     t = clamp(t, 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
+
+
+def ease_out_cubic(t):
+    t = clamp(t, 0.0, 1.0)
+    return 1.0 - (1.0 - t) ** 3
 
 
 def ease_out_back(t, overshoot=1.45):
@@ -46,16 +62,25 @@ def ease_in_out_cubic(t):
     return 4.0 * t * t * t if t < 0.5 else 1.0 - ((-2.0 * t + 2.0) ** 3) / 2.0
 
 
+EASES = {
+    'smooth': smoothstep,                          # slow in, slow out: the default
+    'out': ease_out_cubic,                         # quick start, soft landing: reactions
+    'pop': lambda u: ease_out_back(u, 0.9),        # a small overshoot that settles: happy accents
+    'snap': lambda u: ease_out_back(u, 1.3),       # bigger overshoot, used sparingly
+    'heavy': ease_in_out_cubic,                    # slow and weighted: sad, sleepy
+}
+
+
 class OrganicNoise:
-    """Incommensurate multi-harmonic oscillators that never repeat a cycle."""
+    """Slow incommensurate oscillators that never repeat, for breathing and tiny drift."""
 
     def __init__(self, rng):
         self.phases = [rng.uniform(0.0, math.tau) for _ in range(12)]
         self.freqs = (
-            0.23, 0.61, 1.37,   # base subtle drift
-            0.31, 0.79, 1.73,   # arm breathing + weight shift
-            0.29, 0.83, 1.91,   # neck subtle nod/counter-bob
-            0.37, 1.07, 2.29,   # head curiosity cock + micro-saccades
+            0.23, 0.61, 1.37,   # base drift
+            0.31, 0.79, 1.73,   # arm weight shift
+            0.29, 0.83, 1.91,   # neck
+            0.37, 1.07, 2.29,   # head
         )
 
     def sample(self, t):
@@ -63,57 +88,58 @@ class OrganicNoise:
         p, f = self.phases, self.freqs
         return (
             0.55 * s(t * f[0] + p[0]) + 0.30 * s(t * f[1] + p[1]) + 0.15 * s(t * f[2] + p[2]),
-            # Keep arm noise purely low-frequency so the heavy 148 mm arm never jitters or hunts.
+            # Arm noise stays low-frequency so the heavy arm never jitters.
             0.80 * s(t * f[3] + p[3]) + 0.20 * s(t * f[4] + p[4]),
             0.55 * s(t * f[6] + p[6]) + 0.30 * s(t * f[7] + p[7]) + 0.15 * s(t * f[8] + p[8]),
-            0.50 * s(t * f[9] + p[9]) + 0.35 * s(t * f[10] + p[10]) + 0.15 * s(t * f[11] + p[11]),
+            0.60 * s(t * f[9] + p[9]) + 0.30 * s(t * f[10] + p[10]) + 0.10 * s(t * f[11] + p[11]),
         )
 
 
 class Phrase:
-    """One procedurally generated multi-beat full-body motion phrase.
+    """One gesture: keyframes (t, d_base, d_arm, d_neck, d_head, stiffness, ease) relative to the gaze anchor.
 
-    Each keyframe is (t, d_base, d_arm, d_neck, d_head, stiff_mult, ease_kind).
-    Offsets are relative to the live gaze anchor (base, REST[1], neck, 0).
+    Each joint plays the same keyframes delayed by its `lag`, which gives overlapping action for free.
+    `commit` is when the gesture has made its point; until then a calmer request won't cut it off.
     """
 
-    def __init__(self, name, keyframes, *, side=1, sfx=None):
+    def __init__(self, name, keyframes, *, side=1, sfx=None, lag=HEAD_FIRST, commit=None):
         self.name = name
         self.keyframes = keyframes
-        self.duration = keyframes[-1][0]
         self.side = side
-        self.sfx = sfx or []   # list of (t, sound_name, volume)
+        self.sfx = sfx or []   # (t, sound_name, volume)
+        self.lag = lag
+        self.duration = keyframes[-1][0] + max(lag)
+        self.commit = min(self.duration, commit if commit is not None else 1.6)
         self.played_sfx = set()
 
-    def evaluate(self, age):
+    def _joint(self, j, age):
         frames = self.keyframes
-        if age <= 0.0:
-            _, b, a, n, h, st, _ = frames[0]
-            return (b * self.side, a, n, h * self.side), st
-        if age >= self.duration:
-            _, b, a, n, h, st, _ = frames[-1]
-            return (b * self.side, a, n, h * self.side), st
+        if age <= frames[0][0]:
+            return frames[0][1 + j]
+        if age >= frames[-1][0]:
+            return frames[-1][1 + j]
         for idx in range(len(frames) - 1):
             f0, f1 = frames[idx], frames[idx + 1]
             if f0[0] <= age <= f1[0]:
-                span = max(1e-4, f1[0] - f0[0])
-                u = (age - f0[0]) / span
-                kind = f1[6]
-                if kind == 'pop':
-                    w = ease_out_back(u, 1.45)
-                elif kind == 'snap':
-                    w = ease_out_back(u, 1.85)
-                elif kind == 'heavy':
-                    w = ease_in_out_cubic(u)
-                else:
-                    w = smoothstep(u)
-                b = f0[1] + (f1[1] - f0[1]) * w
-                a = f0[2] + (f1[2] - f0[2]) * w
-                n = f0[3] + (f1[3] - f0[3]) * w
-                h = f0[4] + (f1[4] - f0[4]) * w
-                st = f0[5] + (f1[5] - f0[5]) * u
-                return (b * self.side, a, n, h * self.side), st
-        return (0.0, 0.0, 0.0, 0.0), 1.0
+                u = (age - f0[0]) / max(1e-4, f1[0] - f0[0])
+                w = EASES.get(f1[6], smoothstep)(u)
+                return f0[1 + j] + (f1[1 + j] - f0[1 + j]) * w
+        return frames[-1][1 + j]
+
+    def _stiff(self, age):
+        frames = self.keyframes
+        if age <= frames[0][0]:
+            return frames[0][5]
+        for idx in range(len(frames) - 1):
+            f0, f1 = frames[idx], frames[idx + 1]
+            if f0[0] <= age <= f1[0]:
+                u = (age - f0[0]) / max(1e-4, f1[0] - f0[0])
+                return f0[5] + (f1[5] - f0[5]) * u
+        return frames[-1][5]
+
+    def evaluate(self, age):
+        b, a, n, h = (self._joint(j, age - self.lag[j]) for j in range(4))
+        return (b * self.side, a, n, h * self.side), self._stiff(age)
 
     def due_sfx(self, age):
         due = []
@@ -124,448 +150,334 @@ class Phrase:
         return due
 
 
-def synthesize_phrase(name, rng, side=1, mood=None):
-    """Build a fresh, never-identical full-body Pixar gesture phrase on demand.
+def pose(turn=0.0, lean=0.0, look=0.0, tilt=0.0):
+    """Body-language pose -> joint offsets. `lean` moves closer with the eyes kept level; `look` pitches up."""
+    return (turn, lean, lean + look, tilt)
 
-    Uses gaze-stabilized body translation (d_neck ~= d_arm + pitch_delta) so BITCH
-    physically leans in, cranes upright, recoils back, and bounces using its whole
-    4-joint body while keeping natural eye contact.
-    """
+
+HOME = pose()
+
+# Each gesture: (lag, stiffness, commit, [(t, pose, ease), ...]). Times are at normal tempo.
+# Poses that end away from HOME are held states: they stay until the mode changes.
+GESTURES = {
+    # ------------------------------------------------------------------ attention
+    'curious': (HEAD_FIRST, 1.1, 1.3, [
+        (0.00, HOME, 'smooth'),
+        (0.22, pose(lean=-0.04, look=0.03, tilt=-0.05), 'smooth'),        # tiny anticipation
+        (0.70, pose(lean=0.26, look=0.02, tilt=0.38), 'out'),              # lean in, head cocked
+        (1.70, pose(lean=0.28, tilt=0.40), 'smooth'),                       # hold: "huh?"
+        (2.40, HOME, 'smooth'),
+    ]),
+    'glance': (HEAD_FIRST, 1.1, 1.1, [
+        (0.00, HOME, 'smooth'),
+        (0.35, pose(turn=0.30, look=0.06, tilt=0.12), 'out'),              # eyes go, body follows
+        (1.15, pose(turn=0.30, look=0.06, tilt=0.10), 'smooth'),
+        (1.75, HOME, 'smooth'),
+    ]),
+    'shy': (HEAD_FIRST, 0.9, 1.4, [
+        (0.00, HOME, 'smooth'),
+        (0.50, pose(turn=0.20, look=-0.16, tilt=0.30), 'smooth'),          # turn away, look down
+        (1.40, pose(turn=0.20, look=-0.16, tilt=0.30), 'smooth'),
+        (1.90, pose(turn=0.08, look=-0.06, tilt=0.12), 'smooth'),          # peek back
+        (2.40, pose(turn=0.08, look=-0.06, tilt=0.12), 'smooth'),
+        (3.00, HOME, 'smooth'),
+    ]),
+    'peek': (HEAD_FIRST, 1.1, 1.8, [
+        (0.00, HOME, 'smooth'),
+        (0.45, pose(turn=0.34, lean=-0.04, look=-0.10, tilt=0.18), 'smooth'),   # look away and down
+        (1.25, pose(turn=0.34, lean=-0.04, look=-0.10, tilt=0.18), 'smooth'),
+        (1.65, pose(lean=0.22, look=0.06, tilt=-0.26), 'pop'),                   # pop back: "boo"
+        (2.40, pose(lean=0.20, look=0.04, tilt=-0.22), 'smooth'),
+        (3.00, HOME, 'smooth'),
+    ]),
+    'survey': (HEAD_FIRST, 1.0, 2.2, [
+        (0.00, HOME, 'smooth'),
+        (0.65, pose(turn=0.50, lean=0.06, look=0.10, tilt=0.14), 'smooth'),
+        (1.45, pose(turn=0.50, lean=0.06, look=0.10, tilt=0.10), 'smooth'),
+        (2.35, pose(turn=-0.45, lean=0.06, look=0.10, tilt=-0.14), 'smooth'),
+        (3.15, pose(turn=-0.45, lean=0.06, look=0.10, tilt=-0.10), 'smooth'),
+        (3.85, HOME, 'smooth'),
+    ]),
+    'seek': (HEAD_FIRST, 1.1, 1.6, [
+        (0.00, HOME, 'smooth'),
+        (0.40, pose(turn=0.30, lean=0.20, look=0.08, tilt=0.18), 'out'),
+        (1.10, pose(turn=0.30, lean=0.20, look=0.08, tilt=0.16), 'smooth'),
+        (1.75, pose(turn=-0.22, lean=0.20, look=0.08, tilt=-0.16), 'smooth'),
+        (2.35, pose(turn=-0.22, lean=0.18, look=0.06, tilt=-0.12), 'smooth'),
+        (2.95, HOME, 'smooth'),
+    ]),
+    'notice': (HEAD_FIRST, 1.4, 0.6, [                                      # held: perked up
+        (0.00, HOME, 'smooth'),
+        (0.12, pose(lean=-0.05, look=-0.02), 'smooth'),
+        (0.40, pose(lean=0.06, look=0.15, tilt=0.18), 'out'),
+        (1.20, pose(lean=0.06, look=0.14, tilt=0.16), 'smooth'),
+    ]),
+    'attend': (HEAD_FIRST, 1.1, 0.5, [                                      # held: "go on"
+        (0.00, HOME, 'smooth'),
+        (0.45, pose(lean=0.18, look=0.03, tilt=0.16), 'smooth'),
+        (1.00, pose(lean=0.18, look=0.03, tilt=0.16), 'smooth'),
+    ]),
+    'listen': (HEAD_FIRST, 1.0, 0.4, [                                      # held: leaning in
+        (0.00, HOME, 'smooth'),
+        (0.60, pose(lean=0.22, look=0.02, tilt=0.26), 'smooth'),
+        (1.20, pose(lean=0.22, look=0.02, tilt=0.26), 'smooth'),
+    ]),
+    'ponder': (HEAD_FIRST, 0.95, 0.8, [                                     # held: looking up and away
+        (0.00, HOME, 'smooth'),
+        (0.55, pose(turn=-0.22, lean=-0.06, look=0.26, tilt=-0.28), 'smooth'),
+        (1.60, pose(turn=-0.22, lean=-0.06, look=0.28, tilt=-0.30), 'smooth'),
+    ]),
+    'look-target': (HEAD_FIRST, 1.2, 0.6, [                                 # held: leaning toward it
+        (0.00, HOME, 'smooth'),
+        (0.35, pose(lean=0.22, look=0.04, tilt=0.20), 'out'),
+        (1.00, pose(lean=0.24, look=0.02, tilt=0.12), 'smooth'),
+    ]),
+    'mirror': (HEAD_FIRST, 1.1, 1.3, [
+        (0.00, HOME, 'smooth'),
+        (0.40, pose(lean=0.08, look=0.02, tilt=0.42), 'smooth'),
+        (1.50, pose(lean=0.08, look=0.02, tilt=0.44), 'smooth'),
+        (2.10, HOME, 'smooth'),
+    ]),
+    'double-take': (HEAD_FIRST, 1.3, 1.2, [                                 # held: locked on
+        (0.00, HOME, 'smooth'),
+        (0.25, pose(look=0.02, tilt=0.10), 'smooth'),                        # half-notices...
+        (0.45, pose(lean=-0.08, look=0.10, tilt=-0.06), 'out'),              # ...wait, what?
+        (0.75, pose(lean=0.24, look=0.12, tilt=0.24), 'pop'),                # leans in
+        (1.60, pose(lean=0.22, look=0.10, tilt=0.20), 'smooth'),
+        (2.10, pose(lean=0.12, look=0.04, tilt=0.10), 'smooth'),
+    ]),
+
+    # ------------------------------------------------------------------ feelings
+    'happy': ((0.08, 0.05, 0.02, 0.0), 1.3, 1.2, [
+        (0.00, HOME, 'smooth'),
+        (0.18, pose(lean=-0.06, look=-0.04), 'smooth'),                      # little crouch
+        (0.45, pose(lean=0.14, look=0.18, tilt=0.30), 'pop'),                # perk up
+        (0.85, pose(lean=0.14, look=0.16, tilt=-0.24), 'smooth'),            # one happy wiggle
+        (1.25, pose(lean=0.12, look=0.12, tilt=0.16), 'smooth'),
+        (1.90, pose(lean=0.06, look=0.06, tilt=0.06), 'smooth'),
+    ]),
+    'victory': ((0.06, 0.04, 0.02, 0.0), 1.5, 2.4, [                        # a little dance on the beat
+        (0.00, HOME, 'smooth'),
+        (0.25, pose(lean=-0.10, look=-0.06), 'smooth'),
+        (0.55, pose(turn=0.32, lean=0.10, look=0.26, tilt=0.45), 'pop'),
+        (1.00, pose(turn=-0.32, lean=0.10, look=0.26, tilt=-0.45), 'smooth'),
+        (1.45, pose(turn=0.28, lean=0.10, look=0.24, tilt=0.40), 'smooth'),
+        (1.90, pose(turn=-0.20, lean=0.08, look=0.20, tilt=-0.28), 'smooth'),
+        (2.45, pose(lean=0.04, look=0.08), 'smooth'),
+        (2.90, HOME, 'smooth'),
+    ]),
+    'alarm': ((0.04, 0.02, 0.0, 0.0), 1.7, 1.5, [                           # loops while ringing
+        (0.00, HOME, 'smooth'),
+        (0.22, pose(turn=0.30, lean=0.12, look=0.20, tilt=0.36), 'out'),
+        (0.52, pose(turn=-0.30, lean=0.12, look=0.20, tilt=-0.36), 'out'),
+        (0.82, pose(turn=0.30, lean=0.12, look=0.20, tilt=0.36), 'out'),
+        (1.12, pose(turn=-0.30, lean=0.12, look=0.20, tilt=-0.36), 'out'),
+        (1.45, pose(lean=0.08, look=0.12), 'smooth'),
+    ]),
+    'sad': (HEAD_FIRST, 0.6, 1.6, [                                         # held: drooping
+        (0.00, HOME, 'smooth'),
+        (1.00, pose(turn=-0.06, lean=0.30, look=-0.22, tilt=0.22), 'heavy'),
+        (2.60, pose(turn=-0.08, lean=0.36, look=-0.26, tilt=0.26), 'heavy'),
+    ]),
+    'grumpy': (HEAD_FIRST, 1.2, 1.6, [
+        (0.00, HOME, 'smooth'),
+        (0.30, pose(turn=0.36, lean=-0.06, look=0.14, tilt=-0.22), 'out'),   # turns away, nose up
+        (1.50, pose(turn=0.36, lean=-0.06, look=0.14, tilt=-0.20), 'smooth'),
+        (2.00, pose(turn=0.18, look=0.08, tilt=-0.10), 'smooth'),            # side-eye back
+        (2.60, pose(turn=0.18, look=0.08, tilt=-0.10), 'smooth'),
+        (3.10, HOME, 'smooth'),
+    ]),
+    'scared': (TOGETHER, 1.6, 1.0, [
+        (0.00, HOME, 'smooth'),
+        (0.15, pose(turn=-0.04, lean=-0.30, look=0.06, tilt=-0.16), 'out'),  # recoil
+        (0.95, pose(turn=-0.04, lean=-0.30, look=0.06, tilt=-0.16), 'smooth'),   # freeze
+        (1.70, pose(lean=-0.08, look=0.02, tilt=-0.04), 'smooth'),
+        (2.30, HOME, 'smooth'),
+    ]),
+    'proud': (BODY_FIRST, 1.1, 1.6, [
+        (0.00, HOME, 'smooth'),
+        (0.50, pose(lean=-0.14, look=0.20), 'smooth'),                       # stand tall, chin up
+        (1.70, pose(lean=-0.14, look=0.22, tilt=0.04), 'smooth'),
+        (2.30, HOME, 'smooth'),
+    ]),
+    'stretch': (BODY_FIRST, 0.8, 2.0, [
+        (0.00, HOME, 'smooth'),
+        (0.90, pose(lean=-0.24, look=0.42), 'heavy'),                        # reach up
+        (1.90, pose(lean=-0.24, look=0.44, tilt=0.04), 'smooth'),
+        (2.60, pose(lean=0.06, look=-0.04), 'heavy'),
+        (3.10, HOME, 'smooth'),
+    ]),
+    'yawn': (BODY_FIRST, 0.6, 2.0, [                                        # ends drooped; sleep follows
+        (0.00, HOME, 'smooth'),
+        (0.70, pose(lean=-0.10, look=0.42, tilt=0.10), 'heavy'),
+        (1.50, pose(lean=-0.10, look=0.44, tilt=0.12), 'smooth'),
+        (2.50, pose(lean=0.30, look=-0.46, tilt=0.06), 'heavy'),
+    ]),
+
+    # ------------------------------------------------------------------ speaking: held postures
+    # The Mac adds word-timed nods, tilts and leans on top, so these stay still once they arrive.
+    'speaking': (HEAD_FIRST, 1.0, 0.4, [
+        (0.00, HOME, 'smooth'), (0.45, pose(lean=0.14, look=0.02, tilt=0.10), 'smooth'),
+    ]),
+    'speak-warm': (HEAD_FIRST, 1.0, 0.4, [
+        (0.00, HOME, 'smooth'), (0.50, pose(lean=0.18, look=0.04, tilt=0.20), 'smooth'),
+    ]),
+    'speak-gentle': (HEAD_FIRST, 0.75, 0.6, [
+        (0.00, HOME, 'smooth'), (0.80, pose(lean=0.22, look=-0.06, tilt=0.28), 'heavy'),
+    ]),
+    'speak-upbeat': (HEAD_FIRST, 1.2, 0.4, [
+        (0.00, HOME, 'smooth'), (0.35, pose(lean=0.10, look=0.12, tilt=-0.10), 'out'),
+    ]),
+    'speak-emphatic': (HEAD_FIRST, 1.2, 0.4, [
+        (0.00, HOME, 'smooth'), (0.35, pose(lean=0.24, look=-0.04), 'out'),
+    ]),
+    'speak-playful': (HEAD_FIRST, 1.1, 0.4, [
+        (0.00, HOME, 'smooth'), (0.45, pose(turn=0.06, lean=0.10, look=0.06, tilt=0.30), 'smooth'),
+    ]),
+    'speak-annoyed': (HEAD_FIRST, 1.2, 0.4, [                               # pulls back, half turned away
+        (0.00, HOME, 'smooth'), (0.35, pose(turn=0.12, lean=-0.08, look=0.10, tilt=-0.16), 'out'),
+    ]),
+    'speak-amused': (HEAD_FIRST, 1.2, 0.8, [                                # one laugh bob, then held
+        (0.00, HOME, 'smooth'),
+        (0.20, pose(lean=-0.06, look=0.10, tilt=0.10), 'out'),
+        (0.45, pose(lean=0.06, look=0.04, tilt=0.22), 'smooth'),
+        (0.70, pose(lean=-0.02, look=0.08, tilt=0.18), 'smooth'),
+        (1.00, pose(lean=0.06, look=0.04, tilt=0.20), 'smooth'),
+    ]),
+    'speak-surprised': (TOGETHER, 1.3, 0.6, [
+        (0.00, HOME, 'smooth'),
+        (0.15, pose(lean=-0.14, look=0.14, tilt=-0.10), 'out'),
+        (0.90, pose(lean=-0.10, look=0.12, tilt=-0.08), 'smooth'),
+        (1.50, pose(lean=0.06, look=0.04), 'smooth'),
+    ]),
+    'speak-farewell': (HEAD_FIRST, 1.0, 1.0, [
+        (0.00, HOME, 'smooth'),
+        (0.40, pose(lean=0.16, look=0.04, tilt=0.22), 'smooth'),
+        (1.00, pose(lean=0.16, look=-0.06, tilt=0.22), 'smooth'),           # a small nod goodbye
+        (1.40, pose(lean=0.12, look=0.04, tilt=0.18), 'smooth'),
+        (2.20, HOME, 'smooth'),
+    ]),
+}
+GESTURES['recognize'] = GESTURES['happy']
+# Feelings and idle gestures play bigger; conversation states stay calm so the face stays readable.
+EXPRESSIVE = 1.25
+CALM_STATES = {'listen', 'attend', 'notice', 'look-target', 'victory', 'alarm'} | {
+    name for name in GESTURES if name == 'speaking' or name.startswith('speak-')}
+
+SFX = {
+    'curious': lambda rng, t: [(t(0.5), 'curious', 0.36)] if rng.random() < 0.5 else [],
+    'peek': lambda rng, t: [(t(1.6), 'blip', 0.32)] if rng.random() < 0.5 else [],
+    'double-take': lambda rng, t: [(t(0.5), 'blip', 0.36)] if rng.random() < 0.6 else [],
+    'happy': lambda rng, t: [(t(0.3), rng.choice(('happy', 'walle', 'doubleblip')), 0.40)],
+    'recognize': lambda rng, t: [(t(0.3), rng.choice(('happy', 'walle', 'doubleblip')), 0.40)],
+    'victory': lambda rng, t: [(t(0.3), 'tada', 0.50), (t(1.4), 'giggle', 0.38)],
+    'alarm': lambda rng, t: [(0.05, 'excited', 0.66)],
+    'sad': lambda rng, t: [(t(0.8), rng.choice(('sigh', 'whimper', 'sad')), 0.36)],
+    'lonely': lambda rng, t: [(t(0.8), rng.choice(('sigh', 'whimper', 'sad')), 0.36)],
+    'grumpy': lambda rng, t: [(t(0.25), rng.choice(('grumble', 'angry')), 0.40)],
+    'scared': lambda rng, t: [(0.02, 'startle', 0.46)],
+    'proud': lambda rng, t: [(t(0.4), 'proud', 0.38)],
+    'yawn': lambda rng, t: [(0.18, 'yawn', 0.42)],
+    'doze': lambda rng, t: [(0.35, 'yawn', 0.36)],
+}
+
+
+def synthesize_phrase(name, rng, side=1, mood=None):
+    """Build one gesture with a little natural variation, shaped by mood. Returns None if unknown."""
     mood = mood or {}
     valence = float(mood.get('valence', 0.1))
     arousal = float(mood.get('arousal', 0.4))
     loneliness = float(mood.get('loneliness', 0.0))
+    # Excited is a touch quicker and bigger, lonely a touch slower and smaller. Never enough to change meaning.
+    tempo = clamp(1.0 - 0.14 * (arousal - 0.4) + 0.16 * loneliness, 0.84, 1.2) * rng.uniform(0.95, 1.05)
+    amp = clamp(1.0 + 0.10 * (arousal - 0.4) - 0.08 * loneliness, 0.86, 1.1) * rng.uniform(0.92, 1.08)
 
-    tempo = clamp(1.0 - 0.18 * arousal + 0.22 * loneliness, 0.76, 1.32)
-    amp = clamp(rng.uniform(0.88, 1.14) * (1.0 + 0.12 * arousal - 0.12 * loneliness), 0.72, 1.24)
-    s = lambda v: v * amp
-    t = lambda sec: sec * tempo * rng.uniform(0.92, 1.08)
-
-    if name == 'curious':
-        # Iconic WALL-E / Luxo lean-in: brief recoil anticipation, then lunge ~85 mm forward
-        # with dead-level gaze-stabilized neck + deep 32 deg head cock + curious second-look shift.
-        t1 = t(0.20)
-        t2 = t1 + t(0.38)
-        t3 = t2 + t(0.50)
-        t4 = t3 + t(0.66)
-        t5 = t4 + t(0.52)
-        lunge = clamp(s(0.76), 0.58, 0.90)
-        tilt = clamp(s(0.72), 0.54, 0.80)
-        return Phrase(name, (
-            (0.0, -s(0.04), -s(0.20), -s(0.16), -s(0.20), 1.2, 'smooth'),
-            (t1, s(0.06), lunge * 0.68, lunge * 0.66, tilt * 0.92, 1.65, 'pop'),
-            (t2, s(0.10), lunge, lunge - 0.02, tilt, 1.35, 'smooth'),
-            (t3, s(0.12), lunge * 0.96, lunge + 0.02, tilt * rng.uniform(0.76, 1.05), 1.05, 'smooth'),
-            (t4, s(0.05), lunge * 0.44, lunge * 0.42, -tilt * 0.34, 0.95, 'smooth'),
-            (t5, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.7, 'curious', 0.38)] if rng.random() < 0.55 else [])
-
-    if name == 'double-take':
-        # Explosive Pixar double-take: whip back + head recoil, snap forward tall with eye lock!
-        t1, t2, t3, t4 = t(0.16), t(0.46), t(0.96), t(1.46)
-        return Phrase(name, (
-            (0.0, -s(0.08), -s(0.34), -s(0.22), -s(0.46), 2.1, 'smooth'),
-            (t1, s(0.06), s(0.56), s(0.56), s(0.68), 2.4, 'snap'),
-            (t2, s(0.10), s(0.78), s(0.78), s(0.58), 1.9, 'pop'),
-            (t3, s(0.04), s(0.46), s(0.46), s(0.22), 1.2, 'smooth'),
-            (t4, 0.0, 0.06, 0.06, 0.0, 1.0, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.45, 'blip', 0.38)] if rng.random() < 0.65 else [])
-
-    if name in ('happy', 'recognize'):
-        # Joyful crouch-and-spring perk-up with wide rhythmic WALL-E head waggles & eye lock!
-        t1, t2, t3, t4, t5 = t(0.20), t(0.54), t(0.90), t(1.28), t(1.72)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.36), s(0.18), -s(0.22), 1.7, 'smooth'),
-            (t1, s(0.28), s(0.78), s(0.82), s(0.72), 2.2, 'snap'),
-            (t2, -s(0.28), s(0.36), s(0.34), -s(0.72), 2.15, 'snap'),
-            (t3, s(0.22), s(0.80), s(0.84), s(0.60), 2.0, 'pop'),
-            (t4, -s(0.08), s(0.40), s(0.40), -s(0.26), 1.4, 'smooth'),
-            (t5, 0.0, 0.06, 0.06, 0.0, 1.0, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.55, rng.choice(('happy', 'walle', 'doubleblip')), 0.42)])
-
-    if name == 'victory':
-        # Full-body Luxo Jr. celebration dance! Deep squat -> huge tall bounce + wide sweeping base twists!
-        t1, t2, t3, t4, t5, t6, t7 = t(0.24), t(0.64), t(1.04), t(1.44), t(1.84), t(2.22), t(2.60)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.95), s(0.45), -s(0.26), 1.85, 'smooth'),
-            (t1, s(0.62), s(0.76), s(0.86), s(0.80), 2.45, 'snap'),
-            (t2, -s(0.62), s(0.20), s(0.16), -s(0.80), 2.45, 'snap'),
-            (t3, s(0.56), s(0.84), s(0.92), s(0.78), 2.4, 'snap'),
-            (t4, -s(0.46), s(0.28), s(0.24), -s(0.72), 2.15, 'pop'),
-            (t5, s(0.20), s(0.78), s(0.86), s(0.48), 1.85, 'pop'),
-            (t6, 0.0, s(0.44), s(0.48), -s(0.16), 1.3, 'smooth'),
-            (t7, 0.0, 0.0, 0.0, 0.0, 1.0, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.5, 'tada', 0.52), (t3, 'giggle', 0.40)])
-
-    if name == 'alarm':
-        # Energetic, impossible-to-ignore full-body wake-up jolt!
-        t1, t2, t3, t4, t5 = t(0.20), t(0.46), t(0.74), t(1.04), t(1.38)
-        return Phrase(name, (
-            (0.0, -s(0.18), -s(0.32), -s(0.12), -s(0.45), 2.4, 'smooth'),
-            (t1, s(0.58), s(0.90), s(1.08), s(0.80), 2.7, 'snap'),
-            (t2, -s(0.58), s(0.32), s(0.46), -s(0.80), 2.7, 'snap'),
-            (t3, s(0.52), s(0.94), s(1.12), s(0.76), 2.6, 'snap'),
-            (t4, -s(0.44), s(0.42), s(0.56), -s(0.68), 2.4, 'snap'),
-            (t5, 0.0, s(0.24), s(0.28), 0.0, 1.5, 'smooth'),
-        ), side=side, sfx=[(0.05, 'excited', 0.68)])
-
-    if name in ('sad', 'lonely'):
-        # Heartbreaking full-body WALL-E collapse: brief tiny hopeful lift, then heavy slow slump
-        # forward & down with eyes drooping toward the shoebox lid.
-        t1, t2, t3, t4 = t(0.48), t(1.45), t(2.55), t(3.35)
-        slump = 1.24 if name == 'lonely' else 1.02
-        return Phrase(name, (
-            (0.0, 0.0, s(0.16), s(0.26), -s(0.14), 0.68, 'smooth'),
-            (t1, -s(0.14), slump * 0.62, -0.10, s(0.48), 0.52, 'heavy'),
-            (t2, -s(0.22), slump, -0.18, s(0.66), 0.44, 'heavy'),
-            (t3, -s(0.16), slump * 0.92, -0.16, s(0.56), 0.46, 'heavy'),
-            (t4, -s(0.06), slump * 0.45, -0.08, s(0.22), 0.58, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.85, rng.choice(('sigh', 'whimper', 'sad')), 0.38)])
-
-    if name == 'grumpy':
-        # Sassy Pixar huff: sharp indignant base turn away, stiff tall spine, rapid stubborn head shakes,
-        # sulky hold, then reluctant side-eye peek back!
-        t1, t2, t3, t4, t5, t6 = t(0.18), t(0.42), t(0.68), t(1.15), t(1.62), t(2.12)
-        return Phrase(name, (
-            (0.0, -s(0.10), -s(0.22), s(0.08), -s(0.20), 1.9, 'smooth'),
-            (t1, s(0.60), s(0.46), s(0.24), -s(0.66), 2.35, 'snap'),
-            (t2, s(0.56), s(0.42), s(0.18), s(0.52), 2.25, 'snap'),
-            (t3, s(0.64), s(0.48), s(0.22), -s(0.58), 1.9, 'pop'),
-            (t4, s(0.58), s(0.36), s(0.16), -s(0.34), 1.1, 'smooth'),
-            (t5, s(0.22), s(0.54), s(0.52), s(0.38), 1.35, 'pop'),
-            (t6, 0.0, 0.0, 0.0, 0.0, 1.0, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.65, rng.choice(('grumble', 'angry')), 0.42)])
-
-    if name == 'glance':
-        # Crisp peripheral look-aside: head darts first, base follows wide, leans slightly to check, returns.
-        look = rng.uniform(0.38, 0.62)
-        t1, t2, t3, t4 = t(0.20), t(0.80), t(1.32), t(1.75)
-        return Phrase(name, (
-            (0.0, -0.05, -0.08, -0.04, s(0.44), 1.35, 'smooth'),
-            (t1, look, s(0.42), s(0.48) + rng.uniform(-0.08, 0.14), s(0.52), 1.25, 'pop'),
-            (t2, look * 0.92, s(0.48), s(0.50), s(0.16), 0.95, 'smooth'),
-            (t3, look * 0.42, s(0.22), s(0.24), -s(0.28), 1.0, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side)
-
-    if name == 'peek':
-        # Playful hide-and-peek: turns far aside and ducks low, then SPRINGS straight back & lunges in!
-        t1, t2, t3, t4, t5 = t(0.28), t(0.95), t(1.30), t(2.05), t(2.60)
-        return Phrase(name, (
-            (0.0, -s(0.08), -0.10, 0.06, -s(0.24), 1.15, 'smooth'),
-            (t1, s(0.58), s(0.86), s(0.22), s(0.58), 1.05, 'smooth'),
-            (t2, s(0.56), s(0.92), s(0.28), s(0.54), 0.90, 'smooth'),
-            (t3, s(0.04), s(0.94), s(1.04), -s(0.68), 1.85, 'snap'),
-            (t4, 0.0, s(0.72), s(0.78), -s(0.44), 1.1, 'smooth'),
-            (t5, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side, sfx=[(t3 * 0.85, 'blip', 0.32)] if rng.random() < 0.55 else [])
-
-    if name == 'shy':
-        # Sweet shy tuck: turns away with downward glance, then shy sideways peek back up.
-        t1, t2, t3, t4 = t(0.28), t(1.25), t(1.78), t(2.50)
-        return Phrase(name, (
-            (0.0, -0.04, -0.12, -0.04, -0.16, 0.95, 'smooth'),
-            (t1, s(0.52), s(0.56), -0.08, s(0.68), 0.88, 'smooth'),
-            (t2, s(0.48), s(0.48), s(0.44), -s(0.48), 0.92, 'smooth'),
-            (t3, s(0.18), s(0.58), s(0.64), -s(0.36), 1.0, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.9, 'smooth'),
-        ), side=side)
-
-    if name == 'stretch':
-        # Luxurious full-body morning stretch: pull way back looking at the ceiling, then arch way forward!
-        t1, t2, t3, t4 = t(0.52), t(1.48), t(2.35), t(2.95)
-        return Phrase(name, (
-            (0.0, 0.0, -0.12, 0.02, -0.18, 0.85, 'smooth'),
-            (t1, -s(0.22), -s(0.38), s(0.58), -s(0.54), 0.72, 'smooth'),
-            (t2, s(0.20), s(1.06), s(1.02), s(0.66), 0.85, 'smooth'),
-            (t3, s(0.08), s(0.68), s(0.76), s(0.32), 0.9, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.9, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.55, 'powerup', 0.34)] if valence >= 0 else [])
-
-    if name == 'yawn':
-        # Expressive Wall-E sleepy yawn: crane chin high toward ceiling, then heavy melt down!
-        t1, t2, t3 = t(0.62), t(1.58), t(2.48)
-        return Phrase(name, (
-            (0.0, 0.0, -0.10, 0.12, -0.12, 0.62, 'smooth'),
-            (t1, -s(0.10), -s(0.24), s(0.68), s(0.44), 0.55, 'smooth'),
-            (t2, s(0.06), s(0.92), -0.06, -s(0.28), 0.46, 'heavy'),
-            (t3, 0.0, s(0.78), -0.14, s(0.18), 0.44, 'heavy'),
-        ), side=side, sfx=[(0.18, 'yawn', 0.44)])
+    def t(seconds):
+        return seconds * tempo
 
     if name == 'doze':
-        # Authentic nodding off: slumps gradually low over the box, catches itself once with a startled
-        # sleepy jerk back upright, then melts deeply down into a cozy curled-up rest!
-        return Phrase(name, (
+        # Nodding off: the head sinks, catches itself once, then the whole body melts down. Joint offsets, not
+        # gaze-stabilized, because the point is that the eyes drop.
+        frames = (
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.55, 'smooth'),
-            (1.05, s(0.06), 0.52, -0.08, s(0.20), 0.44, 'heavy'),
-            (2.20, s(0.12), 1.15, -0.16, s(0.36), 0.38, 'heavy'),
-            (2.58, s(0.04), 0.38, 0.24, -s(0.26), 1.15, 'pop'),
-            (3.95, s(0.14), 1.38, -0.16, s(0.40), 0.38, 'heavy'),
-            (5.10, s(0.16), 1.56, -0.18, s(0.34), 0.35, 'heavy'),
-        ), side=side, sfx=[(0.35, 'yawn', 0.38)])
+            (1.10, 0.04 * amp, 0.50 * amp, -0.10, 0.16 * amp, 0.45, 'heavy'),
+            (2.30, 0.08 * amp, 1.05 * amp, -0.18, 0.30 * amp, 0.40, 'heavy'),
+            (2.70, 0.03 * amp, 0.42 * amp, 0.20, -0.10 * amp, 1.0, 'out'),
+            (4.00, 0.10 * amp, 1.30 * amp, -0.18, 0.34 * amp, 0.40, 'heavy'),
+            (5.20, 0.12 * amp, 1.50, -0.20, 0.32 * amp, 0.36, 'heavy'),
+        )
+        return Phrase(name, frames, side=side, sfx=SFX['doze'](rng, t), lag=TOGETHER, commit=5.0)
 
-    if name == 'survey':
-        # Genuine wide curious room scan: cranes tall & sweeps far left -> leans in -> sweeps far right!
-        a1 = rng.uniform(0.55, 0.74)
-        a2 = -rng.uniform(0.50, 0.70)
-        t1, t2, t3, t4, t5 = t(0.42), t(1.32), t(2.15), t(2.95), t(3.55)
-        return Phrase(name, (
-            (0.0, -0.06, s(0.20), s(0.26), s(0.36), 1.1, 'smooth'),
-            (t1, a1, s(0.76), s(0.84), s(0.54), 1.15, 'smooth'),
-            (t2, a1 * 0.92, s(0.92), s(0.96), -s(0.28), 0.95, 'smooth'),
-            (t3, a2, s(0.68), s(0.86), -s(0.56), 1.15, 'smooth'),
-            (t4, a2 * 0.75, s(0.44), s(0.52), s(0.24), 0.95, 'smooth'),
-            (t5, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side)
+    if name == 'lonely':
+        # One long, heavy slump toward the box lid. The biggest pose BITCH has, and still one idea.
+        frames = (
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 'smooth'),
+            (t(1.2), -0.08 * amp, 0.70 * amp, -0.10, 0.28 * amp, 0.5, 'heavy'),
+            (t(2.6), -0.12 * amp, 0.90 * amp, -0.14, 0.34 * amp, 0.45, 'heavy'),
+            (t(3.6), -0.10 * amp, 0.86 * amp, -0.12, 0.30 * amp, 0.45, 'smooth'),
+        )
+        return Phrase(name, frames, side=side, sfx=SFX['lonely'](rng, t), lag=HEAD_FIRST, commit=2.6)
 
-    if name == 'ponder':
-        # Real thinking character: swivels aside, leans back & glances thoughtfully up (+24 deg),
-        # pauses as if turning an idea over, then snaps forward with a "eureka!" return to eye contact!
-        t1, t2, t3, t4 = t(0.32), t(1.08), t(1.92), t(2.68)
-        return Phrase(name, (
-            (0.0, -s(0.08), -0.06, s(0.08), s(0.18), 1.05, 'smooth'),
-            (t1, -s(0.46), -s(0.22), s(0.30), -s(0.58), 0.95, 'smooth'),
-            (t2, -s(0.40), -s(0.16), s(0.36), -s(0.50), 0.85, 'smooth'),
-            (t3, -s(0.04), s(0.62), s(0.62), s(0.34), 1.45, 'pop'),
-            (t4, 0.0, s(0.30), s(0.30), s(0.12), 1.0, 'smooth'),
-        ), side=side)
-
-    if name == 'scared':
-        # Unmistakable full-body startle! Whip arm all the way back, drop neck to stare wide-eyed,
-        # rapid terrified head rattle, then cautious forward peek!
-        t1, t2, t3, t4, t5 = t(0.16), t(0.42), t(0.72), t(1.22), t(1.88)
-        return Phrase(name, (
-            (0.0, -s(0.10), -s(0.42), -s(0.18), -s(0.66), 2.5, 'snap'),
-            (t1, -s(0.16), -s(0.44), -s(0.18), s(0.60), 2.4, 'snap'),
-            (t2, -s(0.14), -s(0.38), -s(0.16), -s(0.48), 2.1, 'pop'),
-            (t3, -s(0.08), -s(0.24), -s(0.10), s(0.32), 1.5, 'smooth'),
-            (t4, 0.0, s(0.42), s(0.42), -s(0.26), 1.0, 'smooth'),
-            (t5, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side, sfx=[(0.02, 'startle', 0.48)])
-
-    if name == 'proud':
-        # Stand TALL & vertical, chin lifted a regal +16 deg looking down its nose, noble swivel!
-        t1, t2, t3, t4 = t(0.32), t(1.08), t(1.78), t(2.28)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.18), 0.04, -0.14, 1.3, 'smooth'),
-            (t1, s(0.22), s(0.74), s(1.02), s(0.30), 1.65, 'pop'),
-            (t2, -s(0.18), s(0.72), s(0.98), -s(0.24), 1.15, 'smooth'),
-            (t3, s(0.06), s(0.56), s(0.74), s(0.16), 1.05, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side, sfx=[(t1 * 0.65, 'proud', 0.40)])
-
-    if name == 'seek':
-        # Actively searching where someone just vanished: leans far forward & sweeps wide!
-        t1, t2, t3, t4 = t(0.34), t(0.95), t(1.62), t(2.15)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.42), s(0.44), s(0.38), 1.35, 'smooth'),
-            (t1, s(0.44), s(0.78), s(0.72), s(0.60), 1.3, 'pop'),
-            (t2, -s(0.36), s(0.64), s(0.74), -s(0.54), 1.25, 'smooth'),
-            (t3, s(0.12), s(0.26), s(0.32), -s(0.24), 1.0, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side)
-
-    if name == 'notice':
-        t1, t2 = t(0.14), t(0.56)
-        return Phrase(name, (
-            (0.0, 0.0, -s(0.18), -s(0.08), -s(0.24), 1.95, 'smooth'),
-            (t1, 0.0, s(0.54), s(0.62), s(0.46), 2.15, 'snap'),
-            (t2, 0.0, s(0.34), s(0.38), s(0.22), 1.25, 'smooth'),
-        ), side=side)
-
-    if name == 'attend':
-        # Engaged forward lean-in when the floor opens for you!
-        t1, t2 = t(0.20), t(0.72)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.18), s(0.22), s(0.28), 1.3, 'smooth'),
-            (t1, 0.0, s(0.62), s(0.68), s(0.46), 1.35, 'pop'),
-            (t2, 0.0, s(0.52), s(0.56), s(0.34), 1.05, 'smooth'),
-        ), side=side)
-
-    if name == 'listen':
-        # Actively leaning in toward the speaker with steady eye lock & attentive head cock!
-        t1, t2, t3 = t(0.24), t(0.85), t(1.55)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.24), s(0.28), s(0.28), 1.25, 'smooth'),
-            (t1, 0.0, s(0.66), s(0.72), s(0.48), 1.3, 'pop'),
-            (t2, 0.0, s(0.58), s(0.64), s(0.34), 1.0, 'smooth'),
-            (t3, 0.0, s(0.62), s(0.68), s(0.40), 0.95, 'smooth'),
-        ), side=side)
-
-    if name == 'look-target':
-        t1, t2, t3, t4 = t(0.20), t(0.64), t(1.30), t(2.10)
-        return Phrase(name, (
-            (0.0, 0.0, -0.12, -0.06, s(0.24), 1.4, 'smooth'),
-            (t1, 0.0, s(0.48), s(0.54), s(0.52), 1.5, 'pop'),
-            (t2, 0.0, s(0.74), s(0.78), -s(0.34), 1.15, 'smooth'),
-            (t3, 0.0, s(0.54), s(0.56), -s(0.20), 1.0, 'smooth'),
-            (t4, 0.0, s(0.34), s(0.36), -s(0.10), 0.95, 'smooth'),
-        ), side=side)
-
-    if name == 'mirror':
-        t1, t2, t3, t4 = t(0.20), t(0.58), t(1.50), t(1.96)
-        return Phrase(name, (
-            (0.0, 0.0, -0.12, -0.04, -0.18, 1.3, 'smooth'),
-            (t1, 0.0, s(0.36), s(0.42), s(0.66), 1.5, 'pop'),
-            (t2, 0.0, s(0.58), s(0.64), s(0.74), 1.15, 'smooth'),
-            (t3, 0.0, s(0.38), s(0.42), s(0.44), 1.0, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side)
-
-    # ---------------------------------------------------------------- Expressive speech choreography!
-    # Every speaking style uses full-body posture + gaze-stabilized lean-in so talking looks alive.
-    if name == 'speaking':
-        t1, t2, t3 = t(0.22), t(0.68), t(1.32)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.12), s(0.14), s(0.18), 1.5, 'smooth'),
-            (t1, 0.0, s(0.54), s(0.60), -s(0.34), 1.6, 'pop'),
-            (t2, 0.0, s(0.38), s(0.42), s(0.26), 1.35, 'smooth'),
-            (t3, 0.0, s(0.44), s(0.48), -s(0.14), 1.25, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-warm':
-        t1, t2, t3 = t(0.26), t(0.84), t(1.48)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.18), s(0.20), -s(0.18), 1.2, 'smooth'),
-            (t1, s(0.06), s(0.64), s(0.68), s(0.44), 1.35, 'smooth'),
-            (t2, -s(0.04), s(0.52), s(0.56), s(0.30), 1.15, 'smooth'),
-            (t3, 0.0, s(0.48), s(0.52), s(0.22), 1.1, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-gentle':
-        # Base stays 0 so gentle empathetic speech holds steady, tender eye contact.
-        t1, t2, t3 = t(0.44), t(1.12), t(1.75)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.10), s(0.08), -s(0.20), 0.85, 'smooth'),
-            (t1, 0.0, s(0.54), s(0.48), s(0.46), 0.82, 'smooth'),
-            (t2, 0.0, s(0.44), s(0.40), s(0.36), 0.78, 'smooth'),
-            (t3, 0.0, s(0.38), s(0.36), s(0.28), 0.80, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-upbeat':
-        t1, t2, t3, t4 = t(0.22), t(0.58), t(0.98), t(1.44)
-        return Phrase(name, (
-            (0.0, 0.0, -s(0.12), -s(0.10), -s(0.26), 1.9, 'smooth'),
-            (t1, s(0.20), s(0.66), s(0.68), s(0.58), 2.15, 'snap'),
-            (t2, -s(0.18), s(0.34), s(0.36), -s(0.54), 2.05, 'pop'),
-            (t3, s(0.16), s(0.70), s(0.72), s(0.48), 1.95, 'pop'),
-            (t4, 0.0, s(0.44), s(0.46), -s(0.18), 1.5, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-emphatic':
-        t1, t2, t3 = t(0.20), t(0.62), t(1.22)
-        return Phrase(name, (
-            (0.0, -s(0.08), -s(0.18), -s(0.04), s(0.34), 1.85, 'smooth'),
-            (t1, s(0.12), s(0.76), s(0.72), -s(0.38), 2.1, 'snap'),
-            (t2, s(0.06), s(0.48), s(0.50), s(0.20), 1.65, 'pop'),
-            (t3, 0.0, s(0.42), s(0.44), -s(0.10), 1.35, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-playful':
-        t1, t2, t3, t4 = t(0.26), t(0.68), t(1.14), t(1.60)
-        return Phrase(name, (
-            (0.0, s(0.06), s(0.10), s(0.12), s(0.44), 1.65, 'smooth'),
-            (t1, s(0.26), s(0.60), s(0.60), -s(0.62), 1.85, 'pop'),
-            (t2, -s(0.24), s(0.72), s(0.74), s(0.54), 1.85, 'pop'),
-            (t3, s(0.14), s(0.44), s(0.46), -s(0.38), 1.5, 'smooth'),
-            (t4, 0.0, s(0.38), s(0.40), s(0.28), 1.3, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-annoyed':
-        t1, t2, t3, t4 = t(0.18), t(0.46), t(0.92), t(1.46)
-        return Phrase(name, (
-            (0.0, 0.0, -s(0.20), s(0.02), -s(0.20), 2.0, 'smooth'),
-            (t1, s(0.24), s(0.56), s(0.44), s(0.52), 2.2, 'snap'),
-            (t2, s(0.16), s(0.42), s(0.34), -s(0.46), 2.0, 'pop'),
-            (t3, -s(0.18), s(0.36), s(0.44), s(0.34), 1.6, 'smooth'),
-            (t4, 0.0, s(0.24), s(0.26), -s(0.16), 1.25, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-amused':
-        # Laughing torso bounce!
-        t1, t2, t3, t4 = t(0.18), t(0.42), t(0.70), t(1.14)
-        return Phrase(name, (
-            (0.0, 0.0, -s(0.16), s(0.04), s(0.26), 2.0, 'smooth'),
-            (t1, s(0.12), s(0.68), s(0.58), -s(0.48), 2.25, 'snap'),
-            (t2, -s(0.10), s(0.16), s(0.38), s(0.42), 2.15, 'snap'),
-            (t3, s(0.10), s(0.72), s(0.66), -s(0.42), 2.0, 'pop'),
-            (t4, 0.0, s(0.44), s(0.50), s(0.18), 1.4, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-surprised':
-        t1, t2, t3 = t(0.18), t(0.54), t(1.22)
-        return Phrase(name, (
-            (0.0, -s(0.06), -s(0.34), -s(0.12), -s(0.46), 2.25, 'snap'),
-            (t1, s(0.08), s(0.34), s(0.56), s(0.54), 2.1, 'pop'),
-            (t2, 0.0, s(0.70), s(0.76), -s(0.30), 1.5, 'smooth'),
-            (t3, 0.0, s(0.40), s(0.44), s(0.12), 1.2, 'smooth'),
-        ), side=side)
-
-    if name == 'speak-farewell':
-        t1, t2, t3, t4 = t(0.28), t(0.68), t(1.16), t(1.72)
-        return Phrase(name, (
-            (0.0, 0.0, s(0.44), s(0.50), s(0.32), 1.25, 'smooth'),
-            (t1, s(0.14), s(0.62), s(0.64), -s(0.44), 1.35, 'pop'),
-            (t2, -s(0.14), s(0.48), s(0.56), s(0.42), 1.3, 'pop'),
-            (t3, s(0.12), s(0.18), s(0.22), -s(0.22), 1.05, 'smooth'),
-            (t4, 0.0, 0.0, 0.0, 0.0, 0.95, 'smooth'),
-        ), side=side)
-
-    return None
+    spec = GESTURES.get(name)
+    if spec is None:
+        return None
+    lag, stiff, commit, beats = spec
+    if name not in CALM_STATES:
+        amp *= EXPRESSIVE
+    frames = []
+    for at, (b, a, n, h), ease in beats:
+        frames.append((t(at), b * amp, a * amp, n * amp, h * amp, stiff, ease))
+    if name in ('glance', 'survey', 'peek'):
+        # Where it looks varies a little each time; how it moves does not.
+        reach = rng.uniform(0.8, 1.15)
+        frames = [(f[0], f[1] * reach, *f[2:]) for f in frames]
+    sfx = SFX[name](rng, t) if name in SFX else []
+    return Phrase(name, tuple(frames), side=side, sfx=sfx, lag=lag, commit=t(commit))
 
 
 def mood_baseline(mood, t, noise_vec):
-    """Continuous full-body emotional posture + gaze-stabilized organic breathing.
-
-    Returns (d_base, d_arm, d_neck, d_head, stiff_mult).
-    """
+    """The posture a mood gives the whole body, plus slow breathing. Returns (d_base, d_arm, d_neck, d_head, stiff)."""
     valence = clamp(float(mood.get('valence', 0.1)), -1.0, 1.0)
     arousal = clamp(float(mood.get('arousal', 0.35)), 0.0, 1.0)
     loneliness = clamp(float(mood.get('loneliness', 0.0)), 0.0, 1.0)
     annoyance = clamp(float(mood.get('annoyance', 0.0)), 0.0, 1.0)
 
-    # Full-body emotional silhouette:
-    # Keep steady arm posture safely behind top-dead-center (-0.80 + <=0.22 = -0.58) so gravity always
-    # preloads the MG90S gear teeth in one direction and prevents backlash rocking when standing still.
-    arm_posture = clamp(
-        0.18 * max(0.0, valence) + 0.28 * loneliness
-        + 0.16 * max(0.0, -valence) + 0.08 * annoyance,
-        -0.12, 0.24,
-    )
-    neck_posture = (0.22 * max(0.0, valence) - 0.18 * loneliness
-                    - 0.10 * max(0.0, -valence) + 0.04 * annoyance)
-    head_posture = 0.24 * loneliness - 0.18 * annoyance + 0.08 * max(0.0, valence)
+    # The arm stays behind top-dead-center (-0.80 + at most 0.20) so gravity always loads its gears one way
+    # and it can't rock in the gear backlash while standing still.
+    arm_posture = clamp(0.12 * max(0.0, valence) + 0.20 * loneliness + 0.10 * max(0.0, -valence) + 0.05 * annoyance,
+                        -0.10, 0.20)
+    neck_posture = 0.16 * max(0.0, valence) - 0.14 * loneliness - 0.08 * max(0.0, -valence) + 0.03 * annoyance
+    head_posture = 0.18 * loneliness - 0.12 * annoyance + 0.05 * max(0.0, valence)
 
-    # Breathing: ultra-gentle slow arm heave (no rapid reversals), lively micro-life on lightweight neck/head.
-    breath_rate = 0.20 + 0.09 * arousal - 0.05 * loneliness
-    breath = math.sin(math.tau * breath_rate * t)
-    d_arm = arm_posture + breath * 0.014 + 0.010 * noise_vec[1]
-    d_neck = neck_posture + breath * 0.026 + 0.032 * noise_vec[2]
-    d_base = 0.024 * noise_vec[0]
-    d_head = head_posture + 0.072 * noise_vec[3]
+    # Breathing: a slow arm heave, with the light neck and head carrying a little life.
+    breath = math.sin(math.tau * (0.20 + 0.08 * arousal - 0.05 * loneliness) * t)
+    d_arm = arm_posture + breath * 0.012 + 0.008 * noise_vec[1]
+    d_neck = neck_posture + breath * 0.020 + 0.020 * noise_vec[2]
+    d_base = 0.018 * noise_vec[0]
+    d_head = head_posture + 0.040 * noise_vec[3]
 
-    stiff_mult = clamp(1.0 + 0.32 * arousal + 0.16 * annoyance - 0.32 * loneliness - 0.18 * max(0.0, -valence), 0.52, 1.55)
-    return d_base, d_arm, d_neck, d_head, stiff_mult
+    stiff = clamp(1.0 + 0.22 * arousal + 0.10 * annoyance - 0.25 * loneliness - 0.12 * max(0.0, -valence), 0.6, 1.35)
+    return d_base, d_arm, d_neck, d_head, stiff
 
 
 def idle_choice_for_mood(mode, mood, recent, rng):
-    """Choose the next non-repeating procedural idle beat weighted by internal mood."""
+    """Pick the next idle gesture, weighted by mood, never repeating the last few."""
     loneliness = float(mood.get('loneliness', 0.0))
     valence = float(mood.get('valence', 0.1))
     annoyance = float(mood.get('annoyance', 0.0))
 
     if mode == 'scan':
-        pool = ['survey', 'stretch', 'glance', 'peek', 'curious']
-        if loneliness > 0.45 or valence < -0.25:
-            pool += ['lonely', 'sad']
+        pool = ['survey', 'survey', 'glance', 'stretch', 'curious']
+        if loneliness > 0.55 or valence < -0.3:
+            pool += ['lonely']
     else:
-        pool = ['curious', 'glance', 'shy', 'peek', 'stretch']
-        if loneliness > 0.45:
-            pool += ['lonely', 'lonely', 'sad']
+        pool = ['glance', 'glance', 'curious', 'curious', 'shy', 'peek', 'stretch']
+        if loneliness > 0.55:
+            pool += ['lonely', 'sad']
         elif valence > 0.45:
-            pool += ['happy', 'curious', 'peek']
-        if annoyance > 0.45:
-            pool += ['grumpy', 'glance']
+            pool += ['happy', 'peek']
+        if annoyance > 0.5:
+            pool += ['grumpy']
 
     fresh = [item for item in pool if item not in recent] or pool
     return rng.choice(fresh)

@@ -138,8 +138,16 @@ def simulate_scenario(model, name, mode, duration, base, neck, mood, speech_prof
     eye_arr = np.asarray(eye_hist)
     span_deg = np.ptp(q_arr, axis=0) * np.asarray(P.DEG_PER_UNIT)
     eye_span = np.ptp(eye_arr, axis=0)
+    # Coherence: how often each joint changes direction. A readable gesture has few reversals;
+    # jittery, busy motion has many. Only count real moves (> 0.12 units/s), not settling noise.
+    vel = np.diff(q_arr, axis=0) / dt
+    reversals = []
+    for j in range(4):
+        moving = vel[:, j][np.abs(vel[:, j]) > 0.12]
+        reversals.append(int(np.sum(np.sign(moving[1:]) != np.sign(moving[:-1]))) if len(moving) > 1 else 0)
     metrics = {
         'name': name,
+        'reversals': reversals,
         'contacts': max_contacts,
         'max_trq_pct': [round(float(x), 1) for x in max_torque_pct],
         'span_deg': [round(float(x), 1) for x in span_deg],
@@ -176,14 +184,14 @@ def main():
     model = mujoco.MjModel.from_xml_string(mjcf())
     all_strips = []
     all_metrics = []
-    print(f"{'Scenario':15s} | {'Con':3s} | {'Span (b,a,n,h deg)':28s} | {'Eye Travel (x,y,z mm)':24s} | {'Pitch deg':14s} | {'Max Trq % (b,a,n,h)':24s} | SFX")
+    print(f"{'Scenario':15s} | {'Rev':14s} | {'Con':3s} | {'Span (b,a,n,h deg)':28s} | {'Eye Travel (x,y,z mm)':24s} | {'Pitch deg':14s} | {'Max Trq % (b,a,n,h)':24s} | SFX")
     print('-' * 124)
     for sc in SCENARIOS:
         frames, m = simulate_scenario(model, *sc)
         all_strips.append((sc[0], frames))
         all_metrics.append(m)
         print(
-            f"{m['name']:15s} | {m['contacts']:3d} | "
+            f"{m['name']:15s} | {str(m['reversals']):14s} | {m['contacts']:3d} | "
             f"{str(m['span_deg']):28s} | {str(m['eye_span_mm']):24s} | "
             f"{str(m['pitch_range_deg']):14s} | {str(m['max_trq_pct']):24s} | {m['sfx']}"
         )

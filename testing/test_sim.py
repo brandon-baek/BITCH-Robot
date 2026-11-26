@@ -102,14 +102,18 @@ class SimEnv(unittest.TestCase):
             self.assertEqual(metrics['contacts'], 0, f'Collision in {item[0]}')
             self.assertLess(max(metrics['max_trq_pct']), 45.0, f'Torque too high in {item[0]}: {metrics["max_trq_pct"]}')
             self.assertGreater(metrics['min_eye_z_mm'], 50.0, f'Head too low in {item[0]}')
-        # Verify genuine full-body Pixar motion (not held back!)
-        self.assertGreater(results['curious']['eye_span_mm'][0], 60.0)
+        # Expressive enough to read across a room...
+        self.assertGreater(results['curious']['eye_span_mm'][0], 25.0)
         self.assertGreater(results['victory']['span_deg'][3], 40.0)
         self.assertGreater(results['victory']['span_deg'][0], 25.0)
-        self.assertGreater(results['lonely']['span_deg'][1], 45.0)
+        self.assertGreater(results['lonely']['span_deg'][1], 30.0)
         self.assertGreater(results['doze']['span_deg'][1], 50.0)
-        self.assertGreater(results['speak_playful']['eye_span_mm'][0], 70.0)
-
+        # ...but coherent: one idea per gesture, no jittery back-and-forth, and the base holds still while
+        # talking so BITCH keeps eye contact. (Reversals are direction changes per joint.)
+        for name in ('curious', 'lonely', 'scared', 'doze'):
+            self.assertLessEqual(max(results[name]['reversals']), 3, f'{name} is busy: {results[name]["reversals"]}')
+        self.assertLessEqual(results['speak_playful']['reversals'][0], 1)
+        self.assertLess(results['speak_playful']['span_deg'][0], 10.0)
 
 if __name__ == '__main__':
     unittest.main()
