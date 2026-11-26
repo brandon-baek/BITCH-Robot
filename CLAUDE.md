@@ -41,20 +41,21 @@ personality, memory and habits, and it should notice things on its own instead o
 | `control.py` | Pi | Keyboard driving mode |
 | `core/` | Mac | BITCH's mind: `python -m core` (the BITCH app runs `python -m core --app`). App on :8780 (http) and :8781 (https) |
 | `core/hub.py` | Mac | Device registry, events, routing (which device speaks a reply), app updates |
-| `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
-| `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals; Kokoro voice with word-timed gestures |
+| `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP; voice streams to the Pi's `/speak_stream` as it is made), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
+| `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Parakeet (Whisper only when the name was missed) for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals, eyes stay on whoever BITCH is talking with; BITCH's own cloned voice (Qwen3-TTS, `core/voices/`, Kokoro as backup) streamed as it is written, with word-timed gestures and a glance at anyone it names |
 | `core/prosody.py` | Mac | How something was said (pitch, range, loudness, pace) against that mic's usual voice, as a note for the brain |
 | `core/rhythm.py` | Mac | How awake BITCH is (engaged, attentive, resting, asleep) so the motors only work when someone is there; hourly budget for unprompted motion |
 | `core/helper.py` | Mac | Hands weather, calendar, email and web requests to the signed-in ChatGPT on the Pi (picks Instant or Medium per request) and speaks the answer when it returns (about 15 s) |
-| `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON; a `do` field lets it look, perform, run a routine or ask ChatGPT, offered only when the request calls for it |
+| `core/brain.py`, `persona.md`, `llm.py` | Mac | Brain (Ornith 1.5 35B-A3B in BITCH's own llama-server, cached prompt) answers in schema JSON; a `do` field lets it look, perform, run a routine, use a tool or ask ChatGPT, offered only when the request calls for it. In a group, a line without the name is checked for who it was meant for ("Mom, ..." never goes to BITCH) |
+| `core/tools.py` | Mac | Real tools: timers, lists, weather (Open-Meteo, home city set by saying it), BITCH's voice volume, Mac music. Data tools fetch first, then the model answers from the facts; a failed action is never confirmed |
 | `core/moves.py` | Mac | Move steps shared by the robot and the app; invents new moves (keyframes from the 9B, clamped to Actor limits) |
 | `core/life.py` | Mac | Mood, timers/reminders/routines, greetings and the one-time welcome, initiative, memory reflection, diary |
 | `core/memory.py`, `config.py` | Mac | SQLite memory (facts about people and conversation summaries, full-text search, unlocked by voice or face) and settings in `~/.bitch` (never in the repo). Every saved fact must quote the person's own words; `memory.clean()` runs nightly and from the app |
 | `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
-| `sim/` | Mac | Measured 3D model for simulation and RL: `params.py` (every dimension) → `python -m sim.build` → MuJoCo, URDF, GLB/OBJ/STL, web viewer; Gymnasium envs `Bitch-LookAt-v0`, `Bitch-Pose-v0` in desk.py units at 50 Hz |
-| `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH) |
+| `sim/` | Mac | Measured 3D model for simulation and RL: `params.py` (every dimension) → `python -m sim.build` → MuJoCo, URDF, GLB/OBJ/STL, web viewer; Gymnasium envs `Bitch-LookAt-v0`, `Bitch-Pose-v0` in desk.py units at 50 Hz. `python -m sim.speech_motion` plays spoken lines through the real gesture code and checks each nod, shake, tilt and name glance on the body |
+| `testing/` | Mac | Fake servo board, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH). With the real models: `conversation_lab` (simulated room, voices, echo; scenarios quick, chat, pauses, barge, echo, family), `eval_tools`, `eval_group` |
 
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub, links the .py files into ~, and restarts
 the `bitch-brain` user service (logs: `journalctl --user -u bitch-brain -f`).

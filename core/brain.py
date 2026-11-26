@@ -1263,9 +1263,11 @@ class Brain:
             system = self.spoken_system()
             schema = MEMORY_SCHEMA if natural_memory else SPOKEN_SCHEMA
             actions, extra, lines = self.available_actions(text, robot, image is not None, local_only=bool(local_request))
-            group = not getattr(self, 'accepted_wake', True) and self.room_shared()
-            if group and talks_to_someone_else(text, people_names()):
+            unnamed = not getattr(self, 'accepted_wake', True)
+            # "Mom, ..." is never for BITCH, camera or not.
+            if unnamed and talks_to_someone_else(text, people_names()):
                 return self.not_for_me(source, text)
+            group = unnamed and self.room_shared()
             if group:
                 # Nobody said the name and others are here: decide who it was meant for before saying anything.
                 schema = {**schema, 'properties': {'to': {'type': 'string', 'enum': ['me', 'them']}, **schema['properties']},

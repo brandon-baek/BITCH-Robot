@@ -245,6 +245,11 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(brain.reply('Did he?', 'desk'), 'He did not.')
             self.assertNotIn('to', chat.call_args.kwargs['schema']['properties'])
             self.assertIn('feed the dog', chat.call_args.args[0][-1]['content'])
+        # Even without a camera, calling on someone by name is never for BITCH.
+        brain.accepted_wake = False
+        with (patch.object(hub, 'sight', None), patch('core.brain.llm.chat') as chat):
+            self.assertEqual(brain.reply('Dad, can you grab the door?', 'desk'), '')
+            chat.assert_not_called()
         # Alone in the room, a follow-up never asks who it was for.
         brain.accepted_wake = False
         with (patch.object(hub, 'sight', Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 0}),
