@@ -287,10 +287,10 @@ class Brain:
                 wake = None
             elif wake == '' and not show_stop:
                 # Only the name, after a pause: open the floor without making the mic deaf.
-                if not (self.acknowledged and self.acknowledged[0] == source):
-                    self.open_floor(source)
                 if name:
                     self.speaker, self.speaker_evidence = name, 'voice'
+                if not (self.acknowledged and self.acknowledged[0] == source):
+                    self.open_floor(source, name)
                 return True
             if not followup:
                 self.clear_conversation(source)
@@ -360,7 +360,7 @@ class Brain:
         with self.lock:
             return self.open_floor(source)
 
-    def open_floor(self, source):
+    def open_floor(self, source, name=None):
         # Called with the lock held.
         now = time.monotonic()
         if self.busy.is_set() or self.acknowledged and self.acknowledged[0] == source and now < self.acknowledged[1]:
@@ -372,8 +372,16 @@ class Brain:
         self.last_interaction = now
         hub.status = 'Listening for your turn'
         if hub.selected('voice') and not config.get('muted') and config.get('volume'):
-            threading.Thread(target=voice.play, args=(*voice.encode(voice.cue()), threading.Event()),
-                             kwargs={'interim': True}, daemon=True).start()
+            def answer():
+                text, wav = voice.acknowledge(name or self.speaker)
+                if text:
+                    hub.chat('robot', text)
+                    self.spoken_reply = text   # so its own words aren't heard as yours
+                voice.play(*wav, threading.Event(), text=bool(text), delivery='warm', interim=True)
+                if hub.status == 'Speaking' and not self.busy.is_set():
+                    hub.status = 'Listening for your turn'
+
+            threading.Thread(target=answer, daemon=True).start()
         return True
 
     def interrupt(self, source, text, voice_name=None, strong=False, sustained=False):

@@ -279,10 +279,44 @@ def join(first, second, pause=.16):
     return joined
 
 
+# Said when someone calls BITCH's name and nothing else. Rendered ahead so the answer is instant.
+ACKNOWLEDGE = ('Yeah?', 'What’s up?', 'Mm-hm?', 'Yes?', 'I’m here.', 'Hey.', 'Yeah, what’s up?')
+spoken_cache = {}
+last_acknowledgment = None
+
+
+def cached(text, delivery='warm'):
+    if text not in spoken_cache:
+        spoken_cache[text] = render(text, delivery=delivery)
+        while len(spoken_cache) > 24:
+            spoken_cache.pop(next(iter(spoken_cache)))
+    return spoken_cache[text]
+
+
+def acknowledge(name=None):
+    """Answer a bare "Hey BITCH" out loud, with a little variety, instead of just a beep."""
+    global last_acknowledgment
+    import random
+
+    choices = [text for text in ACKNOWLEDGE if text != last_acknowledgment]
+    text = random.choice(choices)
+    if name and random.random() < .35:
+        text = random.choice(('Yeah, {}?', 'What’s up, {}?', 'Hey, {}.')).format(name)
+    last_acknowledgment = text
+    try:
+        wav = cached(text)
+    except (OSError, RuntimeError, ValueError):
+        wav = encode(cue())
+        text = ''
+    return text, wav
+
+
 def warm():
     def load():
         try:
             render('Hello there.')
+            for text in ACKNOWLEDGE:
+                cached(text)
         except Exception as error:
             hub.note('voice', f'Speech synthesis unavailable: {error}')
 
