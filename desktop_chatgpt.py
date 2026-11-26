@@ -11,6 +11,7 @@ Test it on the Pi with:  python3 desktop_chatgpt.py ask "What is 17 times 23?"
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -28,6 +29,9 @@ PI_HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
 PROFILE = PI_HOME / 'chromium'
 DEFAULT_PROFILE = Path('~/.config/chromium').expanduser()
 SEND_WAIT_SECONDS = 420.
+# ChatGPT's thinking levels, most preferred first. Fast answers in a few seconds; think for real reasoning.
+MODES = {'fast': (r'^instant', r'^light', r'^fast', r'^auto'),
+         'think': (r'^medium', r'^standard', r'^thinking', r'^extended')}
 LOAD_SECONDS = 45.       # a Pi 4 needs a while to start ChatGPT's page
 
 # Everything the page script needs to know about ChatGPT's layout lives here, in one place.
@@ -59,7 +63,15 @@ PAGE = r'''
     const body = el.querySelector('.markdown') || el;
     return (body.innerText || '').trim();
   };
-  return {composer, sendButton, streaming, replies, asks, loginButton, textOf};
+  // The thinking-level pill next to the composer ("Instant", "Medium", ...) and its menu.
+  const modeButton = () => {
+    const box = composer();
+    const scope = (box && box.closest('form')) || document;
+    return Array.from(scope.querySelectorAll('button')).find((b) => visible(b) && b.getAttribute('aria-haspopup')
+      && /instant|light|medium|heavy|standard|extended|thinking|auto|fast|pro/i.test((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || ''))) || null;
+  };
+  const modeItems = () => all('[role="menuitemradio"], [role="menuitem"], [role="option"]').filter(visible);
+  return {composer, sendButton, streaming, replies, asks, loginButton, textOf, modeButton, modeItems};
 })()
 '''
 
@@ -462,6 +474,48 @@ def run_chatgpt(prompt, *, send):
             tab.close()
 
 
+def open_mode_menu(tab):
+    """Open the thinking-level menu. Returns (current label, [option labels]) or (None, [])."""
+    label = tab.run('const b = page.modeButton(); if (!b) return null; b.focus(); '
+                    'for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) '
+                    '  b.dispatchEvent(new MouseEvent(t, {bubbles: true})); '
+                    'return (b.innerText || b.getAttribute("aria-label") || "").trim();')
+    if label is None:
+        return None, []
+    for _ in range(10):
+        time.sleep(.25)
+        items = tab.run('return page.modeItems().map((e) => (e.innerText || "").trim().split("\\n")[0]);')
+        if items:
+            return label, items
+    return label, []
+
+
+def close_menu(tab):
+    for kind in ('keyDown', 'keyUp'):
+        tab.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'Escape', 'code': 'Escape', 'windowsVirtualKeyCode': 27})
+
+
+def choose_mode(tab, mode):
+    """Pick ChatGPT's thinking level for this request: 'fast' or 'think'. Leaves it alone if the menu changed."""
+    wanted = MODES.get(mode)
+    if not wanted:
+        return None
+    label, items = open_mode_menu(tab)
+    if label is None:
+        return None
+    for pattern in wanted:
+        for index, text in enumerate(items):
+            if re.search(pattern, text, re.I):
+                if re.search(pattern, label, re.I):
+                    close_menu(tab)
+                    return text
+                tab.run(f'const e = page.modeItems()[{index}]; if (e) e.click(); return true;')
+                time.sleep(.3)
+                return text
+    close_menu(tab)
+    return None
+
+
 def draft(prompt):
     return run_chatgpt(prompt, send=False).get('state') == 'drafted'
 
@@ -495,6 +549,14 @@ if __name__ == '__main__':
         print(start_browser() or f'BITCH Chromium restarted (DevTools on 127.0.0.1:{PORT}).')
     elif sys.argv[1:2] == ['start']:
         print(start_browser() or f'BITCH Chromium is running (DevTools on 127.0.0.1:{PORT}).')
+    elif sys.argv[1:2] == ['modes']:
+        start_browser()
+        tab = chatgpt_tab()
+        try:
+            print(json.dumps(dict(zip(('current', 'options'), open_mode_menu(tab))), indent=2))
+            close_menu(tab)
+        finally:
+            tab.close()
     elif sys.argv[1:2] == ['status']:
         print(json.dumps(status(), indent=2))
     elif sys.argv[1:2] == ['ask'] and len(sys.argv) > 2:
