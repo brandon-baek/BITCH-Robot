@@ -358,35 +358,34 @@ def normalized(text):
     return ' '.join((text or '').split())
 
 
+FRESH = ('return location.pathname === "/" && !page.asks().length && !!page.composer() '
+         '&& !(page.composer().value ?? page.composer().innerText).trim();')
+
+
 def open_new_chat(tab):
     """Start a fresh chat and wait for the composer. Returns an error or None.
 
-    When ChatGPT is already open, its own "New chat" link switches chats inside the page, which takes a moment
-    instead of the 15+ seconds a Pi 4 needs to load ChatGPT from scratch."""
+    After every answer BITCH already loads a fresh chat in the background (see prepare_next), so normally the page
+    is ready and this takes a moment. Loading ChatGPT from scratch takes a Pi 4 around 20 seconds."""
     try:
-        state = tab.run('if (!page.composer()) return "none"; '
-                        'if (!page.asks().length && location.pathname === "/") return "fresh"; '
-                        'const link = page.newChatLink(); if (link) { link.click(); return "link"; } return "keys";', 6.)
+        if tab.run(FRESH, 6.):
+            return None
+        state = tab.run('if (location.pathname === "/") return "home"; if (!page.composer()) return "none"; '
+                        'const link = page.newChatLink(); if (link) { link.click(); return "link"; } return "none";', 6.)
     except (RuntimeError, TimeoutError):
         state = 'none'
-    if state == 'keys':
-        # ChatGPT's own shortcut for a new chat.
-        tab.call('Input.dispatchKeyEvent', {'type': 'rawKeyDown', 'key': 'O', 'code': 'KeyO', 'windowsVirtualKeyCode': 79,
-                                            'modifiers': 2 | 8})
-        tab.call('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'O', 'code': 'KeyO', 'windowsVirtualKeyCode': 79,
-                                            'modifiers': 2 | 8})
-    if state != 'none':
-        deadline = time.monotonic() + 6.
+    if state == 'link':
+        deadline = time.monotonic() + 5.
         while time.monotonic() < deadline:
             time.sleep(.25)
             try:
-                if tab.run('return location.pathname === "/" && !page.asks().length && !!page.composer() '
-                           '&& !(page.composer().value ?? page.composer().innerText).trim();', 4.):
+                if tab.run(FRESH, 4.):
                     return None
             except (RuntimeError, TimeoutError):
                 pass
     tab.call('Page.enable')
-    tab.call('Page.navigate', {'url': HOME_PAGE})
+    if state != 'home':
+        tab.call('Page.navigate', {'url': HOME_PAGE})
     deadline = time.monotonic() + LOAD_SECONDS
     state = {}
     while time.monotonic() < deadline:
@@ -411,6 +410,9 @@ def open_new_chat(tab):
 def enter_prompt(tab, prompt):
     """Paste the request into the composer the way a person would. Returns True when it's in."""
     text = json.dumps(prompt)
+    # Clear anything left in the composer first, so two requests can never run together.
+    tab.run('const box = page.composer(); if (box) { box.focus(); document.execCommand("selectAll"); '
+            'document.execCommand("delete"); } return true;')
     tab.run(f'''
         const box = page.composer();
         if (!box) return false;
@@ -524,6 +526,7 @@ def run_chatgpt(prompt, *, send, mode=None):
         result = read_reply(tab, before)
         lap('answer')
         result['timing'] = timing
+        prepare_next(tab)
         return result
     except (OSError, ValueError, RuntimeError, TimeoutError, KeyError, TypeError, urllib.error.URLError) as error:
         if sent:
@@ -532,6 +535,14 @@ def run_chatgpt(prompt, *, send, mode=None):
     finally:
         if tab is not None:
             tab.close()
+
+
+def prepare_next(tab):
+    """Start loading a fresh chat now, so the next question doesn't wait for it."""
+    try:
+        tab.call('Page.navigate', {'url': HOME_PAGE}, timeout=5.)
+    except (OSError, RuntimeError, TimeoutError):
+        pass
 
 
 def open_mode_menu(tab):
