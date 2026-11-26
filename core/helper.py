@@ -51,7 +51,7 @@ def effort(text):
 
 
 WAIT = 480              # total seconds to keep watching a long background request
-BACKGROUND_AFTER = 12   # seconds before a pending lookup turns into a background notification
+BACKGROUND_AFTER = 20   # seconds before a pending lookup turns into a background notification (most answers: 14-17 s)
 LOST = 25               # seconds without hearing from the Pi before reporting connection loss
 SPOKEN = 420            # answers longer than this get condensed before BITCH speaks them
 MARKUP = re.compile(r'\[([^\]]+)\]\([^)]+\)|https?://\S+|[*_#`>|]+|^\s*[-•\d.]+\s+', re.M)
