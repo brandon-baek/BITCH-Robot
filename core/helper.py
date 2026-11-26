@@ -160,6 +160,13 @@ def start(brain, source, identity, request, conversation=(), *, user_text='', re
     if not robot or not getattr(robot, 'handoff', False):
         return ('I can’t reach ChatGPT right now. Make sure the Pi is connected.'
                 if explicit else 'I can’t look that up right now — the Pi isn’t connected.')
+    asked = set(re.findall(r'\w+', (user_text or request).casefold()))
+    with lock:
+        for task in tasks:
+            earlier = set(re.findall(r'\w+', task['request'].casefold()))
+            if (task['state'] in ('working', 'background') and time.time() - task['started'] < 90 and asked
+                    and len(asked & earlier) >= .6 * min(len(asked), len(earlier))):
+                return 'I’m already on that one.'   # the same question again (or BITCH's own echo): don't ask twice
     prompt = instructions(request, list(conversation), speaker=identity or getattr(brain, 'speaker', None),
                           remembered=remembered, explicit=explicit)
     request_id = uuid.uuid4().hex
@@ -197,7 +204,7 @@ def watch(brain, source, task):
     backgrounded = False
 
     while time.monotonic() - started < WAIT:
-        time.sleep(1.2)
+        time.sleep(.5)
         now = time.monotonic()
         status = robot.macro_status(task['id']) if robot else None
         state = status.get('state') if status else None
@@ -210,6 +217,8 @@ def watch(brain, source, task):
             moved_on = getattr(brain, 'turn_count', 0) > task.get('turn_mark', 0)
             delayed = backgrounded or moved_on or (now - started >= BACKGROUND_AFTER)
             task.update(state='done', answer=answer)
+            pi = status.get('timing')
+            print(f'  Lookup: answer back {now - started:.1f} s after asking' + (f' (Pi: {pi})' if pi else ''), flush=True)
             out_loud = spoken(answer, request=task['request'], explicit=explicit, contextualize=delayed)
             history_line = f'ChatGPT said: {answer[:600]}' if explicit else strip_gpt_mentions(answer[:600], allow_gpt=False)
             extra = {'polite': True} if moved_on else {}

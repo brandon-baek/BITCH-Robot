@@ -38,6 +38,16 @@ pipeline_lock = threading.Lock()
 # MLX (BITCH's voice, Parakeet, Whisper) is not safe to run from two threads at once. Everything that uses it takes this
 # lock, a step at a time: the voice holds it per chunk (about 0.2 s), so a transcription can slip in between.
 MLX = threading.RLock()
+
+
+def limit_mlx_cache():
+    """MLX keeps freed GPU buffers for reuse, and with three models (hearing, voice) that cache grows to gigabytes.
+    Memory is what makes words stutter on this Mac, so keep the cache small."""
+    try:
+        import mlx.core as mx
+        mx.set_cache_limit(384 * 1024 * 1024)
+    except Exception:
+        pass
 _urgent = [0]          # how many transcriptions are waiting for the GPU right now
 
 
@@ -129,6 +139,7 @@ def load_qwen():
         try:
             from mlx_audio.tts.utils import load_model
 
+            limit_mlx_cache()
             with MLX:
                 qwen = load_model(QWEN_MODELS.get(config.get('voice_model'), QWEN_MODELS['0.6B']))
             qwen.reference_text = (REFERENCE.with_suffix('.txt')).read_text().strip()

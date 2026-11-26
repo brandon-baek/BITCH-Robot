@@ -259,6 +259,23 @@ class WakeTests(unittest.TestCase):
             brain.reply('And tomorrow?', 'desk')
             self.assertNotIn('to', chat.call_args.kwargs['schema']['properties'])
 
+    def test_bitch_never_stops_for_its_own_echo(self):
+        brain = Brain()
+        brain.spoken_reply = 'Alright, picture this. A small robot named Cog lived in a kitchen full of copper pots.'
+        with patch.object(brain, 'can_interrupt', return_value=True), patch.object(brain, 'yield_turn', return_value=True) as yields:
+            # Its own words coming back, mangled by the recognizer, loudly: not an interruption.
+            self.assertFalse(brain.interrupt('desk', 'A small robot named cog lived in the kitchen', strong=True))
+            self.assertFalse(brain.interrupt('desk', 'uh', strong=True))
+            yields.assert_not_called()
+            # A person talking over it: stop.
+            self.assertTrue(brain.interrupt('desk', 'Wait, make it about painting instead', strong=True))
+        # BITCH's "Let me check." heard back is dropped, and a "Yeah?" lead-in is trimmed.
+        from core.brain import sounds_like_own_words, strip_playback
+        self.assertTrue(sounds_like_own_words('Let check.', ['Let me check.']))
+        self.assertFalse(sounds_like_own_words('Can you check the weather in Tokyo?', ['Let me check.']))
+        self.assertEqual(strip_playback("Yeah. Um, what's the weather like tomorrow?", 'Yeah?'),
+                         "Um, what's the weather like tomorrow?")
+
     def test_talk_over_transcript_drops_bitchs_own_words_from_the_front(self):
         from core.brain import strip_playback
         spoken = 'Alright, picture this. A small robot named Cog lived in a studio.'

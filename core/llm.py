@@ -121,8 +121,12 @@ def start_server(wait=240):
             pass
         command = [binary, '-m', str(weights), '--host', '127.0.0.1', '--port', str(SERVER_PORT),
                    '-c', str(CONTEXT * 2), '-np', '2', '--jinja', '-ngl', '99', '--no-webui',
-                   # A checkpoint every few tokens: a follow-up turn resumes right after the last one.
-                   '--ctx-checkpoints', '32', '--checkpoint-min-step', '16']
+                   # A checkpoint every few tokens: a follow-up turn resumes right after the last one. A few recent
+                   # ones are enough, and each holds the model's whole recurrent state (hundreds of MB).
+                   '--ctx-checkpoints', '8', '--checkpoint-min-step', '16',
+                   # The saved-prompt cache defaults to 8 GB of RAM; on a 32 GB Mac that pushes the model's own
+                   # weights out to disk and every word stutters.
+                   '--cache-ram', '1024']
         if projector:
             command += ['--mmproj', str(projector)]
         log = open(config.HOME / 'llm-server.log', 'ab')

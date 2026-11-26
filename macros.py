@@ -107,6 +107,8 @@ def handoff_status(request_id):
     status = {'state': record.get('state', 'queued'), 'answer': record.get('answer')}
     if record.get('reason'):
         status['reason'] = record['reason']
+    if record.get('timing'):
+        status['timing'] = record['timing']   # where the seconds went on the Pi (new chat, mode, paste, send, answer)
     return status
 
 

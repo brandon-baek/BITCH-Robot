@@ -338,10 +338,14 @@ class Hearing:
                     over = [ratio for talking, ratio in votes if talking]
                     voted = (len(votes) == VOTE_FRAMES and sum(ratio >= VOTE_EACH for ratio in over) >= VOTE_NEEDED
                              and float(np.exp(np.mean(np.log(np.maximum(over, 1e-3))))) >= VOTE_MEAN)
-                    if louder_run == SUSTAINED or voted and hub.brain.can_interrupt(source):
-                        # Someone has kept talking over BITCH: stop, like a person would, even
-                        # before the words are clear enough to transcribe.
-                        hub.brain.interrupt(source, '', strong=True, sustained=True)
+                    if (louder_run == SUSTAINED or voted) and overlap_start is None and not self.clips.full():
+                        # Sounds like someone talking over BITCH. Loudness alone can't tell them from BITCH's own
+                        # echo in an open room, so transcribe it first: brain.interrupt stops only for real words
+                        # that aren't BITCH's.
+                        overlap_start = max(0, len(clip) - 2 * VOTE_FRAMES)   # about a second: enough for words
+                        last_probe = len(clip) - overlap_start
+                        self.clips.put_nowait(Clip('barge', source, revision, received, began, frame_at,
+                                                   np.concatenate(clip[overlap_start:]), strong=True))
                     probe = voiced - last_probe >= 12 or last_probe == 0 and voiced >= 6 and quiet == 6
                     if (overlap >= 9 and overlap_start is not None and len(clip) - overlap_start - last_probe >= 9
                             and not self.clips.full()):
@@ -398,6 +402,7 @@ class Hearing:
         try:
             import mlx_whisper
 
+            voice.limit_mlx_cache()
             warmup = warmup_speech()
             with voice.MLX:
                 mlx_whisper.transcribe(warmup, path_or_hf_repo=WHISPER, language='en', initial_prompt=WAKE_HINT)
@@ -475,6 +480,14 @@ class Hearing:
                     marker = INTERRUPT.match(text)
                     if marker and not text.lower().startswith('stop listening'):
                         text = text[marker.end():].strip()
+                recent = hub.brain.recent_speech() if text else []
+                if recent:
+                    from .brain import sounds_like_own_words, strip_playback
+
+                    if sounds_like_own_words(text, recent):
+                        continue   # BITCH hearing itself
+                    for line in recent:
+                        text = strip_playback(text, line)
                 if text and valid() and hub.brain.addressed(text, source, began):
                     _, name = people.speaker(source, clip.speech, clip.voiced, addressed=True)
                     if valid():

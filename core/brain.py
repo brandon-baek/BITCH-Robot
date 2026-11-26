@@ -110,6 +110,19 @@ def talks_to_someone_else(text, names=()):
                              + r"\s*[.!?]*$", text, re.I))
 
 
+def sounds_like_own_words(text, lines):
+    """A transcript that is just BITCH's own recent words coming back through the mic ("Let check." after it said
+    "Let me check."). Loose on purpose: the recognizer drops and changes words in an echo."""
+    words = [re.sub(r"['’]", '', w) for w in re.findall(r"[\w'’]+", text.casefold())]
+    if not words:
+        return False
+    for line in lines:
+        said = [re.sub(r"['’]", '', w) for w in re.findall(r"[\w'’]+", line.casefold())]
+        if said and len(words) <= len(said) + 2 and sum(w in set(said) for w in words) >= .75 * len(words):
+            return True
+    return repeats_playback(text, ' '.join(lines))
+
+
 CUT_IN = re.compile(r"(?:wait|hold on|hold up|hang on|actually|no no|stop|sorry|scratch that)\b", re.I)
 
 
@@ -125,7 +138,7 @@ def strip_playback(text, spoken):
         return [(re.sub(r"['’]", '', m[0]), m.start()) for m in re.finditer(r"[\w'’]+", line)]
 
     tokens, reply = words_of(text), [w for w, _ in words_of(spoken or '')]
-    if len(tokens) < 3 or len(reply) < 2:
+    if len(tokens) < 3 or not reply:
         return text
     words = [w for w, _ in tokens]
     same = lambda a, b: a == b or len(a) > 3 and SequenceMatcher(None, a, b).ratio() >= .75
@@ -135,7 +148,9 @@ def strip_playback(text, spoken):
         while n < len(words) and start + n < len(reply) and same(words[n], reply[start + n]):
             n += 1
         best = max(best, n)
-    cut = best if 2 <= best < len(words) - 1 else 0
+    # Two words of BITCH's at the start, or all of a short line like "Yeah?" ("Yeah. What's the weather...").
+    whole_short = len(reply) <= 2 and best == len(reply)
+    cut = best if (best >= 2 or whole_short) and best < len(words) - 1 else 0
     said = set(reply)
     for index, (word, at) in enumerate(tokens[:14]):
         if index > cut and CUT_IN.match(text[at:]):
@@ -409,6 +424,14 @@ class Brain:
         return ('Said between other people in the room in the last minute or so (not to you): '
                 + ' / '.join(json.dumps(line, ensure_ascii=False) for line in lines[-3:])) if lines else None
 
+    def recent_speech(self, seconds=8.):
+        """What BITCH said out loud in the last few seconds (its echo can still be in the mic)."""
+        now = time.time()
+        lines = [m['text'] for m in hub.messages if m['role'] == 'robot' and now - m['at'] < seconds]
+        if self.spoken_reply and self.spoken_reply not in lines:
+            lines.append(self.spoken_reply)
+        return lines
+
     def room_shared(self):
         """True when more than one person is around (two faces in view, or two voices in the last few minutes)."""
         in_view = getattr(hub.sight, 'in_view', None)
@@ -564,8 +587,12 @@ class Brain:
         if not words or voice_name and self.speaker and voice_name != self.speaker:
             return False
         matched_voice = bool(voice_name and voice_name == self.speaker)
-        # A partial Whisper decode can omit words or change contractions in our own reply.
-        if repeats_playback(text, self.spoken_reply):
+        # A partial decode can omit words or change contractions in our own reply.
+        if repeats_playback(text, self.spoken_reply) or sounds_like_own_words(text, self.recent_speech()):
+            return False
+        # Our echo usually transcribes as our own words; anything left that is only a word or two of noise
+        # ("uh", "the") isn't someone taking the floor either.
+        if not marker and len(strip_playback(text, self.spoken_reply).split()) < 2:
             return False
         # Strong means the mic was clearly louder than BITCH's own echo: a person is talking.
         if not strong and not marker and len(words) < (2 if matched_voice else 4):
@@ -1116,7 +1143,7 @@ class Brain:
         hub_relevant = not local_only and (
             CHATGPT.search(text) or helper.should_lookup(text) or not helper.LOCAL_TALK.search(text)
         )
-        if robot and getattr(robot, 'handoff', False) and hub_relevant:
+        if robot and getattr(robot, 'handoff', False) and hub_relevant and not getattr(self, 'tool_result', None):
             actions.append('lookup')
             extra['task'] = {'type': 'string', 'maxLength': 600}
             if any(tool.name == 'weather' for tool in offered):
