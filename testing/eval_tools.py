@@ -71,7 +71,7 @@ def main():
             ok = bool(happened() and sounds_right(reply))
             passed += ok
             used = next((n.split(':')[0] for n in notes if n and ':' in n and n.split(':')[0] in tools.BY_NAME), '-')
-            print(f"{'ok ' if ok else 'BAD'} {took:4.1f}s [{used:12s}] {said!r}\n      -> {reply!r}")
+            print(f"{'ok ' if ok else 'BAD'} {took:4.1f}s [{used:12s}] {said!r}\n      -> {reply!r}" + ('' if ok else f'\n      notes: {notes}'))
     tools.timers.cancel()
     print(f'\n{passed}/{len(CASES)} passed')
 

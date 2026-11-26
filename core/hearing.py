@@ -30,6 +30,7 @@ SUSTAINED = 20        # frames (0.64 s) of talking over BITCH that stop it witho
 # Talking over BITCH, decided by a vote over the last half second instead of an unbroken run (natural speech dips
 # between words, which kept resetting the run): most speech frames clearly above BITCH's own echo, and on average too.
 VOTE_FRAMES, VOTE_NEEDED, VOTE_EACH, VOTE_MEAN = 16, 9, 1.6, 1.9
+WAKE_ACK_QUIET = 20    # frames of silence (about 0.65 s) after a bare name before saying "Yeah?": a comma pause is shorter
 PREVIEW_QUIET = 8      # frames of silence (about a quarter second) before a speculative transcript
 TRAILING = re.compile(
     r"(?:\.\.\.|…|[,;:—–-])$|\b(?:and|but|or|so|because|cause|the|a|an|to|of|with|my|your|our|their|"
@@ -181,6 +182,7 @@ class Hearing:
         self.capture = None
         self.decoding = None
         self.finished = None
+        self.wake_heard = None   # the clip whose preview was just the name; acknowledged only after a real pause
         self.echo = EchoGate()
 
     def phase(self):
@@ -373,6 +375,10 @@ class Hearing:
                 # Give a longer utterance extra room, including on the initial wake.
                 pause = 1.45 if voiced * FRAME / SR < 2.5 else 2.05
                 # The preview transcript reads as a finished turn and nobody spoke since: answer now.
+                if quiet >= WAKE_ACK_QUIET and self.wake_heard == (source, revision, began, last_speech):
+                    # They said the name and then really stopped: answer "Yeah?" and keep listening.
+                    self.wake_heard = None
+                    hub.brain.acknowledge(source)
                 done = quiet >= PREVIEW_QUIET and self.finished == (source, revision, began, last_speech)
                 if done or quiet * FRAME / SR >= pause or len(clip) * FRAME / SR >= 60:
                     self.capture = None
@@ -409,6 +415,9 @@ class Hearing:
         except Exception as error:
             self.parakeet = None
             hub.note('hearing', f'Fast recognizer unavailable, using Whisper only: {error}')
+        # The voice model loads on the same GPU; a turn that lands mid-load waits seconds, so let it finish first.
+        if voice.warming:
+            voice.warmed.wait(120)
         self.whisper_ready = True   # ready only once both recognizers are warm, so the first turn isn't slow
         preview = None
         while True:
@@ -437,8 +446,9 @@ class Hearing:
                     text = self.listen(mlx_whisper, clip.audio, need_name=not hub.brain.addressed('', source, began))
                     preview = (stamp, text) if text else None
                     if text and wake_only(text) and clip.voiced >= WAKE_ONLY_SPEECH:
-                        # Just the name: answer with a chirp right away, keep listening for the rest.
-                        hub.brain.acknowledge(source)
+                        # Just the name so far. "Hey BITCH, set a timer..." pauses at the comma, so wait for a real
+                        # pause before answering (the capture loop does that), or "Yeah?" lands on top of them.
+                        self.wake_heard = stamp
                     elif text and sounds_finished(text) and hub.brain.addressed(text, source, began):
                         self.finished = stamp
                 except (ValueError, RuntimeError, OSError):

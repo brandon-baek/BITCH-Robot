@@ -35,7 +35,8 @@ from core import config  # noqa: E402
 
 config.update({'mic_source': 'lab-mic', 'speaker_source': 'lab-speaker', 'camera_source': 'off', 'volume': 60,
                'muted': False, 'mic_muted': False, 'idle': False, 'check_ins': False, 'greet': False,
-               'natural_memory': True, 'owner': 'Brandon'})
+               'natural_memory': True, 'owner': 'Brandon',
+               'home_place': {'name': 'San Jose, California', 'lat': 37.339, 'lon': -121.895, 'imperial': True}})
 
 from core.devices.base import Device  # noqa: E402
 from core.hub import hub  # noqa: E402
@@ -218,6 +219,7 @@ class Lab:
         from core.hearing import Hearing
         self.room = Room()
         self.voices = Voices()
+        self.all_marks = []
         hub.brain, hub.hearing, hub.sight = Brain(), Hearing(), None
         self.speaker = LabSpeaker(self.room)
         hub.add(self.speaker)
@@ -242,6 +244,7 @@ class Lab:
 
     def mark(self, name):
         self.marks.append((name, time.monotonic()))
+        self.all_marks.append(self.marks[-1])   # the whole run, for tracing what happened between turns
 
     def trace(self):
         """Timestamp every stage of a turn, so slow stages show up by name."""
@@ -329,8 +332,14 @@ class Lab:
     def run(self, name, script):
         """script: list of turns {say, voice?, gap?, barge?} -> list of measured turns."""
         results = []
+        hub.sight = None
         previous_end = time.monotonic()
         for turn in script:
+            if turn.get('room'):
+                from unittest.mock import Mock
+                hub.sight = Mock(in_view=Mock(return_value={'names': [], 'others': turn['room']}),
+                                 current_scene=Mock(return_value=(None, turn['room'])), solo_identity=Mock(return_value=(None, None)),
+                                 face_to_learn=Mock(return_value=None), where_is=Mock(return_value=None))
             audio = self.voices.say(turn['say'], turn.get('voice', 'am_michael'), turn.get('speed', 1.))
             if turn.get('after') is not None:
                 at = previous_end + turn['after']
@@ -404,6 +413,10 @@ class Lab:
         cues = [e for e in spoken if e['duration'] < .45]
         first = voice_events[0]['start'] - speech_end if voice_events else None
         gaps = [round(b['start'] - a['end'], 2) for a, b in zip(voice_events, voice_events[1:])]
+        if turn.get('expect') == 'quiet':
+            # Said between people: the right answer is silence.
+            return {'say': turn['say'], 'heard': heard, 'reply': reply, 'quiet_ok': not voice_events and not reply,
+                    'first_words': None, 'gaps': [], 'stalls': [], 'self_interrupted': 0, 'wer': None}
         result = {
             'say': turn['say'], 'heard': heard, 'wer': round(wer(turn['say'], heard), 2) if heard else 1.0,
             'reply': reply, 'first_words': round(first, 2) if first is not None else None,
@@ -438,6 +451,18 @@ SCENARIOS = {
     'barge': [
         {'say': "Hey BITCH, tell me a story about a robot who learns to cook. Make it at least six sentences."},
         {'say': "Wait, actually, make it about a robot who learns to paint.", 'barge': 3.0},
+    ],
+    'family': [
+        # Three people in the room. BITCH answers what's meant for it and stays out of what isn't.
+        {'say': "Hey BITCH, this is my family. Say hi to everyone.", 'room': 3},
+        {'say': "Hi BITCH! It's nice to meet you.", 'voice': 'af_heart', 'gap': .8},
+        {'say': "Mom, do you want some tea?", 'gap': .8, 'expect': 'quiet'},
+        {'say': "Sure, thanks honey.", 'voice': 'af_heart', 'gap': .6, 'expect': 'quiet'},
+        {'say': "Hey BITCH, set a timer for five minutes for the tea.", 'voice': 'af_bella', 'gap': .8},
+        {'say': "Hey BITCH, what's the weather going to be like tomorrow?", 'gap': 1.},
+        {'say': "Hey BITCH, tell us a really short joke.", 'voice': 'af_bella', 'gap': 1.},
+        {'say': "Okay, it's your turn to do the dishes.", 'voice': 'af_heart', 'gap': .8, 'expect': 'quiet'},
+        {'say': "Thanks BITCH, that's all for now.", 'gap': 1.},
     ],
     'echo': [
         # A long reply with nobody talking over it: BITCH must not stop itself.

@@ -195,7 +195,7 @@ WMO = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fo
        96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
 
 
-def fetch(url, timeout=6):
+def fetch(url, timeout=3.5):
     with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'desk-robot'}), timeout=timeout) as r:
         return json.load(r)
 
@@ -249,6 +249,30 @@ def weather(args, context):
         lines.append(f"{label}: {WMO.get(daily['weather_code'][i], 'mixed')}, high {round(daily['temperature_2m_max'][i])}{unit}, "
                      f"low {round(daily['temperature_2m_min'][i])}{unit}, rain chance {daily['precipitation_probability_max'][i]}%.")
     return ' '.join(lines)
+
+
+WEATHER_ASK = re.compile(r'\b(?:weather|forecast|rain\w*|snow\w*|umbrella|temperature|how (?:hot|cold|warm) is it|'
+                         r'jacket|coat|sunny|storm\w*)\b', re.I)
+_home_weather = {}
+
+
+def home_weather(text):
+    """Home weather for a request that is clearly about it, fetched before the model starts (cached ten minutes),
+    so the answer takes one pass instead of two. None when it isn't a weather question, names another place, or
+    the service doesn't answer quickly."""
+    home = config.get('home_place')
+    if not home or not WEATHER_ASK.search(text) or re.search(r'\b(?:in|at|for) [A-Z][a-z]', text):
+        return None
+    day = 'week' if re.search(r'\b(?:week|weekend|days)\b', text, re.I) else 'tomorrow'
+    key = (home['name'], day)
+    cached = _home_weather.get(key)
+    if cached and time.monotonic() - cached[0] < 600:
+        return cached[1]
+    result = weather({'place': '', 'day': day}, {})
+    if result.startswith('FAILED'):
+        return None
+    _home_weather[key] = (time.monotonic(), result)
+    return result
 
 
 def set_home(args, context):
@@ -331,7 +355,7 @@ TOOLS = [
     Tool('list_clear', re.compile(r'\b(?:clear|empty|wipe|reset)\b.*\blists?\b', re.I),
          'list_clear: empty a whole list, only when they clearly ask.', {'list': {'type': 'string', 'maxLength': 30}},
          run=clear_list),
-    Tool('weather', re.compile(r'\b(?:weather|forecast|rain\w*|snow\w*|temperature|degrees|hot|cold|warm|chilly|'
+    Tool('weather', re.compile(r'\b(?:weather|forecast|rain\w*|snow\w*|temperature|degrees|how (?:hot|cold|warm)|'
                                r'umbrella|jacket|coat|sunny|cloudy|windy|outside|storm\w*)\b', re.I),
          'weather: only when they ask about the weather, or what to wear or bring outside. place is the city they '
          'name (empty for home); day is now, today, tomorrow or week. Not for how they feel.',

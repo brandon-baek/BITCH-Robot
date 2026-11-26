@@ -458,7 +458,14 @@ def acknowledge(name=None):
     return text, wav
 
 
+warmed = threading.Event()   # the voice is loaded and has spoken once; hearing waits for it before saying it's ready
+warming = False
+
+
 def warm():
+    global warming
+    warming = True
+
     def load():
         try:
             if config.get('voice_engine') == 'qwen' and load_qwen():
@@ -472,6 +479,8 @@ def warm():
                 cached(text)
         except Exception as error:
             hub.note('voice', f'Speech synthesis unavailable: {error}')
+        finally:
+            warmed.set()
 
     threading.Thread(target=load, daemon=True).start()
 

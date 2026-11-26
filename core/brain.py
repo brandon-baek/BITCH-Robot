@@ -22,8 +22,10 @@ NAME = r"(?:bitch|bich|bish|bitsch|b\.?-?\s?i\.?-?\s?t\.?-?\s?c\.?-?\s?h\.?)"
 WAKE = re.compile(
     r"^\s*(?:(?:(?:hey|hi|hello|okay|ok|yo|you|no|oh|so|um|uh|well|my|alright|now)\b[\s,!.:-]+){1,2}"
     r"(?:mitch|pitch|fitch|witch|britch|beach|beech)\b|"
-    r"(?:(?:hey|hi|hello|okay|ok|yo|you|no|oh|so|um|uh|well|my|alright|now)\b[\s,!.:-]+){0,2}" + NAME + r"(?![\w'’]))"
+    r"(?:(?:hey|hi|hello|okay|ok|yo|you|no|oh|so|um|uh|well|my|alright|now|thanks|thank you|bye|goodbye|"
+    r"good night|night|morning|good morning|cool|nice)\b[\s,!.:-]+){0,2}" + NAME + r"(?![\w'’]))"
     r"[\s,!.?:;—-]*", re.I)
+SOCIAL = re.compile(r"\b(?:thanks|thank you|bye|goodbye|good night|night|good morning|morning)\b", re.I)
 END_WAKE = re.compile(r"([\s,;:—-]+)(?:(?:hey|yo)[\s,]+)?" + NAME + r"(?![\w'’])(?:[\s,]+(?:please|thanks))?([\s.!?]*)$", re.I)
 MID_WAKE = re.compile(r"[,;—]\s*(?:(?:hey|yo)[\s,]+)?bitch\s*[,;—]\s*", re.I)
 MENTION = re.compile(r"\b(?:a|an|the|that|this|such|some|little|named|called|word|about|say|said|is|was|be|and|or)$", re.I)
@@ -58,7 +60,12 @@ TURN_ENTRY = re.compile(
 def wake_request(text):
     """Return the full addressed utterance or None if the name was not used as an address."""
     if match := WAKE.match(text):
-        return text[match.end():].strip()
+        rest = text[match.end():].strip()
+        # "Thanks, BITCH" and "Good night, BITCH" are things said to it, not just its name: keep them.
+        social = SOCIAL.search(text[:match.end()])
+        if social:
+            return (social[0].capitalize() + ('. ' + rest if rest else '.')).strip()
+        return rest
     if match := END_WAKE.search(text):
         before = text[:match.start()].rstrip()
         # "about that BITCH" is a mention, but a comma or a question at the end makes it an address.
@@ -99,29 +106,45 @@ def talks_to_someone_else(text, names=()):
     known = [re.escape(name) for name in names if name and name.casefold() != 'bitch']
     who = r"(?:" + FAMILY_WORDS + (r"|" + "|".join(known) if known else "") + r")"
     return bool(re.search(r"(?:^|[.!?]\s+)(?:(?:hey|okay|ok|so|thanks|and|oh)[,!.]?\s+)?" + who + r"\s*[,!?]", text, re.I)
-                or re.search(r",\s*(?:right\s+|okay\s+|ok\s+)?" + who + r"\s*[.!?]*$", text, re.I))
+                or re.search(r",\s*(?:(?:right|okay|ok|thanks|thank you|love you|please|yes|no|sure)\s+)?" + who
+                             + r"\s*[.!?]*$", text, re.I))
+
+
+CUT_IN = re.compile(r"(?:wait|hold on|hold up|hang on|actually|no no|stop|sorry|scratch that)\b", re.I)
 
 
 def strip_playback(text, spoken):
     """Drop BITCH's own words from the front of a talk-over transcript ("A small robot. Wait, make it..." -> "Wait, make it...").
 
-    The microphone hears the speaker for a moment before the person's words win; only a run of two or more words
-    that BITCH really said, at the very start, is removed."""
-    reply = re.findall(r"\w+", (spoken or '').casefold())
-    tokens = list(re.finditer(r"[\w'’]+", text))
+    The microphone hears the speaker for a moment before the person's words win, and the recognizer mangles that echo
+    ("Alright, gather 'round" comes back as "All right, gather round"), so words match loosely. Two ways to cut:
+    a run of two or more of BITCH's words at the very start, or everything before a clear "wait / actually / hold on"
+    when the words before it are mostly BITCH's."""
+    def words_of(line):
+        line = re.sub(r"\ball right\b", 'alright  ', line.casefold())   # same length, so positions still match
+        return [(re.sub(r"['’]", '', m[0]), m.start()) for m in re.finditer(r"[\w'’]+", line)]
+
+    tokens, reply = words_of(text), [w for w, _ in words_of(spoken or '')]
     if len(tokens) < 3 or len(reply) < 2:
         return text
-    words = [re.sub(r"['’]", '', t[0].casefold()) for t in tokens]
-    reply = [re.sub(r"['’]", '', w) for w in reply]
+    words = [w for w, _ in tokens]
+    same = lambda a, b: a == b or len(a) > 3 and SequenceMatcher(None, a, b).ratio() >= .75
     best = 0
     for start in range(len(reply)):
         n = 0
-        while n < len(words) and start + n < len(reply) and words[n] == reply[start + n]:
+        while n < len(words) and start + n < len(reply) and same(words[n], reply[start + n]):
             n += 1
         best = max(best, n)
-    if best < 2 or best >= len(words) - 1:
-        return text
-    return text[tokens[best].start():].lstrip(' ,.;:!?—-')
+    cut = best if 2 <= best < len(words) - 1 else 0
+    said = set(reply)
+    for index, (word, at) in enumerate(tokens[:14]):
+        if index > cut and CUT_IN.match(text[at:]):
+            before = words[cut:index]
+            # Echo at the start, or mostly BITCH's words: all of it before "wait" was the speaker, not them.
+            if before and (cut or sum(w in said for w in before) >= .5 * len(before)):
+                cut = index
+            break
+    return text[tokens[cut][1]:].lstrip(' ,.;:!?—-') if cut else text
 REMEMBER = re.compile(r'^remember(?: that)?\s+(.+)', re.I)
 # Meeting people in conversation. Names must be capitalized, the way Whisper writes them.
 LEAD = r"(?i:(?:(?:hi|hey|hello|oh|so|well|okay|ok|and)[,!.]?\s+)*)"
@@ -1079,6 +1102,10 @@ class Brain:
                 extra['routine'] = {'type': 'string', 'enum': routines}
                 lines.append('routine: they ask for one of your saved routines. Put its name in routine.')
         offered = [] if getattr(self, 'tool_result', None) else tools.offered(text)
+        # Home weather already fetched for this request: answer in one pass, no weather tool round trip.
+        self.prefetched = None if getattr(self, 'tool_result', None) else tools.home_weather(text)
+        if self.prefetched:
+            offered = [tool for tool in offered if tool.name != 'weather']
         if offered:
             actions += [tool.name for tool in offered]
             extra.update(tools.schema_fields(offered))
@@ -1108,7 +1135,8 @@ class Brain:
                 'answer and do NOT mention checking calendar, email, or specific apps unless asked about them.'
                 + gpt_note
             )
-        elif helper.OUTSIDE.search(text) and not local_only and not any(tool.data for tool in offered):
+        elif (helper.OUTSIDE.search(text) and not local_only and not any(tool.data for tool in offered)
+              and not getattr(self, 'tool_result', None) and not self.prefetched):
             lines.append('Your live information lookup is offline right now because the Pi is disconnected. '
                          'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
@@ -1265,6 +1293,10 @@ class Brain:
         if getattr(self, 'cut_off', False):
             self.cut_off = False
             context.append('They just cut you off mid-answer. Drop what you were saying and respond to this instead.')
+        prefetched, self.prefetched = getattr(self, 'prefetched', None), None
+        if prefetched and not visual:
+            context.append('Home weather, fetched just now (real data; answer from it and never add numbers it '
+                           'doesn’t have): ' + prefetched)
         if getattr(self, 'tool_result', None):
             name, result = self.tool_result
             context.append(f'Result of your {name} tool, real data to answer from (never add numbers it doesn’t have): '

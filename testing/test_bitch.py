@@ -260,6 +260,15 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(strip_playback('Alright, picture this. A small robot. Wait, make it about painting.', spoken),
                          'Wait, make it about painting.')
         self.assertEqual(strip_playback('Wait, make it about painting.', spoken), 'Wait, make it about painting.')
+        # The recognizer mangles the echo; everything before "wait" still goes.
+        cooking = "Alright, gather 'round. Once there was a little robot who decided cooking was a mystery."
+        self.assertEqual(strip_playback("All right, gather round. One thing I'm going to do is. Wait, actually, make it "
+                                        "about painting.", cooking), 'Wait, actually, make it about painting.')
+        self.assertEqual(strip_playback('A small room button. Wait, make it about painting.', spoken),
+                         'Wait, make it about painting.')
+        # Their own words before "actually" stay.
+        self.assertEqual(strip_playback('I want a different one. Actually make it about painting.', spoken),
+                         'I want a different one. Actually make it about painting.')
         # All of it was BITCH's words: leave it alone (the echo check handles that case).
         self.assertEqual(strip_playback('A small robot named Cog', spoken), 'A small robot named Cog')
 
