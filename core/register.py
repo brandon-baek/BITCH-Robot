@@ -70,20 +70,18 @@ class Register:
             memory.kv_set('register:' + person, [level, now])
         return level
 
+    # What each register means lives in the (cached) system prompt; each turn only names the current one.
+    GUIDE = ('Registers (each turn note names the current one): polished = clear, capable and friendly, like a sharp '
+             'assistant with a dry wit, no slang or swearing even if they use it. relaxed = comfortable and direct, '
+             'light slang only where they used it first, rare mild swearing. casual = talk like their friend, match '
+             'their slang and energy, swearing is fine, still sharp and useful. friend = talk the way they talk, '
+             'slang and swearing and all, never a parody, still right.')
+
     @staticmethod
     def direction(level):
-        """The line that tells the model how loose to be right now."""
-        if level < .3:
-            return ('Register right now: polished. Be clear, capable and friendly, like a sharp assistant with a dry '
-                    'wit. No slang and no swearing yet, even if they use it; you understand it fine.')
-        if level < .55:
-            return ('Register right now: relaxed. You are comfortable with them: casual and direct, a contraction-heavy '
-                    'friendly tone, light slang only where they used it first, rare mild swearing.')
-        if level < .8:
-            return ('Register right now: casual. Talk like their friend. Match their slang and energy naturally, '
-                    'swearing is fine, but stay sharp and actually useful.')
-        return ('Register right now: full friend mode. Talk the way they talk, slang, swearing and all, the way a '
-                'close friend would. Keep it natural, never a parody, and still get things right.')
+        """The turn note naming how loose BITCH is right now."""
+        name = 'polished' if level < .3 else 'relaxed' if level < .55 else 'casual' if level < .8 else 'friend'
+        return f'Register: {name}.'
 
 
 register = Register()

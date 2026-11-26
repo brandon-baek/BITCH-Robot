@@ -16,7 +16,9 @@ DEFAULTS = {
     'voicechat_bin': '',
     'voicechat_enabled': False,
     'ollama_url': 'http://127.0.0.1:11434',
-    'llm_server': True,     # run the chat model in BITCH's own llama-server (fast follow-up turns)
+    'llm_server': True,
+    'voice_engine': 'qwen',   # BITCH's own cloned voice; 'kokoro' is the fast backup
+    'voice_model': '0.6B',    # '1.7B' for the bigger voice model (needs more GPU headroom)     # run the chat model in BITCH's own llama-server (fast follow-up turns)
     'kokoro_voice': 'af_heart',
     'mac_voice': 'Samantha',
     'mic_source': 'mac-mic',

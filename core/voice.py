@@ -8,6 +8,8 @@ import tempfile
 import threading
 import wave
 
+import re
+
 import numpy as np
 
 from . import config
@@ -33,6 +35,40 @@ DELIVERY = {
 }
 pipeline = None
 pipeline_lock = threading.Lock()
+# MLX (BITCH's voice, Parakeet, Whisper) is not safe to run from two threads at once. Everything that uses it takes this
+# lock, a step at a time: the voice holds it per chunk (about 0.2 s), so a transcription can slip in between.
+MLX = threading.RLock()
+_urgent = [0]          # how many transcriptions are waiting for the GPU right now
+
+
+class Urgent:
+    """Hearing goes first: while a transcription waits, BITCH's voice steps aside between chunks. Without this the
+    voice re-took the lock right after each chunk and a barge-in transcript waited until the whole reply was done."""
+    waited = 0.   # how long the last urgent caller waited for the GPU (for latency checks)
+
+    def __enter__(self):
+        _urgent[0] += 1
+        started = time.monotonic()
+        MLX.acquire()
+        Urgent.waited = time.monotonic() - started
+        _urgent[0] -= 1
+        return self
+
+    def __exit__(self, *exc):
+        MLX.release()
+
+
+def mlx_steps(generator):
+    """Run an MLX generator one step at a time under the MLX lock, yielding to any waiting transcription."""
+    while True:
+        while _urgent[0]:
+            time.sleep(.003)
+        with MLX:
+            try:
+                item = next(generator)
+            except StopIteration:
+                return
+        yield item
 
 
 VOICE_RATE = {'gentle': .93, 'emphatic': 1.07, 'upbeat': 1.06, 'playful': 1.045}
@@ -43,10 +79,105 @@ VOICE_GAIN = {'gentle': .8, 'warm': .92}
 
 spoken = threading.local()   # word start times from the last synthesis on this thread
 
+# BITCH's own voice: Qwen3-TTS cloned from one locked reference take (core/voices/bitch.wav), with a warm EQ.
+# Chosen by ear over five rounds of auditions; the reference keeps it the same character on every line.
+# The voice is cloned from the reference clip, so model size changes speed more than sound: against the reference,
+# 0.6B and 1.7B (8-bit) both match at 0.989. While the brain is also generating on the GPU, 1.7B makes speech at
+# 0.88x real time (too close to stutter-free) and 0.6B at 0.70x, so 0.6B is the default. 'voice_model' picks.
+QWEN_MODELS = {'0.6B': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', '1.7B': 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit'}
+REFERENCE = config.ROOT / 'core' / 'voices' / 'bitch.wav'
+qwen = None          # the loaded model, or False if it can't run (then Kokoro speaks)
+
+
+def warm_eq(audio, rate=SR):
+    """A little more body in the lower voice (+3 dB around 180-450 Hz) and a softer top. The "Warmer" voice."""
+    from scipy.signal import butter, sosfilt
+
+    body = sosfilt(butter(2, [180, 450], 'bandpass', fs=rate, output='sos'), audio)
+    top = sosfilt(butter(1, 7000, 'lowpass', fs=rate, output='sos'), audio)
+    return (audio + 0.41 * body - 0.2 * (audio - top)).astype(np.float32)
+
+
+def estimate_words(text, audio, rate):
+    """When each word starts, for word-timed gestures, from where the speech actually sounds.
+
+    Qwen doesn't report timings like Kokoro does, so spread the words over the voiced part of the audio by
+    syllable count, with a little room for pauses at commas and full stops."""
+    tokens = re.findall(r"[\w'’-]+|[.,!?;:]", text)
+    if not tokens or not len(audio):
+        return []
+    step = max(1, round(rate * .02))
+    frames = audio[:len(audio) // step * step].reshape(-1, step)
+    level = np.sqrt(np.mean(frames ** 2, axis=1)) if len(frames) else np.zeros(1)
+    loud = np.flatnonzero(level > .12 * float(level.max() or 1))
+    if not len(loud):
+        return []
+    start, end = loud[0] * step / rate, (loud[-1] + 1) * step / rate
+    weight = lambda token: (.6 if token in '.!?' else .3 if token in ',;:' else
+                            max(1, len(re.findall(r'[aeiouy]+', token.lower()))))
+    total = sum(weight(token) for token in tokens)
+    words, at = [], start
+    for token in tokens:
+        words.append((token, at))
+        at += (end - start) * weight(token) / total
+    return words
+
+
+def load_qwen():
+    global qwen
+    if qwen is None:
+        try:
+            from mlx_audio.tts.utils import load_model
+
+            with MLX:
+                qwen = load_model(QWEN_MODELS.get(config.get('voice_model'), QWEN_MODELS['0.6B']))
+            qwen.reference_text = (REFERENCE.with_suffix('.txt')).read_text().strip()
+            # The reference voice never changes, so its speaker fingerprint is worked out once.
+            extract, fingerprints = qwen.extract_speaker_embedding, {}
+
+            def remembered(audio, *args, **kwargs):
+                key = (audio.size, float(audio.sum()))
+                if key not in fingerprints:
+                    fingerprints[key] = extract(audio, *args, **kwargs)
+                return fingerprints[key]
+            qwen.extract_speaker_embedding = remembered
+        except Exception as error:
+            qwen = False
+            hub.note('voice', f'BITCH’s voice model is unavailable, using the backup voice: {error}')
+    return qwen
+
+
+def synthesize_qwen(text, speed):
+    model = load_qwen()
+    if not model:
+        return None
+    # Streaming mode even for a whole line: the non-streaming decoder re-decodes the 8 s reference every time.
+    chunks = [np.asarray(chunk.audio, dtype=np.float32).reshape(-1) for chunk in mlx_steps(model.generate(
+        text=text, ref_audio=str(REFERENCE), ref_text=model.reference_text, lang_code='english', speed=speed,
+        stream=True, streaming_interval=.32))]
+    if not chunks:
+        return None
+    audio = warm_eq(np.concatenate(chunks))
+    spoken.words = estimate_words(text, audio, SR)
+    return audio, SR
+
+
+def lift():
+    """The metallic layer used to raise the pitch 3.5%. BITCH's own voice skips that: it made it sound younger."""
+    return 1. if config.get('voice_engine') == 'qwen' and qwen else 1.035
+
 
 def synthesize(text, speed=1.):
-    global pipeline
+    global pipeline, qwen
     spoken.words = []
+    if config.get('voice_engine') == 'qwen' and qwen is not False:
+        with pipeline_lock:
+            try:
+                result = synthesize_qwen(text, speed)
+                if result is not None:
+                    return result
+            except Exception as error:
+                hub.note('voice', f'BITCH’s voice failed on a line, using the backup voice: {error}')
     with pipeline_lock:
         if pipeline is None:
             try:
@@ -105,9 +236,9 @@ def render(text, ready_cue=False, delivery='neutral'):
     audio = np.asarray(audio, dtype=np.float32)[start:end]
     if not len(audio):
         raise ValueError('speech synthesis returned no audio')
-    words = [(word, (at - start / rate) / (1.035 * pitch)) for word, at in getattr(spoken, 'words', ())]
+    words = [(word, (at - start / rate) / (lift() * pitch)) for word, at in getattr(spoken, 'words', ())]
     # Retain the clean voice and its prosody. Add a quiet metallic signal and one very short reflection.
-    count = max(1, round(len(audio) * SR / (rate * 1.035 * pitch)))
+    count = max(1, round(len(audio) * SR / (rate * lift() * pitch)))
     clean = np.interp(np.linspace(0, len(audio) - 1, count), np.arange(len(audio)), audio)
     signal = clean * (0.93 + 0.07 * np.sin(2 * np.pi * 75 * np.arange(count) / SR))
     delay = round(0.004 * SR)
@@ -129,6 +260,15 @@ EMPHASIS = {'really', 'very', 'so', 'super', 'huge', 'tiny', 'always', 'seriousl
 YOU = {'you', 'your', "you're", 'yours', 'yourself', "you've", "you'll"}
 SELF = {'i', 'me', 'my', "i'm", "i've", "i'll", "i'd", 'myself'}
 THINK = {'hmm', 'well', 'um', 'uh', 'maybe', 'perhaps', 'guess', 'probably', 'honestly'}
+STEPS = {'first', 'second', 'third', 'then', 'next', 'finally', 'also', 'plus', 'last'}   # a small beat per list item
+
+
+def known_names():
+    try:
+        from .people import people
+        return {name.casefold() for name in people.names('face') | people.names('voice')}
+    except Exception:
+        return set()
 GESTURES = {}   # rendered clip -> its word gestures, so the motion travels with the audio
 
 
@@ -136,8 +276,13 @@ def gestures(words):
     """Turn word timings into body language: nod on yes, shake on no, tilt on a question,
     lean in on "you" and back on "I"."""
     events, shook, opening = [], False, True
+    names = known_names()
     for index, (word, at) in enumerate(words):
         plain = word.casefold().strip('.,!?;:"“”‘’\'').replace('’', "'")
+        possessive = plain[:-2] if plain.endswith("'s") else plain
+        if possessive in names:
+            # Naming someone in the room: glance at them (the eyes find them in the camera).
+            events.append(('glance', at - .15, 1.1, possessive))
         if word.strip() == '?':
             start = next((t for w, t in reversed(words[:index]) if w.strip() in '.!'), words[0][1])
             events.append(('tilt', max(start, at - .8), at - max(start, at - .8) + .45, 1.))
@@ -154,6 +299,8 @@ def gestures(words):
             events.append(('lean', at, .75, -.7))
         elif plain in THINK and opening:
             events.append(('tilt', at, .9, -.8))
+        elif plain in STEPS and opening:
+            events.append(('nod', at, .36, .55))
         if word.strip() in ('.', '!', '?'):
             shook, opening = False, True
         elif plain:
@@ -172,7 +319,7 @@ def gesture_at(events, elapsed):
     nod = tilt = lean = 0.
     for kind, at, length, strength in events:
         phase = (elapsed - at) / length
-        if not 0 <= phase < 1:
+        if not 0 <= phase < 1 or kind == 'glance':
             continue
         swell = np.sin(np.pi * phase)
         if kind == 'nod':
@@ -314,6 +461,12 @@ def acknowledge(name=None):
 def warm():
     def load():
         try:
+            if config.get('voice_engine') == 'qwen' and load_qwen():
+                # Run the streaming path once so its first real use isn't slow.
+                reply = LiveReply()
+                reply.add('Hello there.')
+                reply.close()
+                reply.done.wait(60)
             render('Hello there.')
             for text in ACKNOWLEDGE:
                 cached(text)
@@ -398,6 +551,14 @@ def clear_playback():
     playback = echo_reference = None
 
 
+def _preroll_bytes():
+    try:
+        frames, _ = preroll(b'')
+        return frames
+    except Exception:
+        return b''
+
+
 def articulation():
     current = playback
     if current is None:
@@ -429,6 +590,16 @@ def gesture():
     elapsed = time.monotonic() - started - lead - max(0., output_delay - MOTION_LEAD)
     _, tilt, lean = gesture_at(gesture_track, elapsed)
     return float(tilt), float(lean)
+
+
+def glance_now():
+    """The name of the person BITCH is saying right now, if any, so the eyes can find them."""
+    current = playback
+    if current is None or not gesture_track:
+        return None
+    elapsed = time.monotonic() - current[0] - current[3] - max(0., output_delay - MOTION_LEAD)
+    return next((name for kind, at, length, name in gesture_track
+                 if kind == 'glance' and 0 <= elapsed - at < length), None)
 
 
 def delivery_now():
@@ -486,11 +657,224 @@ def thinking(stop, *, greeting):
         finish()
 
 
+class Shaper:
+    """BITCH's voice layer (warm EQ, metallic shimmer, a 4 ms reflection), one chunk at a time.
+
+    The same sound as render(), but streamable: filter state, the shimmer's phase and the reflection's tail carry over
+    from chunk to chunk, so the joins are seamless."""
+    PEAK = .8                      # typical peak of the voice after the EQ (measured median .75)
+    DELAY = round(.004 * SR)
+
+    def __init__(self, gain=1.):
+        from scipy.signal import butter, sosfilt_zi
+
+        self.body = butter(2, [180, 450], 'bandpass', fs=SR, output='sos')
+        self.top = butter(1, 7000, 'lowpass', fs=SR, output='sos')
+        self.body_state = sosfilt_zi(self.body) * 0
+        self.top_state = sosfilt_zi(self.top) * 0
+        self.offset = 0
+        self.tail = np.zeros(self.DELAY, np.float32)
+        self.gain = .9 * gain / self.PEAK
+
+    def process(self, audio):
+        from scipy.signal import sosfilt
+
+        audio = np.asarray(audio, dtype=np.float32)
+        body, self.body_state = sosfilt(self.body, audio, zi=self.body_state)
+        top, self.top_state = sosfilt(self.top, audio, zi=self.top_state)
+        clean = audio + 0.41 * body - 0.2 * (audio - top)
+        n = np.arange(self.offset, self.offset + len(clean))
+        signal = clean * (0.93 + 0.07 * np.sin(2 * np.pi * 75 * n / SR))
+        echo = np.concatenate((self.tail, clean))[:len(clean)]
+        signal = signal + 0.055 * echo
+        self.tail = np.concatenate((self.tail, clean))[-self.DELAY:]
+        self.offset += len(clean)
+        return np.tanh(signal * self.gain * 1.1) / 1.1   # a soft ceiling instead of normalizing the whole line
+
+
+BUFFER = .2    # seconds of a live reply generated before it starts playing (no stalls measured at this size)
+BREATH = .16   # silence between sentences, like a breath
+
+
+class LiveReply:
+    """A whole reply in BITCH's voice as one continuous stream: each sentence is generated right after the one before
+    it, with a breath between, while the earlier ones play. First words start in about half a second, and there are
+    no gaps from rendering whole sentences one at a time. Delivery (gentle, playful...) can change per sentence."""
+    def __init__(self, stop=None):
+        self.stop = stop or threading.Event()
+        self.phrases = queue.Queue()
+        self.chunks = queue.Queue()
+        self.pcm = bytearray()
+        self.done = threading.Event()
+        self.error = None
+        self.segments = []        # (start second, phrase, delivery, expression) in the stream's own time
+        self.gestures = []
+        self.lock = threading.Lock()
+        threading.Thread(target=self.generate, daemon=True).start()
+
+    def add(self, phrase, delivery='neutral', laugh_first=False, expression='none'):
+        self.phrases.put((phrase, delivery, laugh_first, expression))
+
+    def close(self):
+        self.phrases.put(None)
+
+    def seconds(self):
+        return len(self.pcm) / 2 / SR
+
+    def emit(self, samples):
+        data = (np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes()
+        with self.lock:
+            self.pcm += data
+        self.chunks.put(data)
+
+    def generate(self):
+        try:
+            model = load_qwen()
+            if not model:
+                raise RuntimeError('voice model unavailable')
+            volume = (config.get('volume') / 100) ** 1.65
+            first = True
+            while (item := self.phrases.get()) is not None:
+                if self.stop.is_set():
+                    break
+                phrase, delivery, laugh_first, expression = item
+                if not first:
+                    self.emit(np.zeros(round(BREATH * SR), np.float32))
+                first = False
+                if laugh_first:
+                    self.emit(laugh_sound() * volume)
+                shaper = Shaper(VOICE_GAIN.get(delivery, 1.))
+                begin = self.seconds()
+                self.segments.append((begin, phrase, delivery, expression))
+                clean = []
+                for chunk in mlx_steps(model.generate(text=phrase, ref_audio=str(REFERENCE),
+                                                      ref_text=model.reference_text, lang_code='english',
+                                                      stream=True, streaming_interval=.24)):
+                    if self.stop.is_set():
+                        break
+                    audio = np.asarray(chunk.audio, dtype=np.float32).reshape(-1)
+                    clean.append(audio)
+                    self.emit(shaper.process(audio) * volume)
+                if clean:
+                    words = estimate_words(phrase, np.concatenate(clean), SR)
+                    self.gestures += [(kind, at + begin, length, strength)
+                                      for kind, at, length, strength in gestures(words)]
+        except Exception as error:
+            self.error = error
+        finally:
+            self.chunks.put(None)
+            self.done.set()
+
+    def stream(self, lead=b''):
+        if lead:
+            yield lead
+        while (data := self.chunks.get()) is not None:
+            yield data
+
+    def wav(self):
+        self.done.wait()
+        result = io.BytesIO()
+        with wave.open(result, 'wb') as file:
+            file.setparams((1, 2, SR, 0, 'NONE', 'not compressed'))
+            file.writeframes(bytes(self.pcm))
+        return result.getvalue(), len(self.pcm) / 2 / SR
+
+    def segment_at(self, second):
+        current = self.segments[0] if self.segments else (0., '', 'neutral', 'none')
+        for segment in self.segments:
+            if segment[0] <= second:
+                current = segment
+        return current
+
+
+def laugh_sound():
+    bursts = [note(hz, .14, .18) + note(hz*2, .14, .065) for hz in (310, 277, 238)]
+    return np.concatenate([np.r_[burst, np.zeros(round(SR*.065))] for burst in bursts]).astype(np.float32)
+
+
+def can_stream():
+    speaker = hub.selected('voice')
+    return (config.get('voice_engine') == 'qwen' and bool(load_qwen()) and speaker is not None
+            and hasattr(speaker, 'speak_stream') and not config.get('muted') and bool(config.get('volume')))
+
+
+def play_live(reply, stop, on_speech=None):
+    """Play a LiveReply as it is generated. Falls back to playing it whole on a speaker that can't stream."""
+    global playback, echo_reference, gesture_track
+    speaker = hub.selected('voice')
+    if stop.is_set() or not speaker:
+        reply.stop.set()
+        return
+    spoken = 0
+    def announce(upto):
+        nonlocal spoken
+        while on_speech and spoken < len(reply.segments) and reply.segments[spoken][0] <= upto:
+            on_speech(reply.segments[spoken][1])
+            spoken += 1
+    if not hasattr(speaker, 'speak_stream'):
+        wav, duration = reply.wav()
+        if reply.error and not reply.pcm:
+            raise RuntimeError(f'voice failed: {reply.error}')
+        announce(float('inf'))
+        play(wav, duration, stop, text=True, segment=True)
+        return
+    # A small jitter buffer: start once a third of a second is ready (or the reply is done), so a moment of GPU
+    # contention can't open a gap mid-word, and BITCH's echo stays where the echo gate expects it.
+    while not stop.is_set() and not reply.done.is_set() and reply.seconds() < BUFFER:
+        reply.done.wait(.02)
+    if stop.is_set():
+        reply.stop.set()
+        return
+    lead_audio = b''
+    if speaker.id == 'robot' and time.monotonic() - last_played.get(speaker, -float('inf')) >= 20 \
+            and not getattr(speaker, 'audio_warm', False):
+        lead_audio = _preroll_bytes()
+    lead = len(lead_audio) / 2 / SR
+    hub.status = 'Speaking'
+    start = time.monotonic()
+    if not speaker.speak_stream(reply.stream(lead_audio)):
+        wav, duration = reply.wav()
+        announce(float('inf'))
+        play(wav, duration, stop, text=True, segment=True)
+        return
+    seen = 0
+    try:
+        while not stop.wait(.05):
+            heard = time.monotonic() - start - lead
+            announce(heard + .3)
+            _, _, delivery, expression = reply.segment_at(max(0., heard))
+            if len(reply.pcm) != seen or (playback and playback[-2:] != (delivery, expression)):
+                seen = len(reply.pcm)
+                with reply.lock:
+                    pcm = bytes(reply.pcm)
+                envelope, nod = motion_track(pcm)
+                playback = start, envelope, nod, lead, 0., len(pcm) / 2 / SR, None, delivery, expression
+                echo_reference = (start + lead, np.frombuffer(pcm, '<i2')[::6].astype(float))
+            gesture_track = reply.gestures
+            if reply.done.is_set() and speaker.playing() is False:
+                break
+            if heard > reply.seconds() + 5:
+                speaker.hush()
+                break
+        if stop.is_set():
+            reply.stop.set()
+            speaker.hush()
+    finally:
+        announce(float('inf') if not stop.is_set() else time.monotonic() - start - lead)
+        clear_playback()
+        last_played[speaker] = time.monotonic()
+    if reply.error and not reply.pcm:
+        raise RuntimeError(f'voice failed: {reply.error}')
+
+
 NOTHING = object()
 
 
 class ReplyStream:
-    """Prepare the next phrase while the previous phrase is playing."""
+    """Speak a reply while the model is still writing it.
+
+    With BITCH's own voice and a speaker that can stream, the whole reply is one LiveReply. Otherwise each phrase is
+    rendered while the previous one plays."""
     def __init__(self, stop, finish_thinking, on_speech):
         self.stop = stop
         self.finish_thinking = finish_thinking
@@ -500,18 +884,37 @@ class ReplyStream:
         self.parts = []
         self.workers = ()
         self.closed = False
+        self.live = None
 
     def offer(self, phrase, delivery, laugh_first=False, expression='none'):
         if self.stop.is_set():
             return
         if not self.workers:
-            self.workers = tuple(threading.Thread(target=work, daemon=True)
-                                 for work in (self.synthesize, self.play))
+            if phrase and can_stream():
+                self.live = LiveReply(self.stop)
+                self.workers = (threading.Thread(target=self.play_live, daemon=True),)
+            else:
+                self.workers = tuple(threading.Thread(target=work, daemon=True)
+                                     for work in (self.synthesize, self.play))
             for worker in self.workers:
                 worker.start()
         if phrase:
             self.parts.append(phrase)
+        if self.live:
+            if phrase:
+                self.live.add(phrase, delivery, laugh_first, expression)
+            return
         self.pending.put((phrase, delivery, laugh_first, expression))
+
+    def play_live(self):
+        try:
+            # Thinking ends when the first audio is about to play, not before.
+            while not self.stop.is_set() and not self.live.done.is_set() and self.live.seconds() < BUFFER:
+                self.live.done.wait(.02)
+            self.finish_thinking()
+            play_live(self.live, self.stop, self.on_speech)
+        except (OSError, RuntimeError, ValueError) as error:
+            hub.note('voice', f'Speech failed: {error}')
 
     def synthesize(self):
         try:
@@ -563,14 +966,17 @@ class ReplyStream:
             remaining = reply[len(spoken):].strip()
             if remaining:
                 self.offer(remaining, delivery)
-        if ready_cue:
+        if ready_cue and not self.live:
             self.offer('', delivery)
         self.close()
 
     def close(self):
         if self.workers and not self.closed:
             self.closed = True
-            self.pending.put(None)
+            if self.live:
+                self.live.close()
+            else:
+                self.pending.put(None)
             for worker in self.workers:
                 worker.join()
 
@@ -586,6 +992,12 @@ def laugh(stop):
 
 def say(text, stop, *, ready_cue=False, delivery='neutral', expression='none'):
     if config.get('muted') or not config.get('volume'):
+        return
+    if text and not ready_cue and can_stream():
+        reply = LiveReply(stop)
+        reply.add(text, delivery, expression=expression)
+        reply.close()
+        play_live(reply, stop)
         return
     wav, duration = render(text, ready_cue=ready_cue, delivery=delivery) if text else encode(cue())
     play(wav, duration, stop, text=bool(text), ready_cue=ready_cue, delivery=delivery, expression=expression)

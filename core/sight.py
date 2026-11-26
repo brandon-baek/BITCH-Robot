@@ -70,6 +70,7 @@ class Attention:
         self.next_id = 1
         self.focus = None
         self.focus_since = 0
+        self.speaker = None   # (name, until): who BITCH is talking with, so its eyes stay on them in a group
 
     def update(self, boxes, now, bodies=()):
         self.people = {
@@ -164,7 +165,14 @@ class Attention:
 
         visible = {key: person for key, person in self.people.items() if person['seen'] == now}
         candidates = {key: person for key, person in visible.items() if now - person['first'] >= 0.28}
-        if self.focus not in self.people:
+        talking_with = None
+        if self.speaker and now < self.speaker[1]:
+            talking_with = next((key for key, person in visible.items() if person.get('name') == self.speaker[0]), None)
+        if talking_with is not None:
+            # In a group, look at the person you're talking with, not whoever is biggest or next in turn.
+            if self.focus != talking_with:
+                self.focus, self.focus_since = talking_with, now
+        elif self.focus not in self.people:
             self.focus = max(candidates, key=lambda key: candidates[key]['box'][2], default=None)
             self.focus_since = now
         elif now - self.focus_since >= 8 and self.focus in visible:
@@ -393,17 +401,32 @@ class Sight:
         return self.solo_identity(within=within)[0]
 
     def note_voice(self, name):
-        """Associate a confident voice match with a lone unidentified body in view."""
+        """Associate a confident voice match with a lone unidentified body in view, and keep eyes on that speaker."""
         if not name:
             return
         with self.lock:
             now = time.monotonic()
+            self.attention.speaker = (name, now + 25)
             if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
                 return
             visible = [p for p in self.attention.people.values() if now - p['seen'] < .9]
             if len(visible) == 1 and not visible[0].get('name') and name in (people.names('face') | people.names('voice')):
                 visible[0]['name'] = name
                 visible[0]['confirmed_at'] = now
+
+    def where_is(self, name):
+        """Where a named person is in the frame right now (center x, y), or None."""
+        with self.lock:
+            now = time.monotonic()
+            for person in self.attention.people.values():
+                if person.get('name', '').casefold() == name.casefold() and now - person['seen'] < .9:
+                    return center(person['box'])
+        return None
+
+    def talking_with(self, name):
+        """Keep looking at this person (a name from face or voice) through the conversation."""
+        with self.lock:
+            self.attention.speaker = (name, time.monotonic() + 25) if name else None
 
     def in_view(self):
         """Recognized names and how many others are in the camera right now, or None with no camera."""
@@ -642,6 +665,12 @@ class Sight:
                 last_camera, last_focus, last_aim, noticed_until = camera_id, None, None, 0.
             calibration = config.get('camera_calibration').get(camera_id) if camera_id else None
             attention_aim = aim_at(*target[1:], calibration) if target else None
+            if target and speaking and not chirping:
+                # Saying someone's name who is in view: a quick look their way, then back to the listener.
+                named = voice.glance_now()
+                spot = self.where_is(named) if named else None
+                if spot:
+                    attention_aim = aim_at(*spot, calibration)
             held = None
             if target and idle and not preview:
                 if focus != last_focus:

@@ -81,6 +81,46 @@ def repeats_playback(text, spoken):
     return any(sum(match.size for match in SequenceMatcher(
         None, words, reply[i:i+len(words)+3], autojunk=False).get_matching_blocks())
         >= .68 * len(words) for i in range(len(reply)))
+FAMILY_WORDS = (r"mom|mommy|mum|mama|ma|dad|daddy|papa|pops|honey|hon|babe|sweetie|sweetheart|darling|"
+                r"sis|guys|you guys|grandma|grandpa|nana|granny|kids|son|kiddo|auntie|uncle")  # not "bro" or "dude": people call BITCH that
+
+
+def people_names():
+    try:
+        from .people import people
+        return people.names('face') | people.names('voice')
+    except Exception:
+        return set()
+
+
+def talks_to_someone_else(text, names=()):
+    """True when the line calls on another person by name or family word ("Mom, ...", "..., right honey?")."""
+    known = [re.escape(name) for name in names if name and name.casefold() != 'bitch']
+    who = r"(?:" + FAMILY_WORDS + (r"|" + "|".join(known) if known else "") + r")"
+    return bool(re.search(r"(?:^|[.!?]\s+)(?:(?:hey|okay|ok|so|thanks|and|oh)[,!.]?\s+)?" + who + r"\s*[,!?]", text, re.I)
+                or re.search(r",\s*(?:right\s+|okay\s+|ok\s+)?" + who + r"\s*[.!?]*$", text, re.I))
+
+
+def strip_playback(text, spoken):
+    """Drop BITCH's own words from the front of a talk-over transcript ("A small robot. Wait, make it..." -> "Wait, make it...").
+
+    The microphone hears the speaker for a moment before the person's words win; only a run of two or more words
+    that BITCH really said, at the very start, is removed."""
+    reply = re.findall(r"\w+", (spoken or '').casefold())
+    tokens = list(re.finditer(r"[\w'’]+", text))
+    if len(tokens) < 3 or len(reply) < 2:
+        return text
+    words = [re.sub(r"['’]", '', t[0].casefold()) for t in tokens]
+    reply = [re.sub(r"['’]", '', w) for w in reply]
+    best = 0
+    for start in range(len(reply)):
+        n = 0
+        while n < len(words) and start + n < len(reply) and words[n] == reply[start + n]:
+            n += 1
+        best = max(best, n)
+    if best < 2 or best >= len(words) - 1:
+        return text
+    return text[tokens[best].start():].lstrip(' ,.;:!?—-')
 REMEMBER = re.compile(r'^remember(?: that)?\s+(.+)', re.I)
 # Meeting people in conversation. Names must be capitalized, the way Whisper writes them.
 LEAD = r"(?i:(?:(?:hi|hey|hello|oh|so|well|okay|ok|and)[,!.]?\s+)*)"
@@ -190,15 +230,22 @@ CHATGPT = re.compile(r"\b(?:ask|get|have|tell|let|use|send|check with|run (?:it|
 PENDING_UPDATE = re.compile(
     r"^(?:(?:any|got an?) (?:news|update|answer|word)(?: on that| yet)?|did (?:that|it) come back(?: yet)?|"
     r"is (?:that|my) (?:briefing|answer|lookup) ready)[.!?]*$", re.I)
-LOOK_FIRST = re.compile(r'^\s*\{\s*"do"\s*:\s*"look"')
+LOOK_FIRST = re.compile(r'^\s*\{\s*(?:"to"\s*:\s*"me"\s*,\s*)?"do"\s*:\s*"look"')
+NOT_FOR_ME = re.compile(r'^\s*\{\s*"to"\s*:\s*"them"')
 
 
 class LookFirst(Exception):
     """The model chose to look through the camera before answering."""
 
 
+class NotForMe(Exception):
+    """In a group, the model decided this line was said to someone else in the room."""
+
+
 class Brain:
     def __init__(self):
+        self.voices_heard = {}   # name -> when their voice was last recognized
+        self.overheard = deque(maxlen=4)   # recent lines people said to each other, not to BITCH
         self.requests = queue.Queue(maxsize=1)
         self.history = OrderedDict()
         self.history_at = {}
@@ -281,7 +328,8 @@ class Brain:
 
     def spoken_system(self):
         # Never changes between turns (see TURN_NOTE): the model server keeps it cached.
-        return f'{self.persona}\n\n{SPOKEN_DIRECTION}\n{MEMORY_DIRECTION}\n{REMEMBERING}\n{TURN_NOTE_RULE}'
+        return (f'{self.persona}\n\n{SPOKEN_DIRECTION}\n{MEMORY_DIRECTION}\n{REMEMBERING}\n{TURN_NOTE_RULE}\n'
+                f'{register.GUIDE}')
 
     def set_delivery(self, metadata):
         code = metadata.get('v')
@@ -295,6 +343,26 @@ class Brain:
             self.delivery = delivery
         if isinstance(performance, str) and performance in PERFORMANCE:
             self.performance = performance
+
+    def not_for_me(self, source, text):
+        """Stay quiet for a line meant for someone else, but keep it in mind for the next turn."""
+        self.overheard.append((time.monotonic(), text))
+        hub.note('model', None)
+        return ''
+
+    def overheard_note(self):
+        now = time.monotonic()
+        lines = [text for at, text in self.overheard if now - at < 90]
+        return ('Said between other people in the room in the last minute or so (not to you): '
+                + ' / '.join(json.dumps(line, ensure_ascii=False) for line in lines[-3:])) if lines else None
+
+    def room_shared(self):
+        """True when more than one person is around (two faces in view, or two voices in the last few minutes)."""
+        in_view = getattr(hub.sight, 'in_view', None)
+        view = in_view() if in_view else None
+        seen = len(view['names']) + view['others'] if view else 0
+        now = time.monotonic()
+        return seen >= 2 or sum(now - at < 180 for at in self.voices_heard.values()) >= 2
 
     def addressed(self, text, source, heard_at):
         with self.lock:
@@ -342,6 +410,8 @@ class Brain:
             elif not previous:
                 self.speaker_evidence = None
             self.current_voice = name
+            if name:
+                self.voices_heard[name] = now
             self.accepted_wake = wake is not None
             self.turn_audio = audio
             self.speech_span = (now, speech_end if speech_end is not None else now)
@@ -350,6 +420,8 @@ class Brain:
             self.active_source = source
             self.interruption = False
             self.spoken_reply = ''
+            if hub.sight and self.speaker:
+                hub.sight.talking_with(self.speaker)
             self.last_interaction = time.monotonic()
             self.turn_count += 1
             self.hush.clear()
@@ -601,6 +673,7 @@ class Brain:
                     stream.close()
                 with self.lock:
                     if self.interruption and self.followup:
+                        self.cut_off = True   # the next turn's notes say so, so it answers the new request
                         history = self.history.get((source, None))
                         if history and history[-1]['role'] == 'assistant':
                             history[-1] = {'role': 'assistant', 'content': '[Answer interrupted] ' + history[-1]['content'][:120]}
@@ -1122,22 +1195,41 @@ class Brain:
             system = self.spoken_system()
             schema = MEMORY_SCHEMA if natural_memory else SPOKEN_SCHEMA
             actions, extra, lines = self.available_actions(text, robot, image is not None, local_only=bool(local_request))
+            group = not getattr(self, 'accepted_wake', True) and self.room_shared()
+            if group and talks_to_someone_else(text, people_names()):
+                return self.not_for_me(source, text)
+            if group:
+                # Nobody said the name and others are here: decide who it was meant for before saying anything.
+                schema = {**schema, 'properties': {'to': {'type': 'string', 'enum': ['me', 'them']}, **schema['properties']},
+                          'required': ['to', *schema['required']]}
+                context.append('Other people are here and they didn’t say your name. Begin with to: "them" if this was '
+                               'said to someone else in the room (it answers another person, they are talking among '
+                               'themselves, or it asks for something only a person with hands could do), otherwise '
+                               '"me". A follow-up or reaction to what you just said is "me". When it is "them", say is '
+                               'an empty string.')
             if len(actions) > 1:
                 # do comes first so LookFirst works before speech; task/routine come last so speech streams immediately.
-                schema = {**schema, 'properties': {'do': {'type': 'string', 'enum': actions},
-                                                   **schema['properties'], **extra},
-                          'required': ['do', *schema['required'], *extra]}
+                first = {key: value for key, value in schema['properties'].items() if key == 'to'}
+                rest = {key: value for key, value in schema['properties'].items() if key != 'to'}
+                schema = {**schema, 'properties': {**first, 'do': {'type': 'string', 'enum': actions}, **rest, **extra},
+                          'required': [*first, 'do', *(key for key in schema['required'] if key != 'to'), *extra]}
                 context.append('Begin with do. Choose an action when the latest request calls for it:\n- '
                                + '\n- '.join(lines))
                 if 'lookup' in actions and helper.needs_live(text):
                     context.append('This request needs your information hub: set do to "lookup".')
             elif lines:
                 context.append(' '.join(lines))
+        if getattr(self, 'cut_off', False):
+            self.cut_off = False
+            context.append('They just cut you off mid-answer. Drop what you were saying and respond to this instead.')
+        overheard = self.overheard_note()
+        if overheard:
+            context.append(overheard)
         if self.speaker:
             context.append('The enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.')
         # Start polished, loosen up over the conversation as they talk casually (kept per person).
         context.append(register.direction(register.heard(identity or self.speaker or 'guest', text)))
-        context.append(f'It is {datetime.now():%A %-I:%M %p}.')
+        context.append(f'{datetime.now():%a %-I:%M %p}.')
         remembered = memory.context(identity, text)
         notes = bool(remembered)
         if PAST_MEMORY.search(text) and not remembered and not any(
@@ -1204,6 +1296,8 @@ class Brain:
 
             def speak_as_written(content):
                 nonlocal beat_delivery, beat_performance, sanitized_lookup
+                if NOT_FOR_ME.match(content):
+                    raise NotForMe
                 parts, metadata = phrases.feed(content)
                 if metadata.get('do') == 'look' or not parts and LOOK_FIRST.match(content):
                     raise LookFirst
@@ -1239,6 +1333,8 @@ class Brain:
                              max_tokens=480,   # room for a story or a real explanation; most replies are far shorter
                              temperature=.27 if not (visual or can_select_show) else .45,
                              **stream_options)
+        except NotForMe:
+            return self.not_for_me(source, text)
         except LookFirst:
             if use_camera:
                 raise RuntimeError('the model asked to look twice')
@@ -1255,6 +1351,8 @@ class Brain:
         if reply.lstrip().startswith('{'):
             try:
                 turn = json.loads(reply)
+                if turn.get('to') == 'them':
+                    return self.not_for_me(source, text)
                 speech = turn['say']
                 if not isinstance(speech, str):
                     raise ValueError('invalid spoken reply')

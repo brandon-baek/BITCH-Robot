@@ -117,3 +117,17 @@ class SimEnv(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SpeechBody(unittest.TestCase):
+    def test_every_spoken_gesture_reads_on_the_body(self):
+        import mujoco
+        from sim import speech_motion
+        from sim.model import mjcf
+        model = mujoco.MjModel.from_xml_string(mjcf())
+        for name, text, delivery in speech_motion.LINES:
+            events, rows, _ = speech_motion.simulate(model, name, text, delivery)
+            results = speech_motion.check(name, events, rows)
+            self.assertTrue(results, name)
+            for kind, at, _, ok, detail in results:
+                self.assertTrue(ok, f'{name}: {kind} at {at:.2f}s, {detail}')

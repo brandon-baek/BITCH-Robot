@@ -165,6 +165,38 @@ class LabSpeaker(Device):
         self.room.add(now + ECHO_DELAY, heard, ECHO_GAIN, tag)
         return True
 
+    def speak_stream(self, chunks):
+        """Like a real speaker: plays PCM in real time as it arrives, and echoes it into the room."""
+        from scipy.signal import resample_poly
+        now = time.monotonic()
+        with self.lock:
+            self.hush_locked(now)
+            tag = f'bitch-{len(self.events)}'
+            event = {'start': now, 'duration': 0., 'end': now + 30, 'hushed': None, 'tag': tag, 'live': True}
+            self.events.append(event)
+            self.current = event
+
+        def run():
+            played = 0.
+            for data in chunks:
+                pcm = np.frombuffer(data, '<i2').astype(np.float32) / 32768
+                with self.lock:
+                    if event['hushed'] is not None:
+                        return
+                    at = max(time.monotonic(), event['start'] + played)   # a gap if the voice falls behind
+                    if at > event['start'] + played + .02:
+                        event.setdefault('stalls', []).append(round(at - event['start'] - played, 2))
+                        event['start'] = at - played
+                    played += len(pcm) / 24000
+                    event['duration'] = played
+                    event['end'] = event['start'] + played
+                self.room.add(event['start'] + played - len(pcm) / 24000 + ECHO_DELAY,
+                              resample_poly(pcm, MIC_SR, 24000).astype(np.float32), ECHO_GAIN, tag)
+            with self.lock:
+                event['end'] = event['start'] + played
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
     def playing(self):
         with self.lock:
             return bool(self.current and self.current['hushed'] is None and time.monotonic() < self.current['end'])
@@ -200,6 +232,11 @@ class Lab:
         llm.chat([{'role': 'user', 'content': 'Hi.'}], max_tokens=2, timeout=300)
         llm.warm_context(hub.brain.spoken_system())
         voice.render('Warming up.')
+        if voice.load_qwen():
+            reply = voice.LiveReply()
+            reply.add('Warming up the live voice.')
+            reply.close()
+            reply.done.wait(60)
         self.marks = []
         self.trace()
 
@@ -242,6 +279,14 @@ class Lab:
             return offer(stream, phrase, *args, **kwargs)
 
         hearing.clips.put_nowait = traced_put
+        listen = hearing.listen
+
+        def traced_listen(whisper, audio, *, need_name):
+            started = time.monotonic()
+            text = listen(whisper, audio, need_name=need_name)
+            lab.mark(f'listen {time.monotonic() - started:.2f}s (waited {voice.Urgent.waited:.2f}s for the GPU)')
+            return text
+        hearing.listen = traced_listen
         brain.submit = traced_submit
         llm.chat = traced_chat
         voice.ReplyStream.offer = traced_offer
@@ -251,6 +296,26 @@ class Lab:
             lab.mark('speak')
             return speak(wav)
         self.speaker.speak = traced_speak
+        speak_stream = self.speaker.speak_stream
+
+        def traced_stream(chunks):
+            lab.mark('speak')
+            return speak_stream(chunks)
+        self.speaker.speak_stream = traced_stream
+        emit = voice.LiveReply.emit
+
+        def traced_emit(reply, samples):
+            if not reply.pcm:
+                lab.mark('voice-first-chunk')
+            return emit(reply, samples)
+        voice.LiveReply.emit = traced_emit
+        interrupt = brain.interrupt
+
+        def traced_interrupt(source, text, *args, **kwargs):
+            result = interrupt(source, text, *args, **kwargs)
+            lab.mark(f'interrupt({text!r}, strong={kwargs.get("strong")}, sustained={kwargs.get("sustained")}) -> {result}')
+            return result
+        brain.interrupt = traced_interrupt
 
     def wait_idle(self, timeout=60):
         """Until BITCH has finished its turn and the speaker is quiet."""
@@ -291,6 +356,10 @@ class Lab:
                 # The next part follows right away: don't wait for (or measure) a reply in between.
                 continue
             self.marks = []
+            following = script[script.index(turn) + 1] if script.index(turn) + 1 < len(script) else {}
+            if following.get('barge') is not None:
+                results.append({'say': turn['say'], 'note': 'reply left running for the next turn to talk over'})
+                continue
             results.append(self.measure(turn, at, speech_end, events_before, messages_before))
             stages = {}
             for name, t in self.marks:
@@ -310,6 +379,9 @@ class Lab:
                 fresh = [e for e in self.speaker.events[count:] if e['duration'] > .6]
             if fresh:
                 return fresh[0]['start']
+            live = [e for e in self.speaker.events[count:] if e.get('live')]
+            if live and time.monotonic() - live[0]['start'] > .6:
+                return live[0]['start']
             time.sleep(.02)
         return None
 
@@ -337,6 +409,7 @@ class Lab:
             'reply': reply, 'first_words': round(first, 2) if first is not None else None,
             'gaps': gaps, 'cues': len(cues),
             'self_interrupted': sum(1 for e in voice_events if e['hushed'] and e['hushed'] < e['start'] + e['duration'] - .1),
+            'stalls': [s for e in voice_events for s in e.get('stalls', [])],
         }
         if turn.get('barge') is not None:
             stopped = [e['hushed'] for e in interrupted]

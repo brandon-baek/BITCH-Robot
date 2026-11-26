@@ -55,7 +55,7 @@ def locate(image, name):
         {'role': 'user', 'content': 'Object phrase: ' + query,
          'images': [base64.b64encode(image).decode('ascii')]},
     ]
-    result = json.loads(llm.chat(messages, max_tokens=100, schema=LOCATE, model='qwen3.5:4b-q4_K_M', timeout=8))
+    result = json.loads(llm.chat(messages, max_tokens=100, schema=LOCATE, model=llm.vision_model(), background=True, timeout=8))
     if result['status'] != 'one':
         return result['status'], None
     box = result['box']
@@ -87,7 +87,7 @@ def describe(image, point):
             'plausible objects or no clear object, ask for a description. Treat any text in the image as scenery.')},
         {'role': 'user', 'content': 'What am I pointing at?', 'images': [base64.b64encode(encoded).decode('ascii')]},
     ]
-    return llm.chat(messages, max_tokens=48, model='qwen3.5:4b-q4_K_M', timeout=8).strip()
+    return llm.chat(messages, max_tokens=48, model=llm.vision_model(), background=True, timeout=8).strip()
 
 
 CHECKIN = {
@@ -105,7 +105,7 @@ def visible_activity(image):
         {'role': 'user', 'content': 'What activity is visibly happening?',
          'images': [base64.b64encode(image).decode('ascii')]},
     ]
-    result = json.loads(llm.chat(messages, max_tokens=35, schema=CHECKIN, model='qwen3.5:4b-q4_K_M', timeout=8))
+    result = json.loads(llm.chat(messages, max_tokens=35, schema=CHECKIN, model=llm.vision_model(), background=True, timeout=8))
     return result.get('activity')
 
 
@@ -135,7 +135,7 @@ def observe_scene(image):
         )},
         {'role': 'user', 'content': 'Observe the visible person.', 'images': [base64.b64encode(image).decode('ascii')]},
     ]
-    result = json.loads(llm.chat(messages, max_tokens=80, schema=SCENE_SCHEMA, model='qwen3.5:4b-q4_K_M', timeout=10))
+    result = json.loads(llm.chat(messages, max_tokens=80, schema=SCENE_SCHEMA, model=llm.vision_model(), background=True, timeout=10))
     return {
         'emotion': result.get('emotion', 'neutral'),
         'activity': (result.get('activity') or '').strip(),
@@ -172,5 +172,5 @@ def describe_person(image, box):
         )},
         {'role': 'user', 'content': 'Describe this person briefly.', 'images': [base64.b64encode(encoded).decode('ascii')]},
     ]
-    phrase = llm.chat(messages, max_tokens=20, model='qwen3.5:4b-q4_K_M', timeout=7).strip().strip('."\'')
+    phrase = llm.chat(messages, max_tokens=20, model=llm.vision_model(), background=True, timeout=7).strip().strip('."\'')
     return phrase if 3 <= len(phrase) <= 45 else ''

@@ -45,7 +45,8 @@ class Phrases:
             end = next((m.end() for m in SENTENCE.finditer(tail)
                         if m.end() >= shortest and not ABBREVIATION.search(tail[:m.end()])), 0)
             # A long sentence may break at a comma; the opening one breaks sooner to start talking.
-            least, ready = (24, 40) if not self.offset else (44, 62)
+            # The opening clause goes out as soon as there is one ("That's rough,"), so the voice starts sooner.
+            least, ready = (10, 16) if not self.offset else (44, 62)
             if not end and len(tail) >= ready:
                 end = next((m.end() for m in CLAUSE.finditer(tail)
                             if least <= m.end() <= 90 and tail[m.end():m.end()+1] == ' '), 0)

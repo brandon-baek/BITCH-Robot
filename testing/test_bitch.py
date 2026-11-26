@@ -26,6 +26,8 @@ os.environ['BITCH_PI_HOME'] = SCRATCH.name
 
 import brain as pi
 from core import config, gaze, memory, voice
+
+config.update({'voice_engine': 'kokoro', 'llm_server': False})   # unit tests never load the big voice or model
 from core.brain import Brain
 from core.devices.base import Device
 from core.hub import hub
@@ -222,6 +224,59 @@ class WakeTests(unittest.TestCase):
             brain.clear_conversation('desk')
             self.assertFalse(brain.history)
 
+    def test_in_a_group_a_line_for_someone_else_gets_no_reply_but_is_remembered(self):
+        brain = Brain()
+        brain.accepted_wake = False
+        view = Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 1}),
+                    current_scene=Mock(return_value=(None, None)), face_to_learn=Mock(return_value=None))
+        with (patch.object(hub, 'sight', view),
+              patch('core.brain.llm.chat', return_value='{"to":"them","v":"n","say":"","end":false}') as chat):
+            # Calling on someone by name or family word is never for BITCH; no need to ask the model.
+            self.assertEqual(brain.reply('Mom, did you feed the dog?', 'desk'), '')
+            chat.assert_not_called()
+            # Anything else, the model decides first and says nothing when it was for someone else.
+            self.assertEqual(brain.reply('Can you pass me the salt?', 'desk'), '')
+            schema = chat.call_args.kwargs['schema']
+            self.assertEqual(next(iter(schema['properties'])), 'to')
+            self.assertEqual(schema['required'][0], 'to')
+        brain.accepted_wake = True
+        with (patch.object(hub, 'sight', view),
+              patch('core.brain.llm.chat', return_value='{"v":"p","say":"He did not.","end":false}') as chat):
+            self.assertEqual(brain.reply('Did he?', 'desk'), 'He did not.')
+            self.assertNotIn('to', chat.call_args.kwargs['schema']['properties'])
+            self.assertIn('feed the dog', chat.call_args.args[0][-1]['content'])
+        # Alone in the room, a follow-up never asks who it was for.
+        brain.accepted_wake = False
+        with (patch.object(hub, 'sight', Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 0}),
+                                              current_scene=Mock(return_value=(None, None)),
+                                              face_to_learn=Mock(return_value=None))),
+              patch('core.brain.llm.chat', return_value='{"v":"n","say":"Sure.","end":false}') as chat):
+            brain.reply('And tomorrow?', 'desk')
+            self.assertNotIn('to', chat.call_args.kwargs['schema']['properties'])
+
+    def test_talk_over_transcript_drops_bitchs_own_words_from_the_front(self):
+        from core.brain import strip_playback
+        spoken = 'Alright, picture this. A small robot named Cog lived in a studio.'
+        self.assertEqual(strip_playback('Alright, picture this. A small robot. Wait, make it about painting.', spoken),
+                         'Wait, make it about painting.')
+        self.assertEqual(strip_playback('Wait, make it about painting.', spoken), 'Wait, make it about painting.')
+        # All of it was BITCH's words: leave it alone (the echo check handles that case).
+        self.assertEqual(strip_playback('A small robot named Cog', spoken), 'A small robot named Cog')
+
+    def test_eyes_stay_on_the_person_bitch_is_talking_with(self):
+        attention = Attention()
+        boxes = [(.1, .3, .12, .16), (.6, .3, .2, .26)]
+        attention.update(boxes, 0.)
+        visible, focus = attention.update(boxes, .5)
+        names = dict(zip(sorted(visible), ['Emma', 'Brandon']))
+        for key, name in names.items():
+            attention.people[key]['name'] = name
+        emma = next(key for key, name in names.items() if name == 'Emma')
+        attention.speaker = ('Emma', 100.)
+        for step in range(40):
+            _, focus = attention.update(boxes, 1. + step * .5)
+            self.assertEqual(focus, emma)
+
     def test_new_question_overrides_model_closure(self):
         brain = Brain()
         with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):
@@ -395,6 +450,11 @@ class WakeTests(unittest.TestCase):
         for text in ('Hey BITCH, what time is it?', 'Tell me a joke.', 'Yes.', 'I like that.'):
             self.assertTrue(sounds_finished(text), text)
         for text in ('Hey BITCH.', 'Hey BITCH, I was thinking and.', 'So the thing is,', 'Well...', 'Can you', ''):
+            self.assertFalse(sounds_finished(text), text)
+        # Parakeet often drops the final full stop: the words decide.
+        for text in ("Hey bitch, I'm back", 'Cool thanks', 'What time is it'):
+            self.assertTrue(sounds_finished(text), text)
+        for text in ('So can you', 'I was thinking about', 'What do you think about'):
             self.assertFalse(sounds_finished(text), text)
 
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
@@ -589,9 +649,29 @@ class WakeTests(unittest.TestCase):
         samples = np.sin(2 * np.pi * 440 * np.arange(24000) / 24000)
         with patch.object(voice, 'synthesize', return_value=(samples, 24000)):
             data, duration = voice.render('Hello.')
-        self.assertAlmostEqual(duration, 1 / 1.035, places=3)
+        self.assertAlmostEqual(duration, 1 / 1.035, places=3)   # the backup voice gets the old 3.5% lift
+        with patch.object(voice, 'synthesize', return_value=(samples, 24000)), patch.object(voice, 'lift', return_value=1.):
+            _, duration = voice.render('Hello.')
+        self.assertAlmostEqual(duration, 1., places=3)          # BITCH's own voice keeps its pitch
         with wave.open(io.BytesIO(data), 'rb') as audio:
             self.assertEqual((audio.getnchannels(), audio.getframerate(), audio.getsampwidth()), (1, 24000, 2))
+
+
+    def test_streamed_voice_layer_matches_the_whole_line_and_joins_seamlessly(self):
+        audio = (0.5 * np.sin(2 * np.pi * 220 * np.arange(24000) / 24000)).astype(np.float32)
+        whole = voice.Shaper().process(audio)
+        shaper = voice.Shaper()
+        pieces = np.concatenate([shaper.process(audio[i:i + 1000]) for i in range(0, len(audio), 1000)])
+        self.assertLess(float(np.abs(whole - pieces).max()), 1e-4)   # same sound in chunks as in one go
+
+    def test_estimated_word_timings_follow_the_speech(self):
+        audio = np.zeros(48000, np.float32)
+        audio[12000:36000] = 0.3 * np.sin(np.arange(24000) / 3)
+        words = voice.estimate_words("Ugh, that's rough. Which part?", audio, 24000)
+        self.assertEqual([w for w, _ in words][:3], ['Ugh', ',', "that's"])
+        self.assertAlmostEqual(words[0][1], .5, delta=.03)            # starts where the sound starts
+        self.assertTrue(all(a <= b for (_, a), (_, b) in zip(words, words[1:])))
+        self.assertLess(words[-1][1], 1.5)
 
 
 class AlignmentTests(unittest.TestCase):

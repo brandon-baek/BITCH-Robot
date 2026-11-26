@@ -48,12 +48,44 @@ class MacSpeaker(Device):
         threading.Thread(target=cleanup, daemon=True).start()
         return True
 
+    streaming = None    # (thread, stop event) while a live line plays
+
+    def speak_stream(self, chunks):
+        """Play 24 kHz mono PCM as it arrives, for BITCH's first words of a reply."""
+        try:
+            import sounddevice as sd
+        except ImportError:
+            return False
+        self.hush()
+        stop = threading.Event()
+
+        def run():
+            try:
+                with sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', latency='low') as stream:
+                    for data in chunks:
+                        if stop.is_set():
+                            break
+                        stream.write(data)
+            except Exception as error:
+                self.hub.note('speaker', f'Mac playback failed: {error}')
+
+        thread = threading.Thread(target=run, daemon=True)
+        with self.lock:
+            self.streaming = (thread, stop)
+        thread.start()
+        return True
+
     def playing(self):
         with self.lock:
+            if self.streaming and self.streaming[0].is_alive():
+                return True
             return bool(self.player and self.player.poll() is None)
 
     def hush(self):
         with self.lock:
+            if self.streaming:
+                self.streaming[1].set()
+                self.streaming = None
             if self.player and self.player.poll() is None:
                 self.player.terminate()
 

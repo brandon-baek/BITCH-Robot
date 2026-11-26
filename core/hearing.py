@@ -1,6 +1,7 @@
 """VAD and local transcription for the single selected input."""
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 import queue
 import re
 import threading
@@ -26,10 +27,33 @@ WAKE_ONLY_SPEECH = .35  # seconds of real speech behind a bare "BITCH." (the pro
 PRE_ROLL = 20         # frames of lead-in (0.64 s) kept before speech starts
 OVERLAP = 2.2         # mic this many times louder than BITCH's predicted echo means someone is talking over it
 SUSTAINED = 20        # frames (0.64 s) of talking over BITCH that stop it without waiting for words
+# Talking over BITCH, decided by a vote over the last half second instead of an unbroken run (natural speech dips
+# between words, which kept resetting the run): most speech frames clearly above BITCH's own echo, and on average too.
+VOTE_FRAMES, VOTE_NEEDED, VOTE_EACH, VOTE_MEAN = 16, 9, 1.6, 1.9
 PREVIEW_QUIET = 8      # frames of silence (about a quarter second) before a speculative transcript
 TRAILING = re.compile(
     r"(?:\.\.\.|…|[,;:—–-])$|\b(?:and|but|or|so|because|cause|the|a|an|to|of|with|my|your|our|their|"
     r"if|then|um|uh|uhm|like|for|from|than|is|are|was|were|i|i'm|also)\.$", re.I)
+
+
+UNFINISHED = re.compile(r"\b(?:(?:can|could|would|will|should|do|did|does|have) (?:you|i|we|they|he|she|it)|"
+                        r"can|could|would|should|do|does|have|has|had|in|on|at|about|into|is|was|are|were|not|just|"
+                        r"really|maybe|want|need|going|gonna|wanna|let's|make|get|the|a|an|to|of|with|for|from|and|"
+                        r"but|or|so|because|if|then|um|uh|my|your|our|their)$", re.I)
+
+
+def warmup_speech():
+    """A few seconds of real speech (BITCH's own voice sample) to warm the recognizers with."""
+    try:
+        import soundfile
+
+        audio, rate = soundfile.read(str(Path(__file__).parent / 'voices' / 'bitch.wav'), dtype='float32')
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        positions = np.arange(0, len(audio), rate / SR)
+        return np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)[:SR * 6]
+    except Exception:
+        return np.random.default_rng(0).normal(0, .05, SR).astype(np.float32)
 
 
 def wake_only(text):
@@ -43,6 +67,12 @@ def sounds_finished(text):
     from .brain import wake_request
 
     text = text.strip()
+    if text and text[-1].isalnum():
+        # Parakeet often leaves off the final full stop, so judge the thought by its words: without punctuation,
+        # a last word that almost always continues ("can you", "what about") means they're still going.
+        if UNFINISHED.search(text):
+            return False
+        text += '.'
     return bool(text and text[-1] in '.?!' and not TRAILING.search(text) and wake_request(text) != '')
 
 
@@ -210,6 +240,7 @@ class Hearing:
         overlap_start = None
         louder_run = 0       # consecutive frames clearly louder than the echo
         recent_louder = deque(maxlen=16)
+        votes = deque(maxlen=VOTE_FRAMES)   # (speech, how much louder than BITCH's echo) while it talks
         held = False         # this clip already paused BITCH's thinking
         interrupted = False
         marks = []           # which clip frames were speech
@@ -272,6 +303,7 @@ class Hearing:
                         talking_over = interrupted = can_interrupt
                         held = False
                         last_probe = overlap = louder_run = 0
+                        votes.clear()
                         overlap_start = None
                         last_speech, previewed = frame_at, False
                         began = frame_at - (len(pre) - 1) * FRAME / SR
@@ -299,7 +331,12 @@ class Hearing:
                     if not overlap:
                         overlap_start = None
                     louder_run = louder_run + 1 if speech and louder is not None and louder >= OVERLAP else 0
-                    if louder_run == SUSTAINED:
+                    if louder is not None:
+                        votes.append((speech, louder))
+                    over = [ratio for talking, ratio in votes if talking]
+                    voted = (len(votes) == VOTE_FRAMES and sum(ratio >= VOTE_EACH for ratio in over) >= VOTE_NEEDED
+                             and float(np.exp(np.mean(np.log(np.maximum(over, 1e-3))))) >= VOTE_MEAN)
+                    if louder_run == SUSTAINED or voted and hub.brain.can_interrupt(source):
                         # Someone has kept talking over BITCH: stop, like a person would, even
                         # before the words are clear enough to transcribe.
                         hub.brain.interrupt(source, '', strong=True, sustained=True)
@@ -355,19 +392,24 @@ class Hearing:
         try:
             import mlx_whisper
 
-            mlx_whisper.transcribe(np.zeros(SR, np.float32), path_or_hf_repo=WHISPER)
+            warmup = warmup_speech()
+            with voice.MLX:
+                mlx_whisper.transcribe(warmup, path_or_hf_repo=WHISPER, language='en', initial_prompt=WAKE_HINT)
         except Exception as error:
             hub.note('hearing', f'Whisper unavailable: {error}')
             return
         try:
             from parakeet_mlx import from_pretrained
 
-            self.parakeet = from_pretrained(PARAKEET)
-            self.read_fast(np.zeros(SR, np.float32))
+            with voice.MLX:
+                self.parakeet = from_pretrained(PARAKEET)
+            # Real speech, so the decoder runs too; silence only warms the encoder and the first turn pays.
+            self.read_fast(warmup)
+            self.read_fast(warmup[:SR * 2])
         except Exception as error:
             self.parakeet = None
             hub.note('hearing', f'Fast recognizer unavailable, using Whisper only: {error}')
-        self.whisper_ready = True
+        self.whisper_ready = True   # ready only once both recognizers are warm, so the first turn isn't slow
         preview = None
         while True:
             clip = self.clips.get()
@@ -384,7 +426,8 @@ class Hearing:
             valid = lambda: self.valid_clip(clip) and not hub.brain.busy.is_set()
             if clip.interrupted and not self.wait_for_interrupted_reply(clip):
                 continue
-            if not valid() or not clip.interrupted and time.monotonic() - clip.queued > 2:
+            # A turn that waited in line this long is stale (the room moved on); a few seconds is still one turn.
+            if not valid() or not clip.interrupted and time.monotonic() - clip.queued > 6:
                 continue
             stamp = (source, revision, began, clip.last_speech)
             if clip.kind == 'preview':
@@ -414,10 +457,11 @@ class Hearing:
                 if text and wake_only(text) and clip.voiced < WAKE_ONLY_SPEECH:
                     continue
                 if hub.brain.interruption and text:
-                    from .brain import INTERRUPT, repeats_playback
+                    from .brain import INTERRUPT, repeats_playback, strip_playback
 
                     if repeats_playback(text, hub.brain.spoken_reply):
                         continue
+                    text = strip_playback(text, hub.brain.spoken_reply)
                     marker = INTERRUPT.match(text)
                     if marker and not text.lower().startswith('stop listening'):
                         text = text[marker.end():].strip()
@@ -464,8 +508,9 @@ class Hearing:
         import mlx.core as mx
         from parakeet_mlx.audio import get_logmel
 
-        mel = get_logmel(mx.array(self.level(audio)), self.parakeet.preprocessor_config)
-        text = self.parakeet.generate(mel)[0].text.strip()
+        with voice.Urgent():
+            mel = get_logmel(mx.array(self.level(audio)), self.parakeet.preprocessor_config)
+            text = self.parakeet.generate(mel)[0].text.strip()
         return text if re.search(r'[A-Za-z]', text) else ''
 
     def listen(self, whisper, audio, *, need_name):
@@ -492,8 +537,9 @@ class Hearing:
         if len(frames):
             level = float(np.percentile(np.sqrt(np.mean(frames ** 2, axis=1)), 90))
             audio = np.clip(audio * min(8., .08 / max(level, 1e-5)), -1, 1).astype(np.float32)
-        result = engine.transcribe(audio, path_or_hf_repo=WHISPER, language='en',
-                                   condition_on_previous_text=False, temperature=0,
-                                   initial_prompt=WAKE_HINT if prompt else None)
+        with voice.Urgent():
+            result = engine.transcribe(audio, path_or_hf_repo=WHISPER, language='en',
+                                       condition_on_previous_text=False, temperature=0,
+                                       initial_prompt=WAKE_HINT if prompt else None)
         return ' '.join(segment['text'].strip() for segment in result.get('segments', [])
                         if segment.get('no_speech_prob', 0) < .55 and segment.get('avg_logprob', 0) > -.95)

@@ -11,3 +11,5 @@ uvicorn[standard]
 cryptography
 httpx
 sherpa-onnx>=2.0.3
+parakeet-mlx==0.7.0
+mlx-audio==0.6.8
