@@ -362,11 +362,18 @@ def open_new_chat(tab):
     When ChatGPT is already open, its own "New chat" link switches chats inside the page, which takes a moment
     instead of the 15+ seconds a Pi 4 needs to load ChatGPT from scratch."""
     try:
-        state = tab.run('const link = page.newChatLink(); if (!link || !page.composer()) return false; '
-                        'if (page.asks().length || location.pathname !== "/") link.click(); return true;', 6.)
+        state = tab.run('if (!page.composer()) return "none"; '
+                        'if (!page.asks().length && location.pathname === "/") return "fresh"; '
+                        'const link = page.newChatLink(); if (link) { link.click(); return "link"; } return "keys";', 6.)
     except (RuntimeError, TimeoutError):
-        state = False
-    if state:
+        state = 'none'
+    if state == 'keys':
+        # ChatGPT's own shortcut for a new chat.
+        tab.call('Input.dispatchKeyEvent', {'type': 'rawKeyDown', 'key': 'O', 'code': 'KeyO', 'windowsVirtualKeyCode': 79,
+                                            'modifiers': 2 | 8})
+        tab.call('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'O', 'code': 'KeyO', 'windowsVirtualKeyCode': 79,
+                                            'modifiers': 2 | 8})
+    if state != 'none':
         deadline = time.monotonic() + 6.
         while time.monotonic() < deadline:
             time.sleep(.25)
@@ -430,17 +437,17 @@ def enter_prompt(tab, prompt):
     return bool(normalized(tab.run(check)))
 
 
-def press_send(tab):
-    for _ in range(25):
-        if tab.run('const b = page.sendButton(); if (b) { b.click(); return true; } return false;'):
-            return True
-        time.sleep(.2)
-    # No button found: Enter sends in ChatGPT's composer.
+def press_send(tab, before=(0, 0)):
+    """Enter sends in ChatGPT's composer, same as for a person. Fall back to the Send button if it didn't go."""
     tab.run('const box = page.composer(); if (box) box.focus(); return true;')
     for kind in ('keyDown', 'keyUp'):
         tab.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'Enter', 'code': 'Enter',
                                             'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else ''})
-    return True
+    for _ in range(12):
+        time.sleep(.25)
+        if tab.run(f'return page.asks().length > {int(before[0])} || location.pathname.startsWith("/c/");'):
+            return True
+    return bool(tab.run('const b = page.sendButton(); if (b) { b.click(); return true; } return false;'))
 
 
 def read_reply(tab, before, wait=SEND_WAIT_SECONDS):
@@ -509,7 +516,7 @@ def run_chatgpt(prompt, *, send, mode=None):
         if not send:
             return {'state': 'drafted'}
         before = tab.run('return [page.asks().length, page.replies().length];')
-        press_send(tab)
+        press_send(tab, before)
         sent = True
         lap('send')
         result = read_reply(tab, before)
@@ -559,6 +566,9 @@ def choose_mode(tab, mode):
     if the control wasn't found (then ChatGPT just uses whatever level it was on)."""
     if mode not in MODES:
         return None
+    current = tab.run('const b = page.modeButton(); return b ? (b.innerText || "").trim() : null;')
+    if current and any(re.search(pattern, current, re.I) for pattern in MODES[mode]):
+        return current   # already there; opening the menu costs seconds on a Pi
     label, items = open_mode_menu(tab)
     if label is None:
         return None
@@ -624,6 +634,17 @@ if __name__ == '__main__':
         try:
             print(json.dumps(dict(zip(('current', 'options'), open_mode_menu(tab))), indent=2))
             close_menu(tab)
+        finally:
+            tab.close()
+    elif sys.argv[1:2] == ['controls']:
+        tab = chatgpt_tab()
+        try:
+            print(json.dumps(tab.run(
+                'return {path: location.pathname, asks: page.asks().length, mode: (page.modeButton() || {}).innerText, '
+                'controls: Array.from(document.querySelectorAll("a, button")).filter((e) => /new chat|send|submit/i.test('
+                '(e.innerText || "") + " " + (e.getAttribute("aria-label") || ""))).map((e) => [e.tagName, '
+                'e.getAttribute("href"), e.getAttribute("data-testid"), e.getAttribute("aria-label"), '
+                '(e.innerText || "").trim().slice(0, 20), e.offsetParent !== null])};'), indent=1))
         finally:
             tab.close()
     elif sys.argv[1:2] == ['status']:
