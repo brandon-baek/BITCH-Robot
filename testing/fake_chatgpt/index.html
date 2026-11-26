@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- A stand-in for chatgpt.com's chat page with the same hooks desktop_chatgpt.py uses. -->
+<!-- A stand-in for chatgpt.com's chat page (markup as of Nov 2026) with the hooks desktop_chatgpt.py uses. -->
 <meta charset="utf-8"><title>ChatGPT</title>
 <main id="thread"></main>
 <form>
@@ -24,21 +24,23 @@ box.addEventListener('input', sync);
 send.addEventListener('click', () => {
   const asked = box.innerText;
   const user = document.createElement('div');
-  user.dataset.messageAuthorRole = 'user'; user.innerText = asked; thread.appendChild(user);
+  user.dataset.userMessageBubble = 'true'; user.innerText = asked; thread.appendChild(user);
   box.innerHTML = ''; sync();
   history.pushState({}, '', '/c/12345678-1234-1234-1234-123456789abc');
-  send.dataset.testid = 'stop-button'; send.setAttribute('aria-label', 'Stop streaming');
-  const reply = document.createElement('div');
-  reply.dataset.messageAuthorRole = 'assistant';
-  reply.innerHTML = '<div class="markdown"></div>';
-  thread.appendChild(reply);
+  // The send button stays a send button now; the turn's state says whether it is still streaming.
+  const turn = document.createElement('div');
+  turn.dataset.talvtTurnState = 'streaming';
+  turn.innerHTML = '<div data-response-body="m1"><div data-markdown-text-style="assistant-message"><p></p></div></div>';
+  thread.appendChild(turn);
+  const reply = turn.querySelector('[data-response-body]');
+  const text = reply.querySelector('p');
   const words = ('17 times 23 is 391. (You asked: ' + asked.split('\n').find((l) => l.includes('?')) + ')').split(' ');
   let i = 0;
   const tick = setInterval(() => {
-    reply.firstChild.innerText += (i ? ' ' : '') + words[i++];
+    text.innerText += (i ? ' ' : '') + words[i++];
     if (i >= words.length) {
       clearInterval(tick);
-      send.dataset.testid = 'send-button'; send.setAttribute('aria-label', 'Send prompt');
+      setTimeout(() => { turn.dataset.talvtTurnState = 'complete'; }, 2500);   // finishes well after the last word
     }
   }, 120);
 });

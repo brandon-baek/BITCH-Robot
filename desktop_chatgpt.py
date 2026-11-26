@@ -40,9 +40,18 @@ PAGE = r'''
     .find((el) => visible(el) && (el.isContentEditable || el.tagName === 'TEXTAREA')) || null;
   const sendButton = () => all('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]')
     .find((el) => visible(el) && !el.disabled && !/stop/i.test(el.getAttribute('aria-label') || '')) || null;
-  const streaming = () => !!all('[data-testid="stop-button"], button[aria-label^="Stop"]').find(visible);
-  const replies = () => all('[data-message-author-role="assistant"]');
-  const asks = () => all('[data-message-author-role="user"]');
+  // ChatGPT renames its markup now and then, so each lookup tries the current names first, then older ones.
+  const first = (selectors) => { for (const s of selectors) { const found = all(s); if (found.length) return found; } return []; };
+  const replies = () => first(['[data-response-body]', '[data-markdown-text-style="assistant-message"]',
+                               '[data-message-author-role="assistant"]']);
+  const asks = () => first(['[data-user-message-bubble]', '[data-conversation-role="user"]',
+                            '[data-message-author-role="user"]']);
+  const streaming = () => {
+    if (all('[data-testid="stop-button"], button[aria-label^="Stop"]').find(visible)) return true;
+    const turns = all('[data-talvt-turn-state]');
+    const last = turns[turns.length - 1];
+    return !!last && last.getAttribute('data-talvt-turn-state') !== 'complete';
+  };
   const loginButton = () => all('[data-testid="login-button"], a[href*="/auth/login"], button')
     .find((el) => visible(el) && (el.matches('[data-testid="login-button"], a[href*="/auth/login"]') || /^log in$/i.test((el.innerText || '').trim())));
   const textOf = (el) => {
