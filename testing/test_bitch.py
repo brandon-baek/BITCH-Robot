@@ -101,7 +101,7 @@ class WakeTests(unittest.TestCase):
         robot = SimpleNamespace(macro=lambda *args: True, handoff=True, auto_handoff=True,
                                 macro_status=lambda request_id: next(statuses))
         announced = []
-        brain.announce = lambda source, text, heard=None: announced.append((source, text))
+        brain.announce = lambda source, text, heard=None, chime=False: announced.append((source, text))
         with (patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'),
               patch.object(helper.threading, 'Thread')):
             self.assertIsNone(helper.start(brain, 'desk', None, "What's the weather?"))
@@ -110,6 +110,12 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(announced, [('desk', 'Sunny, 64°F. Forecast')])
         self.assertEqual(helper.tasks[-1]['state'], 'done')
         self.assertTrue(helper.OUTSIDE.search("What's on my calendar tomorrow?"))
+        # A send the Pi couldn't read back is reported instead of leaving BITCH silent.
+        robot.macro_status = lambda request_id: {'state': 'send_unverified'}
+        announced.clear()
+        with patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'):
+            helper.watch(brain, 'desk', {'id': 'x', 'state': 'working'})
+        self.assertIn('ChatGPT tab', announced[0][1])
         self.assertFalse(helper.OUTSIDE.search("What's the square root of 144?"))
 
     def test_voicechat_gets_addressed_audio_and_qwen_handles_the_local_agent_request(self):
@@ -219,6 +225,46 @@ class WakeTests(unittest.TestCase):
         self.assertIn('look', calls[0][0]['properties']['do']['enum'])
         self.assertNotIn('do', calls[1][0]['properties'])
         self.assertTrue(calls[1][1])
+
+    def test_people_are_introduced_and_forgotten_in_conversation(self):
+        from core.people import people
+
+        brain = Brain()
+        brain.turn_audio = np.zeros(16000, np.float32)
+        sight = SimpleNamespace(face_to_learn=lambda stranger: ('cam', 7 if stranger else 3, None))
+        learned = []
+        with (patch.object(hub, 'sight', sight), patch.object(people, 'profiles', {}),
+              patch.object(people, 'learn', side_effect=lambda name, **kwargs: learned.append((name, kwargs)))):
+            answer, note = brain.meet("Hi, I'm Sam.", 'desk')
+            self.assertIsNone(answer)
+            self.assertIn('Sam', note)
+            self.assertEqual((brain.speaker, brain.speaker_evidence), ('Sam', 'introduced'))
+            self.assertEqual(learned[-1][1]['face'], ('cam', 3))
+            self.assertIsNotNone(learned[-1][1]['first'])
+            answer, note = brain.meet('This is my friend Alex.', 'desk')
+            self.assertIn('Alex', note)
+            self.assertEqual(learned[-1][1]['face'], ('cam', 7))
+            self.assertIsNone(learned[-1][1]['first'])
+            self.assertEqual(brain.speaker, 'Sam')
+            self.assertEqual(brain.meet("I'm tired.", 'desk'), (None, None))
+            with patch.object(people, 'forget') as forget:
+                self.assertIn('forgotten you, Sam', brain.meet('Forget me.', 'desk')[0])
+                forget.assert_called_once_with('Sam', None)
+            self.assertIsNone(brain.speaker)
+
+    def test_app_state_reports_live_captions_company_and_people(self):
+        from core import server
+
+        brain = Brain()
+        brain.busy.set()
+        brain.speaker, brain.speaker_evidence, brain.spoken_reply = 'Sam', 'voice', 'Hello there.'
+        hearing = SimpleNamespace(phase=lambda: None, activity_at=0, ready=True)
+        with (patch.object(hub, 'brain', brain), patch.object(hub, 'hearing', hearing), patch.object(hub, 'sight', None),
+              patch.object(hub, 'status', 'Speaking'), patch.object(server, 'authorize', return_value='local')):
+            data = server.state(None)
+        self.assertEqual(data['speaking'], 'Hello there.')
+        self.assertEqual(data['company'], {'name': 'Sam', 'by': 'voice'})
+        self.assertIn('learning', data['people'])
 
     def test_actions_are_offered_only_when_the_request_calls_for_them(self):
         brain = Brain()
@@ -409,7 +455,7 @@ class WakeTests(unittest.TestCase):
         brain = Brain()
         try:
             brain.speaker = 'Local memory fixture'
-            brain.speaker_evidence = 'face'
+            brain.speaker_evidence = 'introduced'   # just saying a name doesn't unlock someone's memories
             self.assertIn('recognize', brain.reply('Remember that my bike is lime green.', 'desk'))
             brain.speaker_evidence = 'voice'
             self.assertEqual(brain.reply('Remember that my bike is lime green.', 'desk'), 'I’ll remember that.')
@@ -419,6 +465,32 @@ class WakeTests(unittest.TestCase):
             self.assertFalse(memory.recall(brain.speaker))
         finally:
             memory.forget('Local memory fixture', 'everything')
+
+    def test_conversations_become_memories_that_come_back_later(self):
+        brain = Brain()
+        owner = 'Memory fixture'
+        try:
+            history = brain.history.setdefault(('desk', None), __import__('collections').deque(maxlen=24))
+            history.extend([{'role': 'user', 'content': 'My exam is on Thursday.'}, {'role': 'assistant', 'content': 'Good luck.'},
+                            {'role': 'user', 'content': 'It is about solid state transformers.'},
+                            {'role': 'assistant', 'content': 'Fancy.'}])
+            brain.history_owner[('desk', None)] = owner
+            brain.history_at[('desk', None)] = 0.
+            with patch('core.brain.llm.chat', return_value='Memory fixture has an exam on Thursday about solid state transformers.') as model:
+                brain.reflect(now=1000.)
+                brain.reflect(now=2000.)   # nothing new, nothing rewritten
+            model.assert_called_once()
+            memory.remember(owner, 'I prefer black coffee')
+            context = memory.context(owner, 'When is my exam again?')
+            self.assertIn('black coffee', context)
+            self.assertIn('exam on Thursday', context)
+            self.assertIn('Earlier conversations', context)
+            self.assertIsNone(memory.context(None, 'anything'))
+        finally:
+            memory.forget(owner, 'everything')
+            for row in memory.everything():
+                if row['about'] == owner:
+                    memory.delete(row['id'])
 
     def test_first_turn_distinguishes_face_and_voice_evidence(self):
         brain = Brain()
@@ -566,6 +638,48 @@ class MotionTests(unittest.TestCase):
         self.assertTrue(any(kind == 'tilt' for kind, _ in kinds))
         nod, tilt, lean = voice.gesture_at(events, 1.6)
         self.assertLess(nod, 0)
+
+
+    def test_calm_watching_rests_the_base_and_writes_only_real_changes(self):
+        writes = [0, 0, 0, 0]
+        desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.,
+                               S=[SimpleNamespace(us=lambda _, i=i: writes.__setitem__(i, writes[i] + 1)) for i in range(4)],
+                               relax=lambda *joints: None)
+        motion = pi.Motion(desk)
+        motion.started = True
+        for tick in range(500):   # ten seconds of watching someone who sits still
+            motion.step('watch', .1, -.7, tick * .02, .02, calm=True)
+        self.assertIn(0, motion.actor.limp)            # the base is resting unpowered
+        self.assertLess(max(writes), 250)              # far fewer than 50 writes a second
+        self.assertGreater(motion.wear['powered'], 9)
+        busy = [0, 0, 0, 0]
+        desk.S = [SimpleNamespace(us=lambda _, i=i: busy.__setitem__(i, busy[i] + 1)) for i in range(4)]
+        motion = pi.Motion(desk)
+        motion.started = True
+        for tick in range(500):
+            motion.step('watch', .1, -.7, tick * .02, .02)
+        self.assertGreater(sum(busy), sum(writes))      # without calm the breathing keeps it moving
+
+    def test_rhythm_rests_when_alone_and_sleeps_at_night(self):
+        from core.rhythm import Rhythm
+
+        rhythm = Rhythm()
+        with patch.object(rhythm, 'night', return_value=False):
+            self.assertEqual(rhythm.update(True, False, 0., now=1000.)[0], 'engaged')   # just arrived
+            self.assertEqual(rhythm.update(True, False, 0., now=1030.)[0], 'attentive')
+            self.assertEqual(rhythm.update(False, False, 0., now=1040.)[0], 'looking')
+            self.assertEqual(rhythm.update(False, False, 0., now=1100.)[0], 'resting')
+            self.assertEqual(rhythm.update(False, True, 1100., now=1101.)[0], 'engaged')
+        with patch.object(rhythm, 'night', return_value=True):
+            state, beat = rhythm.update(False, False, 1100., now=1500.)
+            self.assertEqual((state, beat), ('asleep', 'doze'))
+            self.assertEqual(rhythm.update(False, False, 1100., now=1510.), ('asleep', None))
+
+    def test_sound_effects_render_for_every_action(self):
+        for name, make in voice.EARCONS.items():
+            sound = make()
+            self.assertTrue(.1 < len(sound) / voice.SR < 1.5, name)
+            self.assertLess(float(np.abs(sound).max()), .5, name)
 
 
 class CharacterTests(unittest.TestCase):

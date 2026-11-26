@@ -27,8 +27,9 @@
 
 <div class="app" id="app">
   <header class="bar">
+    <div class="bar-side"><button class="text-button" id="showEarlier" type="button" hidden>Earlier</button></div>
     <h1>BITCH</h1>
-    <div class="bar-actions" id="barActions" hidden>
+    <div class="bar-side end" id="barActions" hidden>
       <button class="icon-button" id="voiceToggle" type="button" aria-pressed="false" aria-label="Mute BITCH’s voice"><svg><use href="#i-voice"/></svg></button>
       <button class="icon-button" id="openSettings" type="button" aria-label="Settings"><svg><use href="#i-settings"/></svg></button>
     </div>
@@ -56,33 +57,34 @@
   </section>
 
   <main class="stage" id="stage" hidden>
-    <div class="presence">
-      <svg class="eyes" id="eyes" viewBox="0 0 72 38" aria-hidden="true">
-        <defs>
-          <clipPath id="eyeClipL"><circle cx="18" cy="19" r="15"/></clipPath>
-          <clipPath id="eyeClipR"><circle cx="54" cy="19" r="15"/></clipPath>
-        </defs>
-        <g clip-path="url(#eyeClipL)"><circle class="sclera" cx="18" cy="19" r="15"/><circle class="pupil" id="pupilL" cx="18" cy="19" r="6.5"/><rect class="lid" id="lidL" x="2" y="3" width="32" height="0"/></g>
-        <g clip-path="url(#eyeClipR)"><circle class="sclera" cx="54" cy="19" r="15"/><circle class="pupil" id="pupilR" cx="54" cy="19" r="6.5"/><rect class="lid" id="lidR" x="38" y="3" width="32" height="0"/></g>
-        <circle class="rim" cx="18" cy="19" r="15"/><circle class="rim" cx="54" cy="19" r="15"/>
-      </svg>
+    <svg class="eyes" id="eyes" viewBox="0 0 72 38" aria-hidden="true">
+      <defs>
+        <clipPath id="eyeClipL"><circle cx="18" cy="19" r="15"/></clipPath>
+        <clipPath id="eyeClipR"><circle cx="54" cy="19" r="15"/></clipPath>
+      </defs>
+      <g clip-path="url(#eyeClipL)"><circle class="sclera" cx="18" cy="19" r="15"/><circle class="pupil" id="pupilL" cx="18" cy="19" r="6.5"/><circle class="glint" id="glintL" cx="16" cy="17" r="1.6"/><circle class="lid" id="lidL" cx="18" cy="-12" r="16"/></g>
+      <g clip-path="url(#eyeClipR)"><circle class="sclera" cx="54" cy="19" r="15"/><circle class="pupil" id="pupilR" cx="54" cy="19" r="6.5"/><circle class="glint" id="glintR" cx="52" cy="17" r="1.6"/><circle class="lid" id="lidR" cx="54" cy="-12" r="16"/></g>
+      <circle class="rim" cx="18" cy="19" r="15"/><circle class="rim" cx="54" cy="19" r="15"/>
+    </svg>
+    <div class="state">
       <p class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connecting</span></p>
-      <p class="company" id="company" hidden>
-        <svg><use href="#i-person"/></svg><span id="companyText"></span>
-        <span class="by" id="companyBy"></span>
-        <button class="text-button small" id="addFromStage" type="button" hidden>Add</button>
-      </p>
+      <button class="stop" id="stop" type="button" hidden><svg><use href="#i-stop"/></svg>Stop</button>
     </div>
+    <p class="company" id="company">
+      <span id="companyText"></span><span class="by" id="companyBy"></span>
+      <button class="text-button small" id="addFromStage" type="button" hidden>Introduce</button>
+    </p>
+    <div class="faces" id="faces" hidden></div>
     <div class="captions" id="captions" aria-live="polite">
-      <p class="said" id="said"></p>
-      <p class="reply" id="reply"></p>
+      <div class="exchange" id="exchange">
+        <p class="said" id="said"></p>
+        <p class="reply" id="reply"></p>
+      </div>
       <p class="hint" id="hint">Say “Hey BITCH”, or type below.</p>
     </div>
-    <button class="text-button earlier" id="showEarlier" type="button" hidden>Earlier</button>
   </main>
 
   <footer class="composer" id="composer" hidden>
-    <button class="stop" id="stop" type="button" hidden><svg><use href="#i-stop"/></svg>Stop</button>
     <form class="compose" id="sayForm">
       <button class="round" id="micToggle" type="button" aria-pressed="false" aria-label="Turn off my microphone"><svg><use href="#i-mic"/></svg></button>
       <input id="sayText" type="text" placeholder="Message BITCH" autocomplete="off" enterkeyhint="send" maxlength="500" aria-label="Message BITCH">
@@ -151,7 +153,11 @@
         <label class="row"><span>Keep Pi audio awake</span><input class="switch" id="keep_audio" type="checkbox" role="switch"></label>
         <label class="row"><span>Check in when it’s quiet</span><input class="switch" id="check_ins" type="checkbox" role="switch"></label>
         <label class="row"><span>Learn my preferences</span><input class="switch" id="natural_memory" type="checkbox" role="switch"></label>
+        <label class="row"><span>Sound effects</span><input class="switch" id="sounds" type="checkbox" role="switch"></label>
+        <label class="row"><span>Sleep at night</span><input class="switch" id="sleep_at_night" type="checkbox" role="switch"></label>
+        <div class="row" id="nightRow"><span>Night</span><span class="value"><select id="quiet_start" aria-label="Night starts"></select> to <select id="quiet_end" aria-label="Night ends"></select></span></div>
       </div>
+      <p class="footnote">BITCH moves the most when you’re with it. When no one’s around it rests with its motors off, and at night it sleeps until you say its name.</p>
     </section>
 
     <section class="group">
@@ -167,6 +173,12 @@
         <button class="row action" id="addPerson" type="button">Add someone…</button>
       </div>
       <p class="footnote">BITCH saves a face and voice fingerprint on this Mac, never photos or recordings. Only add someone who agrees.</p>
+    </section>
+
+    <section class="group">
+      <h3>Memory</h3>
+      <div class="list" id="memories"><p class="row muted">Nothing yet</p></div>
+      <p class="footnote">What BITCH remembers about people and your past conversations. It writes a short note after each conversation.</p>
     </section>
 
     <section class="group" id="browserSetup">
@@ -204,6 +216,7 @@
       <div class="list">
         <div class="row"><span>Pi</span><span class="value" id="robotStatus">Checking</span></div>
         <div class="row"><span>Brain</span><span class="value" id="modelName"></span></div>
+        <div class="row"><span>Motors today</span><span class="value" id="motors">Unknown</span></div>
       </div>
       <p class="footnote" id="notice" hidden></p>
     </section>

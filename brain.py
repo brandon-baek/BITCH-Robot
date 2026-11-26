@@ -94,13 +94,16 @@ BEATS = {
     'mirror': ((0, 0, -.06, -.02, -.10), (.19, 0, .055, .045, .44),
                (.55, 0, .19, .075, .48), (1.48, 0, .11, .05, .30), (1.9, 0, 0, 0, 0)),
 }
+# Nodding off: the head sinks, catches itself once, then settles. The Mac parks the body after it.
+BEATS['doze'] = ((0, 0, 0, 0, 0), (.9, 0, .04, -.09, .06), (2.1, 0, .07, -.2, .13),
+                 (2.45, 0, .05, -.07, .07), (3.9, 0, .09, -.23, .15), (5.2, 0, .09, -.24, .15))
 BEATS['recognize'] = BEATS['happy']
 SPEECH = {name for name in BEATS if name == 'speaking' or name.startswith('speak-')}
 SOCIAL = {'notice', 'attend', 'listen', 'ponder', 'speaking', 'recognize', 'mirror-left', 'mirror-right',
-          'happy', 'sad', 'scared', 'proud', 'double-take', 'seek', 'look-target'} | SPEECH
+          'happy', 'sad', 'scared', 'proud', 'double-take', 'seek', 'look-target', 'doze', 'stretch'} | SPEECH
 IDLE_BEATS = ('curious', 'glance', 'shy', 'stretch', 'peek')
 ROOM_BEATS = ('survey', 'stretch', 'glance', 'sad', 'peek')
-SOFTNESS = {'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
+SOFTNESS = {'doze': .4, 'stretch': .7, 'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
             'happy': 1.85, 'recognize': 1.85, 'notice': 1.8, 'double-take': 1.88,
             'speak-annoyed': 2.05, 'speak-amused': 2.17, 'speak-surprised': 2.12, 'speak-gentle': .82, 'speak-farewell': 1.15, 'speak-upbeat': 2.1,
             'speak-emphatic': 1.85, 'speak-playful': 1.78, 'speaking': 1.58}
@@ -163,6 +166,8 @@ class Motion:
         self.lean = 0.
         self.gesture_side = 1
         self.recent_idle = []
+        self.base_still = 0.
+        self.wear = {'powered': 0., 'moving': 0., 'travel': [0.] * 4}
 
     def start(self):
         desk = self.desk
@@ -178,7 +183,7 @@ class Motion:
         self.restoring = abs(REST[1] - desk.cur[1]) > 0.02
         self.started = True
 
-    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None, gesture=(0., 0.)):
+    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None, gesture=(0., 0.), calm=False):
         if not self.started:
             if mode == 'park' and score_frame is None:
                 return
@@ -244,6 +249,8 @@ class Motion:
                 self.next_beat = now + 1.35
             if mode == 'watch' and not self.idle_beat and abs(base-desk.cur[0]) > .08:
                 self.next_beat = max(self.next_beat, now+1.65)
+            if calm and self.next_beat - now > 70:
+                self.next_beat = now + self.rng.uniform(25, 70)
             if now >= self.next_beat:
                 choices = IDLE_BEATS if mode == 'watch' else ROOM_BEATS
                 self.last_beat = self.rng.choice([name for name in choices if name not in self.recent_idle])
@@ -251,7 +258,9 @@ class Motion:
                 side = -1 if base > .30 else 1 if base < -.30 else self.rng.choice((-1, 1))
                 self.idle_beat = (BEATS[self.last_beat], now, side)
                 self.idle_anchor = base, neck
-                self.next_beat = now + BEATS[self.last_beat][-1][0] + self.rng.uniform(.70, 2.25)
+                # A calm BITCH glances now and then; an engaged one fidgets like it's paying attention.
+                gap = self.rng.uniform(25, 70) if calm else self.rng.uniform(.70, 2.25)
+                self.next_beat = now + BEATS[self.last_beat][-1][0] + gap
             if self.idle_beat:
                 frames, start, direction = self.idle_beat
                 age = now - start
@@ -301,6 +310,8 @@ class Motion:
                 self.cue_at = None
         actor.idle_scale = (.18, 1., .9, .72) if following else (1.,)*4
         actor.idle_amt = (.52 if following else .85) if mode not in ('aim', 'park') else 0
+        if calm and not self.idle_beat:
+            actor.idle_amt = 0
         if self.cue_at is not None and now-self.cue_at < .14:
             actor.idle_amt = 0
         stiff = SOFTNESS.get(self.beat, 1.12)
@@ -311,10 +322,67 @@ class Motion:
             else:
                 self.restoring = False
         actor.to(base, arm, neck, tilt, stiff=stiff)
+        self.rest_base(actor, base, now, calm and mode == 'watch' and not self.idle_beat and self.cue_at is None)
         actor.step(min(.02, dt))
+        self.count(actor, dt)
         if mode == 'park' and max(abs(a-b) for a,b in zip(REST, desk.cur)) < .008 and max(map(abs, actor.v)) < .025:
             desk.relax()
             self.started = False
+
+    def rest_base(self, actor, base, now, quiet):
+        """The base turns on a bearing with no load to hold, so it can go unpowered while it waits."""
+        if not quiet or abs(base - self.desk.cur[0]) > .03 or abs(actor.v[0]) > .02:
+            self.base_still = now
+            if 0 in actor.limp:
+                actor.limp.discard(0)
+                actor.written[0] = None
+            return
+        if 0 not in actor.limp and now - self.base_still > 4 and hasattr(self.desk, 'relax'):
+            self.desk.relax(0)
+            actor.limp.add(0)
+
+    def count(self, actor, dt):
+        wear = self.wear
+        wear['powered'] += dt
+        wear['moving'] += actor.moving
+        wear['travel'] = [round(total + moved, 3) for total, moved in zip(wear['travel'], actor.travel)]
+        actor.moving, actor.travel = 0., [0.] * 4
+
+
+class Wear:
+    """Minutes the motors were powered and moving, per day, kept in ~/.bitch-pi/wear.json."""
+    def __init__(self):
+        self.path = macros.HOME / 'wear.json'
+        try:
+            self.days = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            self.days = {}
+        self.saved = time.monotonic()
+
+    def add(self, counts):
+        day = self.days.setdefault(time.strftime('%Y-%m-%d'), {'powered': 0., 'moving': 0., 'travel': [0.] * 4})
+        day['powered'] += counts['powered']
+        day['moving'] += counts['moving']
+        day['travel'] = [round(a + b, 3) for a, b in zip(day['travel'], counts['travel'])]
+        counts.update(powered=0., moving=0., travel=[0.] * 4)
+        if time.monotonic() - self.saved > 300:
+            self.save()
+
+    def save(self):
+        self.saved = time.monotonic()
+        self.days = dict(sorted(self.days.items())[-60:])
+        try:
+            macros.HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary = self.path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(self.days))
+            temporary.replace(self.path)
+        except OSError:
+            pass
+
+    def today(self):
+        day = self.days.get(time.strftime('%Y-%m-%d'), {'powered': 0., 'moving': 0., 'travel': [0.] * 4})
+        return {'powered_minutes': round(day['powered'] / 60, 1), 'moving_minutes': round(day['moving'] / 60, 1),
+                'travel': day['travel']}
 
 
 class Body:
@@ -335,6 +403,8 @@ class Body:
         self.beat = 'park'
         self.energy = self.accent = 0.
         self.gesture = (0., 0.)
+        self.calm = False
+        self.wear = Wear()
         self.pose = list(REST)
         self.show = None
         self.show_result = None
@@ -434,10 +504,11 @@ class Body:
                 process.wait()
         process.stdin.close()
 
-    def set_look(self, look, energy=0., accent=0., tilt=0., lean=0.):
+    def set_look(self, look, energy=0., accent=0., tilt=0., lean=0., calm=False):
         with self.lock:
             self.energy, self.accent = energy, accent
             self.gesture = (tilt, lean)
+            self.calm = calm
             self.look = look
             self.look_at = time.monotonic()
             return self.position
@@ -563,6 +634,7 @@ class Body:
                 with self.lock:
                     energy, accent = self.energy, self.accent
                     gesture = self.gesture if now - self.look_at < .3 else (0., 0.)
+                    calm = self.calm
                     look = self.look if now - self.look_at < 3 else ('park', 0, -0.8)
                     if self.player and self.player.poll() is not None:
                         if self.show and self.player.returncode:
@@ -585,7 +657,8 @@ class Body:
 
                     motion = Motion(desk)
                 if motion:
-                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame, gesture)
+                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame, gesture, calm)
+                    self.wear.add(motion.wear)
                     with self.lock:
                         self.position = (motion.desk.cur[0], motion.desk.cur[2])
                         self.beat = motion.beat
@@ -593,6 +666,7 @@ class Body:
                 last = now
                 time.sleep(max(0., .02 - (time.monotonic() - now)))
         finally:
+            self.wear.save()
             self.stop()
             self.keepalive(0)
             if motion and motion.started:
@@ -661,7 +735,8 @@ def listen(motion_enabled=True):
                                        'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
                                        'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
-                                       'motion': body.motion_enabled, 'gestures': 1, 'protocol': 1})
+                                       'motion': body.motion_enabled, 'gestures': 1, 'rhythm': 1,
+                                       'wear': body.wear.today(), 'protocol': 1})
                 elif self.path == '/show':
                     with body.lock:
                         self.respond(200, body.show_result or {'state': 'idle'})
@@ -725,7 +800,7 @@ def listen(motion_enabled=True):
                             tilt, lean = float(item.get('tilt', 0)), float(item.get('lean', 0))
                             if not (math.isfinite(tilt) and math.isfinite(lean)) or abs(tilt) > .45 or abs(lean) > .25:
                                 raise ValueError('invalid gesture')
-                            base, neck = body.set_look(look, energy, accent, tilt, lean)
+                            base, neck = body.set_look(look, energy, accent, tilt, lean, item.get('calm') is True)
                             self.respond(200, {'ok': True, 'base': base, 'neck': neck,
                                                'beat': body.beat, 'pose': body.pose})
                         return

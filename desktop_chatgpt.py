@@ -26,17 +26,28 @@ def run_desktop(prompt, *, send):
     service = shutil.which('systemd-run')
     if not service:
         return {'state': 'ready'}
+    import tempfile
+
+    # The result goes to a file, not a pipe: a timed-out run whose service still held the pipe
+    # could block forever, leaving the request stuck in "sending" and every later request behind it.
     try:
-        result = subprocess.run(
-            [service, '--user', '--quiet', '--wait', '--pipe', '--collect',
-             '--property=RuntimeMaxSec=195s' if send else '--property=RuntimeMaxSec=41s',
-             sys.executable, str(Path(__file__).resolve()), 'send' if send else 'draft'],
-            input=prompt, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=198 if send else 44,
-        )
-        return json.loads(result.stdout)
-    except subprocess.TimeoutExpired:
-        return {'state': 'send_unverified' if send else 'ready'}
+        with tempfile.TemporaryFile('w+', encoding='utf-8') as output:
+            process = subprocess.Popen(
+                [service, '--user', '--quiet', '--wait', '--pipe', '--collect',
+                 '--property=RuntimeMaxSec=195s' if send else '--property=RuntimeMaxSec=41s',
+                 sys.executable, str(Path(__file__).resolve()), 'send' if send else 'draft'],
+                stdin=subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL, encoding='utf-8')
+            try:
+                process.communicate(prompt, timeout=198 if send else 44)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                return {'state': 'send_unverified' if send else 'ready'}
+            output.seek(0)
+            return json.loads(output.read())
     except (OSError, ValueError):
         return {'state': 'send_unverified' if send else 'ready'}
 

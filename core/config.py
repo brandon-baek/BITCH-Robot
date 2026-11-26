@@ -23,6 +23,10 @@ DEFAULTS = {
     'idle': True,
     'muted': False,
     'mic_muted': False,
+    'sounds': True,
+    'sleep_at_night': True,
+    'quiet_start': 22,
+    'quiet_end': 8,
     'keep_audio': False,
     'check_ins': False,
     'natural_memory': False,
@@ -31,6 +35,7 @@ DEFAULTS = {
     'robot_key': '',
 }
 PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'mic_muted', 'keep_audio',
+          'sounds', 'sleep_at_night', 'quiet_start', 'quiet_end',
           'check_ins', 'natural_memory', 'voicechat_enabled', 'volume', 'robot_host'}
 path = HOME / 'settings.json'
 lock = threading.Lock()

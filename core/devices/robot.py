@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from .base import Device
+from ..rhythm import rhythm
 from .. import config
 
 
@@ -19,6 +20,8 @@ class Robot(Device):
         self.handoff = False
         self.auto_handoff = False
         self.gestures = False
+        self.rhythm = False
+        self.wear = None
         self.audio_warm = False
         self.warming_since = None
         self.expressive = False
@@ -66,6 +69,8 @@ class Robot(Device):
             self.motion_enabled = bool(result and result.get('motion', True))
             self.joint_attention = bool(result and result.get('joint_attention'))
             self.gestures = bool(result and result.get('gestures'))
+            self.rhythm = bool(result and result.get('rhythm'))
+            self.wear = result.get('wear') if result else None
             self.shows = bool(result and result.get('shows') == 1)
             self.show_active = bool(result and result.get('show_active'))
             if self.online and result.get('audio'):
@@ -81,6 +86,7 @@ class Robot(Device):
             if self.online and not result.get('motion', True):
                 self.detail += ' · motion off on Pi'
             keep = (self.online and result.get('audio_keepalive') and self.active('voice')
+                    and rhythm.resting_for() < 600
                     and self.hub.selected('voice') is self and config.get('keep_audio') and not config.get('muted')
                     and config.get('volume'))
             if keep:
@@ -99,8 +105,10 @@ class Robot(Device):
                 self.warming_since = None
             time.sleep(2)
 
-    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0., tilt=0., lean=0.):
+    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0., tilt=0., lean=0., calm=False):
         item = {'mode': mode, 'base': base, 'neck': neck, 'energy': energy}
+        if calm and self.rhythm:
+            item['calm'] = True
         if self.gestures:
             item.update(accent=max(-.5, min(.5, accent)), tilt=max(-.45, min(.45, tilt)), lean=max(-.25, min(.25, lean)))
         else:

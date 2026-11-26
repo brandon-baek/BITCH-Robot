@@ -42,10 +42,12 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
 | `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals; Kokoro voice with word-timed gestures |
 | `core/prosody.py` | Mac | How something was said (pitch, range, loudness, pace) against that mic's usual voice, as a note for the brain |
+| `core/rhythm.py` | Mac | How awake BITCH is (engaged, attentive, resting, asleep) so the motors only work when someone is there; hourly budget for unprompted motion |
+| `core/helper.py` | Mac | Hands weather, calendar, email and web requests to the signed-in ChatGPT on the Pi and speaks the answer when it returns |
 | `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON; a `do` field lets it look, perform, run a routine or ask ChatGPT, offered only when the request calls for it |
 | `core/moves.py` | Mac | Move steps shared by the robot and the app; invents new moves (keyframes from the 9B, clamped to Actor limits) |
 | `core/life.py` | Mac | Mood, timers/reminders/routines, greetings and the one-time welcome, initiative, memory reflection, diary |
-| `core/memory.py`, `config.py` | Mac | SQLite memory and settings in `~/.bitch` (never in the repo) |
+| `core/memory.py`, `config.py` | Mac | SQLite memory (facts about people and conversation summaries, full-text search, unlocked by voice or face) and settings in `~/.bitch` (never in the repo) |
 | `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
@@ -54,6 +56,8 @@ personality, memory and habits, and it should notice things on its own instead o
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.
 
 ## Working rules
+- BITCH runs 24/7. Motion that nobody asked for must go through `core/rhythm.py`; parked means unpowered. The Pi's
+  `Actor` only writes servo changes above its deadband, and `~/.bitch-pi/wear.json` logs motor time per day.
 - Measure voice changes with real models before shipping: far-field clips for wake and word errors, a scripted
   conversation with a fake Pi that echoes BITCH back into the mic, and the `Turn: first words … s` log line.
 - The GitHub repo `brandon-baek/BITCH-Robot` is public, so never commit secrets.

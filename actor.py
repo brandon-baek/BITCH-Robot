@@ -7,6 +7,9 @@ def bounded(x, low, high):
     return max(low, min(high, x))
 
 
+DEADBAND = .004   # smaller changes are below what the servo board can resolve; writing them only makes servos hunt
+
+
 class Actor:
     K = (55., 30., 65., 95.)
     C = (11., 10., 11.5, 10.)
@@ -32,6 +35,10 @@ class Actor:
         self.low, self.high = self.LO, self.HI
         self.speed = (5 * desk.BASE_SPEED, 5, 5, 5)
         self.accel = (math.inf,) * 4
+        self.written = [None] * 4    # last pulse sent to each servo
+        self.limp = set()            # joints left unpowered while they have nothing to do
+        self.travel = [0.] * 4       # how far each servo has moved, for the wear log
+        self.moving = 0.             # seconds in which any servo moved
 
     def to(self, b=None, a=None, n=None, h=None, stiff=None):
         for i, value in enumerate((b, a, n, h)):
@@ -54,6 +61,7 @@ class Actor:
         idle = (.05*sin(t*.37) + .03*sin(t*1.13), .07*sin(t*1.42),
                 .06*sin(t*1.42+.7) + .03*sin(t*.29), .06*sin(t*.43+1) + .03*sin(t*1.7))
         offsets = [0.] * 4
+        moved = False
         self.fx = [effect for effect in self.fx if effect[4] > t]
         for joint, amp, hz, start, end in self.fx:
             env = bounded(min((t-start)/.1, (end-t)/.1), 0, 1)
@@ -72,7 +80,17 @@ class Actor:
                 self.v[i] = 0.
             value = bounded(self.x[i] + offsets[i], lo, hi)
             self.desk.cur[i] = value
-            self.desk.S[i].us(1500 + value * (1000 if i == 0 else 500))
+            if i in self.limp:
+                continue
+            last = self.written[i]
+            if last is None or abs(value - last) >= DEADBAND:
+                if last is not None:
+                    self.travel[i] += abs(value - last)
+                    moved = True
+                self.written[i] = value
+                self.desk.S[i].us(1500 + value * (1000 if i == 0 else 500))
+        if moved:
+            self.moving += dt
         self.T += dt
         return self
 

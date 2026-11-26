@@ -25,7 +25,8 @@ Kraft belongs to BITCH. Navy belongs to you. Red only means something is off or 
 
 ## Layout
 
-- Main screen is a stage, not a chat: glass top bar (name, voice mute, Settings); BITCH's eyes large in the centre with the status word (22px semibold) and who it is with ("With Brandon" plus a kraft Voice or Face badge, "Brandon is here", or "Someone new" with Add); then captions of the exchange happening now: what you said (17px, quoted, secondary) and BITCH's reply (24px). Captions fade 45 seconds after the conversation ends. "Earlier" opens the last 40 lines in a sheet. Fixed glass composer (mic mute, message field, Send). Stop floats above the composer only while BITCH thinks, talks or performs.
+- Main screen is a stage, not a chat, laid out as one centred group so nothing drifts apart: an iOS navigation bar (Earlier at left, BITCH at 19px centre, voice mute and Settings at right); the eyes; a quiet status line (15px, secondary, with a kraft dot) and Stop beside it only while BITCH thinks, talks or performs; who it is with ("Brandon" plus a kraft Voice, Face or Introduced badge, "Getting to know Sam" while learning, "Brandon is here", or "Someone new" with Introduce); then captions: what you said (17px, quoted, secondary) and BITCH's words (23px). While BITCH talks the caption shows only what it has said aloud so far. The who-line keeps its height when empty and captions crossfade with the idle hint 45 seconds after a conversation ends, so the layout never jumps. Fixed glass composer (mic mute, message field, Send).
+- While BITCH is meeting someone, or someone it doesn't know is in a conversation, a row of 46px round face pictures sits under the who-line. The face it is learning has a kraft ring and "Learning Alex"; tapping another face says "that one". Pictures stay in memory and are never saved.
 - Adding a person is its own sheet: name, then a round live camera view with six progress dots, then three sentences to read that tick off as each voice sample lands, then a kraft check.
 - Column max 680px, centred on a wide Mac window.
 - Settings: a `<dialog>` sheet. Bottom sheet on a phone, centred panel from 720px. Grouped inset lists with 0.5px hairlines inset 16px, uppercase 13px section headers, footnotes under groups.
@@ -33,7 +34,7 @@ Kraft belongs to BITCH. Navy belongs to you. Red only means something is off or 
 
 ## Signature
 
-BITCH's googly eyes. Each pupil is a spring-and-mass that overshoots and bounces off the rim. They follow the pointer when idle, look at you while listening (pupils widen with your voice), glance up and right while thinking, and jiggle with BITCH's speech energy while talking. Cardboard (kraft) lids blink, droop halfway with your mic off, and close when BITCH is unreachable. Reduced motion places the pupils without physics and stops blinking.
+BITCH's googly eyes. Each pupil is a spring-and-mass that overshoots and bounces off the rim. They follow the pointer when idle, look at you while listening (pupils widen with your voice), glance up and right while thinking, and jiggle with BITCH's speech energy while talking. Each pupil carries a white glint, so it reads in dark mode. Round cardboard (kraft) lids slide down to blink, droop halfway with your mic off, and nearly close when BITCH is unreachable. Reduced motion places the pupils without physics and stops blinking.
 
 ## Motion
 

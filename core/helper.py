@@ -64,23 +64,50 @@ def start(brain, source, identity, request, conversation=()):
     return 'I queued it in the Pi’s ChatGPT inbox.'
 
 
+SLOW = 45           # say something if ChatGPT hasn't answered by now
+LOST = 25           # seconds without hearing from the Pi before saying so
+
+
 def watch(brain, source, task):
+    """Wait for ChatGPT's answer and say it. Tell the truth if it's slow, unreadable or never comes."""
     robot = hub.get('robot')
-    deadline = time.monotonic() + WAIT
-    status = None
-    while time.monotonic() < deadline:
+    started = last_heard = time.monotonic()
+    told_slow = False
+    while time.monotonic() - started < WAIT:
         time.sleep(1.5)
+        now = time.monotonic()
         status = robot.macro_status(task['id']) if robot else None
-        if status and status.get('state') == 'returned' and status.get('answer'):
+        state = status.get('state') if status else None
+        if status:
+            last_heard = now
+        if state == 'returned' and status.get('answer'):
             answer = status['answer'].strip()
             task.update(state='done', answer=answer)
-            brain.announce(source, spoken(answer), heard=('ChatGPT said: ' + answer[:600]))
+            brain.announce(source, spoken(answer), heard='ChatGPT said: ' + answer[:600], chime=True)
             return
-        if status and status.get('state') == 'canceled':
+        if state == 'canceled':
             task['state'] = 'canceled'
             return
+        if state in ('submitted', 'send_unverified'):
+            task['state'] = 'unread'
+            brain.announce(source, 'I sent it to ChatGPT, but I couldn’t read its answer back. '
+                                   'It’s in the ChatGPT tab on the Pi.')
+            return
+        if now - last_heard > LOST:
+            task['state'] = 'lost'
+            brain.announce(source, 'I lost the Pi while waiting for ChatGPT. Ask me again in a minute.')
+            return
+        if not told_slow and now - started > SLOW:
+            told_slow = True
+            brain.announce(source, 'ChatGPT is being slow. I’ll tell you when it answers.')
     task['state'] = 'slow'
-    brain.announce(source, 'ChatGPT is taking a while. Its answer will be in the ChatGPT tab on the Pi.')
+    brain.announce(source, 'ChatGPT never answered. The browser on the Pi might be stuck.')
+
+
+def waiting():
+    """True while BITCH is waiting on ChatGPT, so it can hold a thinking pose."""
+    with lock:
+        return any(task['state'] == 'working' for task in tasks)
 
 
 def spoken(answer):

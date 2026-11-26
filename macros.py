@@ -147,9 +147,13 @@ def send_pending():
 
 
 def send_worker():
+    # Nothing may stop this loop: if it died, every later ChatGPT request would wait forever.
     while True:
         wake_worker.clear()
-        send_pending()
+        try:
+            send_pending()
+        except Exception as error:
+            print(f'ChatGPT handoff error: {error!r}', flush=True)
         wake_worker.wait(5)
 
 

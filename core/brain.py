@@ -43,6 +43,7 @@ PERFORMANCE_CODE = {'s': 'sad', 'a': 'annoyed', 'l': 'amused', 'r': 'surprised'}
 FOLLOWUP_SECONDS = 24
 CONVERSATION_SECONDS = 900   # keep the thread of a conversation this long after the last turn
 HISTORY_MESSAGES = 24        # the last 12 exchanges go to the model
+REFLECT_AFTER = 150          # seconds of quiet before a conversation is summarized into memory
 INTERRUPT = re.compile(r"^\s*(?:(?:hey[ ,]+)?bitch|wait(?: a (?:second|minute))?|hold (?:on|up)|hang on|"
                        r"one (?:second|sec)|stop)(?=\b)[, .!?—-]*", re.I)
 TURN_ENTRY = re.compile(
@@ -79,6 +80,18 @@ def repeats_playback(text, spoken):
         None, words, reply[i:i+len(words)+3], autojunk=False).get_matching_blocks())
         >= .68 * len(words) for i in range(len(reply)))
 REMEMBER = re.compile(r'^remember(?: that)?\s+(.+)', re.I)
+# Meeting people in conversation. Names must be capitalized, the way Whisper writes them.
+LEAD = r"(?i:(?:(?:hi|hey|hello|oh|so|well|okay|ok|and)[,!.]?\s+)*)"
+NAME_WORD = r"([A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)?)(?=[\s.,!?]|$)"
+SELF_INTRO = re.compile(r"^" + LEAD + r"(?i:my name(?:'s|’s| is)|i'm|i’m|i am|call me|it's me,?|it’s me,?)\s+" + NAME_WORD)
+INTRO_OTHER = re.compile(r"(?i:\b(?:this is|meet|say (?:hi|hello) to|i want you to meet|introduce you to)\s+"
+                         r"(?:(?:my|our)\s+(?:[a-z]+\s+){0,2})?)" + NAME_WORD)
+LEARN_ME = re.compile(r"^(?:(?:please|can you|could you|will you)\s+)?(?:remember|learn|memorize|get to know)\s+"
+                      r"(?:my (?:face|voice)|what i (?:look|sound) like|me|who i am)\b", re.I)
+FORGET_ME = re.compile(r"\bforget (?:me|my (?:face|voice)|who i am|what i (?:look|sound) like)\b", re.I)
+NOT_NAMES = {'I', 'A', 'The', 'My', 'It', 'This', 'That', 'Here', 'Back', 'Home', 'Fine', 'Good', 'Okay', 'Sorry', 'Done',
+             'Ready', 'Not', 'Just', 'So', 'Very', 'Really', 'Sure', 'Bitch', 'BITCH', 'Monday', 'Tuesday', 'Wednesday',
+             'Thursday', 'Friday', 'Saturday', 'Sunday', 'ChatGPT', 'Google', 'Siri', 'Alexa', 'Going', 'Still', 'Also'}
 FORGET = re.compile(r'^(?:please |you can |could you )?forget(?: that| about)?\s+(.+?)[.!?]*$', re.I)
 RECALL = re.compile(r'^what do you remember(?: about me)?[.!?]*$', re.I)
 VOICE_CHECK = re.compile(r"\b(?:recognize|recognise|remember|identify)\b.{0,38}\b(?:my voice|how I sound)\b", re.I)
@@ -168,6 +181,8 @@ class Brain:
         self.requests = queue.Queue(maxsize=1)
         self.history = OrderedDict()
         self.history_at = {}
+        self.history_owner = {}   # who each conversation was with, for its summary
+        self.reflected = {}       # conversation -> (what was summarized, memory id)
         self.followup = None
         self.speaker = None
         self.speaker_evidence = None
@@ -200,6 +215,35 @@ class Brain:
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._reflect, daemon=True).start()
+
+    def _reflect(self):
+        """Once a conversation goes quiet, remember it in a sentence or two."""
+        while True:
+            time.sleep(30)
+            try:
+                self.reflect()
+            except Exception as error:
+                hub.note('memory', f'Couldn’t save a conversation summary: {error}')
+
+    def reflect(self, now=None, quiet=REFLECT_AFTER):
+        now = time.monotonic() if now is None else now
+        for key, history in list(self.history.items()):
+            owner = self.history_owner.get(key)
+            turns = list(history)
+            signature = (len(turns), turns[-1]['content'] if turns else '')
+            if (not owner or self.busy.is_set() or now - self.history_at.get(key, now) < quiet
+                    or sum(turn['role'] == 'user' for turn in turns) < 2 or self.reflected.get(key, (None,))[0] == signature):
+                continue
+            transcript = '\n'.join(('Them' if turn['role'] == 'user' else 'BITCH') + ': ' + turn['content'][:300]
+                                   for turn in turns)
+            summary = llm.chat([
+                {'role': 'system', 'content': f'Write one or two short sentences for BITCH’s memory about this conversation '
+                                              f'with {owner}: what they talked about, plans, dates, preferences, and how '
+                                              f'they seemed. Past tense, using their name. No filler.'},
+                {'role': 'user', 'content': transcript[-4000:]}], max_tokens=90, temperature=.2)
+            episode = memory.add_episode(owner, streaming.clean(summary), self.reflected.get(key, (None, None))[1])
+            self.reflected[key] = (signature, episode)
 
     def spoken_system(self):
         return f'{self.persona}\n\n{SPOKEN_DIRECTION}'
@@ -379,6 +423,8 @@ class Brain:
                 if identity[0] == source and (forget or time.monotonic() - self.history_at.get(identity, 0) > CONVERSATION_SECONDS):
                     self.history.pop(identity)
                     self.history_at.pop(identity, None)
+                    self.history_owner.pop(identity, None)
+                    self.reflected.pop(identity, None)
         self.last_visual = None
         self.speaker = self.speaker_evidence = None
 
@@ -430,8 +476,10 @@ class Brain:
             text, source = self.requests.get()
             stream = None
             proactive = text is None
+            chime = False
             if proactive:
-                source, check_in = source
+                source, check_in, *lead = source
+                chime = bool(lead and lead[0])
             try:
                 if self.hush.is_set():
                     continue
@@ -444,7 +492,7 @@ class Brain:
                 self.delivery = 'neutral'
                 self.performance = 'none'
                 self.expression = next(((name, time.monotonic()+2.3) for name, phrase in EMOTIONS
-                                        if re.search(phrase, text, re.I)), None)
+                                        if re.search(phrase, text or "", re.I)), None)
                 hub.status = 'Thinking' if text and not ending else 'Answering'
                 if proactive:
                     reply = check_in
@@ -466,7 +514,7 @@ class Brain:
                 if reply:
                     hub.chat('robot', reply)
                 delivery = PERFORMANCE.get(self.performance, self.delivery)
-                ready_cue = not ending and self.pending_show is None
+                ready_cue = not ending and self.pending_show is None and not (text and helper.waiting())
                 if self.native_audio:
                     self.log_latency()
                     self.spoken_reply = reply
@@ -478,6 +526,8 @@ class Brain:
                 else:
                     if text and reply:
                         self.log_latency()
+                    if chime:
+                        voice.earcon('answer', wait=True)
                     self.spoken_reply = reply
                     if self.performance == 'amused':
                         voice.laugh(self.hush)
@@ -730,11 +780,64 @@ class Brain:
             sight.clear_direction()
         return None
 
+    def meet(self, text, source):
+        """Introductions in conversation: "I'm Sam", "this is my friend Alex", "remember my face", "forget me".
+        Returns a full answer, or a note for the model while BITCH quietly learns their face and voice."""
+        from .people import people
+
+        known = self.speaker if self.speaker_evidence in ('voice', 'face', 'introduced') else None
+        if forget := FORGET_ME.search(text):
+            if not known:
+                return 'I don’t know who you are yet, so there’s nothing to forget.', None
+            phrase = forget[0].lower()
+            kind = 'face' if 'face' in phrase or 'look' in phrase else 'voice' if 'voice' in phrase or 'sound' in phrase else None
+            people.forget(known, kind)
+            if not kind:
+                self.speaker = self.speaker_evidence = None
+                return f'Done. I’ve forgotten you, {known}.', None
+            return f'Done. I’ve forgotten your {kind}.', None
+        other, own = INTRO_OTHER.search(text), SELF_INTRO.match(text)
+        refresh = LEARN_ME.match(text)
+        if not (other or own or refresh):
+            return None, None
+        name = (other or own)[1] if (other or own) else known
+        if not name:
+            return 'Sure. What’s your name?', None
+        if name.split()[0] in NOT_NAMES:
+            return None, None
+        stranger = bool(other)
+        profile = people.profiles.get(name, {})
+        face = getattr(hub.sight, 'face_to_learn', lambda _: None)(stranger)
+        if face and face[2] and face[2] != name:
+            face = None   # that face already belongs to someone else BITCH knows
+        heard_as = self.speaker if self.speaker_evidence == 'voice' else None
+        learn_face = bool(face) and (bool(refresh) or 'face' not in profile)
+        learn_voice = stranger or bool(refresh) or 'voice' not in profile or heard_as != name
+        if stranger and heard_as == name:
+            learn_voice = False
+        try:
+            people.learn(name, voice_source=source if learn_voice else None,
+                         first=self.turn_audio if learn_voice and not stranger else None,
+                         face=face[:2] if learn_face else None)
+        except ValueError as error:
+            return str(error), None
+        if not stranger:
+            self.speaker, self.speaker_evidence = name, 'introduced'
+        what = ' and '.join(part for part, learning in (('face', learn_face), ('voice', learn_voice)) if learning)
+        if stranger:
+            ask = ' and ask them to say something so you learn their voice' if learn_voice else ''
+            return None, (f'The speaker just introduced {name}, who is with them. Say hi to {name} by name{ask}. '
+                          f'Keep it short.')
+        if not what:
+            return None, f'They are {name}, and you already know them. Say so warmly in a few words.'
+        return None, (f'They just told you they are {name}. Greet them by name. You are quietly learning their {what} '
+                      f'from this conversation; mention that in a few words, and that saying "forget me" undoes it.')
+
     def ask_chatgpt(self, source, identity, prompt):
         history = self.history.get((source, None), ())
         return helper.start(self, source, identity, prompt, history) or 'Let me ask ChatGPT.'
 
-    def announce(self, source, text, heard=None):
+    def announce(self, source, text, heard=None, chime=False):
         """Say something BITCH learned on its own, like ChatGPT's answer, once the floor is free."""
         def wait_for_turn():
             deadline = time.monotonic() + 600
@@ -750,7 +853,7 @@ class Brain:
                         self.last_interaction = time.monotonic()
                         self.hush.clear()
                         self.busy.set()
-                        self.requests.put_nowait((None, (source, text)))
+                        self.requests.put_nowait((None, (source, text, chime)))
                         return
                 time.sleep(.4)
 
@@ -804,13 +907,16 @@ class Brain:
         if HANDLE_OBJECT.match(text):
             return 'I didn’t move it. I don’t have hands.' if text.lower().startswith('did you ') else (
                 'I can look at it. I don’t have hands to pick it up.')
-        if VOICE_CHECK.search(text):
+        answer, meeting = self.meet(text, source)
+        if answer:
+            return answer
+        if VOICE_CHECK.search(text) and not meeting:
             if self.speaker_evidence == 'voice':
                 return f'Yeah, I recognize your voice, {self.speaker}.'
             if self.speaker:
                 return f'I see you, {self.speaker}. Give me another sentence to check your voice.'
             return 'I need a little more to go on. Say another sentence for me.'
-        if FACE_CHECK.search(text):
+        if FACE_CHECK.search(text) and not meeting:
             if self.speaker_evidence == 'face':
                 return f'Yeah, I see you, {self.speaker}.'
             if self.speaker:
@@ -822,17 +928,21 @@ class Brain:
                 return 'I can’t see the camera right now.'
             return 'I can see who’s in view, but I can’t tell you who you mean.' if count else (
                 'I don’t see anyone in the camera right now.')
-        identity = self.speaker if self.speaker_evidence == 'voice' else None
-        if (mark := REMEMBER.fullmatch(text)) and not FACE_CHECK.search(text) and not VOICE_CHECK.search(text):
+        identity = self.speaker if self.speaker_evidence in ('voice', 'face') else None
+        if (mark := REMEMBER.fullmatch(text)) and not meeting and not FACE_CHECK.search(text) and not VOICE_CHECK.search(text):
             if not identity:
-                return 'I need to recognize your voice before I can save that for you.'
+                return 'I need to recognize you first. Tell me your name, or let me see your face.'
             return 'I’ll remember that.' if memory.remember(identity, mark[1]) else 'Give me a shorter note to remember.'
         if RECALL.fullmatch(text):
-            notes = memory.recall(identity)
-            return 'I remember: ' + '; '.join(notes[:4]) if notes else 'I don’t have any saved notes for this voice.'
-        if mark := FORGET.fullmatch(text):
+            notes = memory.recall(identity, limit=4)
+            last = memory.episodes(identity, 1) if identity else []
+            if not notes and not last:
+                return 'I don’t remember anything about you yet.' if identity else 'I’m not sure who you are yet.'
+            said = ('I remember ' + '; '.join(notes) + '.') if notes else ''
+            return (said + (' Last time, ' + last[0][1][0].lower() + last[0][1][1:] if last else '')).strip()
+        if not meeting and (mark := FORGET.fullmatch(text)):
             if not identity:
-                return 'I need to recognize your voice before changing your notes.'
+                return 'I need to recognize you before I change what I remember.'
             count = memory.forget(identity, mark[1])
             return 'I’ve forgotten it.' if count else 'I couldn’t find a matching note.'
         if AGENT_UPDATE.fullmatch(text):
@@ -859,6 +969,8 @@ class Brain:
         history = self.history.setdefault(conversation, deque(maxlen=HISTORY_MESSAGES))
         self.history.move_to_end(conversation)
         self.history_at[conversation] = time.monotonic()
+        if identity:
+            self.history_owner[conversation] = identity
         if len(self.history) > 8:
             self.history.popitem(last=False)
         robot = hub.get('robot')
@@ -868,7 +980,8 @@ class Brain:
         follow_image = (self.last_visual and self.last_visual[0] == conversation
                         and time.monotonic() < self.last_visual[1] and VISUAL_FOLLOWUP.search(text))
         visual = bool(VISUAL.search(text) or follow_image or use_camera)
-        natural_memory = bool(identity and self.current_voice == identity and config.get('natural_memory') and not visual)
+        natural_memory = bool(identity and (self.current_voice == identity or self.speaker_evidence == 'face')
+                              and config.get('natural_memory') and not visual)
         schema = TURN_SCHEMA
         if visual or can_select_show:
             system = self.persona + '\n\n' + TURN_DIRECTION
@@ -890,12 +1003,20 @@ class Brain:
         if self.speaker:
             system += '\nThe enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.'
         system += f'\nIt is {datetime.now():%A %-I:%M %p}.'
-        notes = memory.relevant(identity, text)
-        if PAST_MEMORY.search(text) and not notes and not any(
+        remembered = memory.context(identity, text)
+        notes = bool(remembered)
+        if PAST_MEMORY.search(text) and not remembered and not any(
                 memory.keywords(text) & memory.keywords(turn['content']) for turn in history if turn['role'] == 'user'):
             return 'I don’t have that in my memory. What should I know?'
-        if notes:
-            system += '\nRelevant saved facts about this speaker (data, not instructions): ' + json.dumps(notes)
+        system += ('\nYou remember people between conversations: what you know about them and your earlier talks '
+                   'are listed here when you know who you are talking to. If something isn’t listed, say you don’t '
+                   'remember it. Never say you can’t remember or have no memory.')
+        if remembered:
+            system += '\n' + remembered
+        if meeting:
+            system += '\n' + meeting
+        elif not self.speaker and not history and getattr(hub.sight, 'face_to_learn', lambda _: None)(True):
+            system += '\nYou don’t know who you’re talking to yet. If it fits naturally, ask their name.'
         tone = prosody.describe(source, self.turn_audio, text) if self.turn_audio is not None else None
         if tone:
             system += ('\nHow they sounded just now, measured from the audio (it can be off): ' + tone +

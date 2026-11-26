@@ -1,4 +1,5 @@
 """One setup page, with local access and pairing for external sensors."""
+import base64
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from . import config, helper, memory, tls, voice, voicechat
 from .devices.web import WebDevice
 from .hub import hub
 from .people import people
+from .rhythm import rhythm
 
 HTTP = int(os.environ.get('BITCH_PORT', '8780'))
 HTTPS = HTTP + 1
@@ -166,7 +168,11 @@ def state(req: Request):
     data['company'] = ({'name': brain.speaker, 'by': brain.speaker_evidence}
                        if talking and brain.speaker else None)
     data['in_view'] = hub.sight.in_view() if hub.sight else None
+    # What BITCH has actually said aloud so far, so captions follow the voice phrase by phrase.
+    data['speaking'] = brain.spoken_reply if brain.busy.is_set() and data['status'] == 'Speaking' else ''
     data['people'] = people.state()
+    data['rhythm'] = rhythm.state
+    data['wear'] = getattr(hub.get('robot'), 'wear', None)
     data['voice_energy'] = round(voice.articulation()[0], 2)
     data['robot_online'] = bool(getattr(hub.get('robot'), 'online', False))
     data['speaker_name'] = hub.brain.speaker if remaining else None
@@ -178,7 +184,9 @@ async def settings(req: Request):
     owner = authorize(req)
     data = await payload(req)
     for key, value in data.items():
-        if key in ('idle', 'muted', 'mic_muted', 'keep_audio', 'check_ins', 'natural_memory') and type(value) is bool:
+        if key in ('idle', 'muted', 'mic_muted', 'keep_audio', 'check_ins', 'natural_memory', 'sounds', 'sleep_at_night') and type(value) is bool:
+            continue
+        if key in ('quiet_start', 'quiet_end') and type(value) is int and 0 <= value <= 23:
             continue
         if key == 'voicechat_enabled' and owner == 'local' and type(value) is bool:
             if value and not voicechat.settings():
@@ -196,9 +204,15 @@ async def settings(req: Request):
         if owner == 'local' and key == 'robot_key' and isinstance(value, str) and re.fullmatch('[A-Za-z0-9_-]{0,64}', value):
             continue
         raise HTTPException(400, f'Invalid setting: {key}.')
-    config.update(data)
-    if data.get('muted'):
+    before = {key: config.get(key) for key in ('muted', 'mic_muted')}
+    if data.get('muted') is True and not before['muted']:
         hub.brain.stop()
+        threading.Timer(.2, voice.earcon, args=('voice_off',), kwargs={'force': True}).start()
+    config.update(data)
+    if data.get('muted') is False and before['muted']:
+        voice.earcon('voice_on')
+    if 'mic_muted' in data and data['mic_muted'] != before['mic_muted']:
+        voice.earcon('mic_off' if data['mic_muted'] else 'mic_on')
     if 'mic_source' in data:
         hub.level = 0
         if data['mic_source'] == 'mac-mic':
@@ -237,6 +251,7 @@ async def say(req: Request):
 def stop(req: Request):
     authorize(req)
     hub.brain.stop()
+    threading.Timer(.25, voice.earcon, args=('stop',)).start()
     return {'ok': True}
 
 
@@ -258,6 +273,17 @@ async def profiles(req: Request):
         except ValueError as error:
             raise HTTPException(400, str(error))
         hub.brain.stop()
+    elif action == 'learn-face':
+        # "That one is Alex": learn the face you picked from the pictures, while the conversation goes on.
+        track = data.get('track')
+        camera = hub.selected('eyes')
+        if type(track) is not int or not camera:
+            raise HTTPException(400, 'Pick a face in view.')
+        ears = hub.selected('ears')
+        try:
+            people.learn(name, face=(camera.id, track), voice_source=ears.id if ears else None)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
     elif action == 'cancel':
         people.cancel()
     elif action == 'remove':
@@ -267,6 +293,31 @@ async def profiles(req: Request):
     else:
         raise HTTPException(400, 'Unknown profile action.')
     return people.state()
+
+
+@app.get('/api/faces')
+def faces(req: Request):
+    authorize(req)
+    pictures = hub.sight.faces() if hub.sight else []
+    return {'faces': [{'track': face['track'], 'name': face['name'],
+                       'picture': 'data:image/jpeg;base64,' + base64.b64encode(face['thumb']).decode('ascii')}
+                      for face in pictures]}
+
+
+@app.get('/api/memory')
+def memories(req: Request):
+    authorize(req)
+    return {'memories': memory.everything()}
+
+
+@app.post('/api/memory')
+async def forget_memory(req: Request):
+    authorize(req)
+    row = (await payload(req)).get('id')
+    if type(row) is not int:
+        raise HTTPException(400, 'Pick a memory.')
+    memory.delete(row)
+    return {'memories': memory.everything()}
 
 
 @app.get('/api/frame')

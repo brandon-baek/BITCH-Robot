@@ -195,6 +195,55 @@ def cue():
     return np.concatenate((note(620, .105), np.zeros(round(SR * .035)), note(870, .16)))
 
 
+def glide(start, end, seconds, volume=.22):
+    """A pitch sweep with a little second harmonic, the family sound of BITCH's chirps."""
+    t = np.arange(round(SR * seconds)) / SR
+    phase = 2 * np.pi * np.cumsum(start * (end / start) ** (t / seconds)) / SR
+    return volume * np.sin(np.pi * t / seconds) ** 1.5 * (np.sin(phase) + .18 * np.sin(2 * phase))
+
+
+def bell(hz, seconds, volume=.18):
+    t = np.arange(round(SR * seconds)) / SR
+    return volume * np.exp(-t * 7) * np.minimum(1, t * 400) * (np.sin(2 * np.pi * hz * t) + .3 * np.sin(4 * np.pi * hz * t))
+
+
+def pause(seconds):
+    return np.zeros(round(SR * seconds))
+
+
+# Sound effects for things you do, played on BITCH's speaker so you hear that it happened.
+EARCONS = {
+    'mic_off': lambda: np.concatenate((glide(700, 430, .17), pause(.03), note(330, .07, .15))),
+    'mic_on': lambda: np.concatenate((glide(430, 700, .15), pause(.03), note(930, .07, .13))),
+    'voice_off': lambda: np.concatenate((note(587, .09, .2), pause(.02), note(392, .14, .2))),
+    'voice_on': lambda: np.concatenate((note(392, .09, .2), pause(.02), note(587, .14, .2))),
+    'stop': lambda: glide(560, 270, .15, .22),
+    'learned': lambda: np.concatenate([note(hz, .075, .16) for hz in (523, 659, 784)] + [note(1046, .18, .14)]),
+    'answer': lambda: np.concatenate((bell(784, .28), bell(1175, .5))),
+    'sleep': lambda: glide(620, 280, .85, .12) * (.8 + .2 * np.sin(2 * np.pi * 7 * np.arange(round(SR * .85)) / SR)),
+}
+
+
+def earcon(name, *, force=False, wait=False):
+    """Play a short sound effect on the selected speaker. Skipped while BITCH is talking."""
+    if not config.get('sounds') or not config.get('volume') or config.get('muted') and not force:
+        return
+    if hub.status in ('Speaking', 'Performing'):
+        return
+    sound = encode(EARCONS[name]())
+
+    def run():
+        try:
+            play(*sound, threading.Event(), interim=True)
+        except (OSError, ValueError, wave.Error):
+            pass
+
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, daemon=True).start()
+
+
 def wait_sound(index):
     if index == 0:
         return np.concatenate((note(485, .10, .19), note(690, .11, .18)))
@@ -374,7 +423,8 @@ def thinking(stop, *, greeting):
     def sound():
         try:
             previous = 0.
-            schedule = (0., 1.8, 3.6, 6.2)
+            # One cue when you finish; more only if the answer really stalls (two quick ones sounded like a stutter).
+            schedule = (0., 4.5, 9.)
             for index, when in enumerate(schedule):
                 if done.wait(max(0., when - previous)) or stop.is_set():
                     break

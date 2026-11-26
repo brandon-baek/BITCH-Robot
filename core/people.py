@@ -11,6 +11,7 @@ from . import config
 FACE = 'face_recognition_sface_2021dec.onnx'
 VOICE = '3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx'
 COUNT = {'face': 6, 'voice': 3}
+LEARN_SECONDS = 180   # how long BITCH keeps learning someone it was just introduced to
 THRESHOLD = {'face': (0.48, 0.075), 'voice': (0.69, 0.10)}
 
 
@@ -27,6 +28,8 @@ class People:
         self.models = {}
         self.session = None
         self.message = ''
+        self.learning = {}   # name -> what BITCH is still picking up from conversation
+        self.on_learned = None
         try:
             self.profiles = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -52,6 +55,84 @@ class People:
         path.replace(self.path)
         self.profiles = profiles
 
+    def learn(self, name, *, voice_source=None, first=None, face=None):
+        """Start picking up someone's voice and face from the conversation, without interrupting it."""
+        name = ' '.join(name.split())
+        if not name or len(name) > 32 or not all(c.isalpha() or c in " -'’" for c in name):
+            raise ValueError('That doesn’t sound like a name.')
+        until = time.monotonic() + LEARN_SECONDS
+        with self.lock:
+            if len(self.profiles) >= 12 and name not in self.profiles:
+                raise ValueError('I already know twelve people.')
+            entry = self.learning.setdefault(name, {})
+            if voice_source:
+                entry['voice'] = {'source': voice_source, 'samples': [], 'until': until}
+            if face:
+                entry['face'] = {'source': face[0], 'track': face[1], 'samples': [], 'until': until, 'last': 0.}
+        if first is not None and voice_source:
+            self.hear(voice_source, first, len(first) / 16000, introduced=name)
+
+    def learner(self, kind, source, track=None):
+        now = time.monotonic()
+        with self.lock:
+            for name, entry in list(self.learning.items()):
+                for key in [key for key, item in entry.items() if now >= item['until']]:
+                    entry.pop(key)
+                if not entry:
+                    self.learning.pop(name)
+                    continue
+                item = entry.get(kind)
+                if item and item['source'] == source and (track is None or item.get('track') == track):
+                    return name, item
+        return None
+
+    def learned(self, name, kind, item, vector):
+        """Keep one sample. Samples that don't resemble the first are someone else."""
+        with self.lock:
+            samples = item['samples']
+            if vector is None or samples and float(np.dot(samples[0], vector)) < (.55 if kind == 'voice' else .5):
+                return
+            samples.append(vector)
+            if len(samples) < COUNT[kind]:
+                return
+            updated = {**self.profiles.get(name, {}), kind: [sample.tolist() for sample in samples]}
+            self.save({**self.profiles, name: updated})
+            entry = self.learning.get(name, {})
+            entry.pop(kind, None)
+            if not entry:
+                self.learning.pop(name, None)
+            self.message = f'Learned {name}’s {kind}.'
+            if self.on_learned:
+                self.on_learned(name, kind)
+
+    def voiceprint(self, audio):
+        model = self.model('voice')
+        stream = model.create_stream()
+        stream.accept_waveform(sample_rate=16000, waveform=audio)
+        stream.input_finished()
+        return normalized(model.compute(stream)) if model.is_ready(stream) else None
+
+    def hear(self, source, audio, voiced, introduced=None):
+        """Add an utterance to the voice BITCH is learning on this mic, unless it is someone it knows."""
+        learning = self.learner('voice', source)
+        if not learning or voiced < 1. or introduced and learning[0] != introduced:
+            return
+        try:
+            vector = self.voiceprint(audio)
+        except (RuntimeError, ImportError, OSError, AttributeError, ValueError):
+            return
+        known = self.match('voice', vector)
+        if known and known != learning[0]:
+            return
+        self.learned(learning[0], 'voice', learning[1], vector)
+
+    def forget(self, name, kind=None):
+        with self.lock:
+            self.learning.pop(name, None)
+            profile = {key: value for key, value in self.profiles.get(name, {}).items() if kind and key != kind}
+            profiles = {key: value for key, value in self.profiles.items() if key != name}
+            self.save({**profiles, name: profile} if profile else profiles)
+
     def active(self):
         with self.lock:
             if self.session and time.monotonic() >= self.session['expires']:
@@ -68,6 +149,9 @@ class People:
                 'enrollment': ({'name': session['name'], 'kind': session['kind'],
                                 'progress': len(session['samples']), 'total': COUNT[session['kind']]} if session else None),
                 'message': self.message,
+                'learning': [{'name': name, **{kind: len(item['samples']) for kind, item in entry.items()},
+                              'track': entry['face']['track'] if 'face' in entry else None}
+                             for name, entry in self.learning.items()],
             }
 
     def names(self, kind):
@@ -77,7 +161,8 @@ class People:
     def needed(self, kind):
         session = self.active()
         with self.lock:
-            return bool(session and session['kind'] == kind or any(kind in data for data in self.profiles.values()))
+            return bool(session and session['kind'] == kind or any(kind in data for data in self.profiles.values())
+                        or any(kind in entry for entry in self.learning.values()))
 
     def begin(self, name, kind, source):
         name = ' '.join(name.split())
@@ -149,6 +234,12 @@ class People:
         vector = normalized(model.feature(model.alignCrop(image, row)))
         if session and session['kind'] == 'face' and session['source'] == source and alone:
             self.enroll_sample(session, vector, track)
+        learning = self.learner('face', source, track)
+        now = time.monotonic()
+        if learning and row[2] >= 55 and now - learning[1]['last'] >= .35:
+            # This is the face BITCH was just introduced to, even with other people in view.
+            learning[1]['last'] = now
+            self.learned(learning[0], 'face', learning[1], vector)
         return self.match('face', vector)
 
     def speaker(self, source, audio, voiced, addressed):
@@ -165,7 +256,11 @@ class People:
             vector = normalized(model.compute(stream)) if model.is_ready(stream) else None
             if enrollment:
                 self.enroll_sample(session, vector)
-            return enrollment, self.match('voice', vector, extra_confidence=.06 if voiced < 1.4 else 0.)
+            name = self.match('voice', vector, extra_confidence=.06 if voiced < 1.4 else 0.)
+            learning = self.learner('voice', source) if addressed and voiced >= 1. else None
+            if learning and (not name or name == learning[0]):
+                self.learned(learning[0], 'voice', learning[1], vector)
+            return enrollment, name
         except (RuntimeError, ImportError, OSError, AttributeError, ValueError):
             if enrollment:
                 with self.lock:

@@ -7,9 +7,10 @@ import time
 
 import cv2
 
-from . import config, gaze, voice
+from . import config, gaze, helper, voice
 from .hub import hub
 from .people import people
+from .rhythm import rhythm
 from .pointing import MODEL as POINTING_MODEL, Pointing
 
 MAX_BASE = 0.55
@@ -35,6 +36,20 @@ def aim_at(x, y, samples):
         else:
             neck = -0.68 + (0.5 - y) * 0.62
     return max(-MAX_BASE, min(MAX_BASE, base)), max(MIN_NECK, min(MAX_NECK, neck))
+
+
+def thumbnail(image, box):
+    """A square, slightly padded 96 px crop of one face, as JPEG bytes."""
+    h, w = image.shape[:2]
+    x, y, bw, bh = box
+    side = max(bw * w, bh * h) * 1.5
+    cx, cy = (x + bw / 2) * w, (y + bh / 2) * h
+    left, top = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+    crop = image[top:int(min(h, top + side)), left:int(min(w, left + side))]
+    if crop.size == 0:
+        return None
+    ok, jpeg = cv2.imencode('.jpg', cv2.resize(crop, (96, 96)), [cv2.IMWRITE_JPEG_QUALITY, 78])
+    return jpeg.tobytes() if ok else None
 
 
 def center(box):
@@ -224,6 +239,9 @@ class Sight:
                     self.sample_window.clear()
                 self.target_source = source
                 visible, focus = self.attention.update(boxes, received)
+                for person in visible.values():
+                    if received - person.get('thumb_at', -1e9) >= 1.:
+                        person['thumb'], person['thumb_at'] = thumbnail(preview, person['box']), received
                 if len(rows) and received >= self.face_at and people.needed('face') and visible:
                     key = min(visible, key=lambda identifier: visible[identifier].get('face_at', 0))
                     person = visible[key]
@@ -271,7 +289,7 @@ class Sight:
                 })
                 self.frame_ready.notify_all()
 
-    def solo_recognized(self):
+    def solo_recognized(self, within=.8):
         with self.lock:
             now = time.monotonic()
             if not self.frame or now - self.frame[0] > .5 or not hub.accepts(self.target_source, 'eyes'):
@@ -282,7 +300,7 @@ class Sight:
             entry = visible[0]
             person = self.attention.people.get(entry['id'], {})
             name = entry['name']
-            if name and now - person.get('confirmed_at', -math.inf) < .8 and name in people.names('face'):
+            if name and now - person.get('confirmed_at', -math.inf) < within and name in people.names('face'):
                 return name
         return None
 
@@ -295,6 +313,33 @@ class Sight:
             known = people.names('face')
             names = sorted({entry['name'] for entry in self.frame[3]['people'] if entry['name'] in known})
             return {'names': names, 'others': len(self.frame[3]['people']) - len(names)}
+
+    def faces(self):
+        """Small pictures of the faces in view right now, so you can see who BITCH means. Kept in memory only."""
+        with self.lock:
+            now = time.monotonic()
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return []
+            people_in_view = sorted(((key, person) for key, person in self.attention.people.items()
+                                     if now - person['seen'] < .6 and person.get('thumb')),
+                                    key=lambda item: item[1]['box'][0])
+            return [{'track': key, 'name': person.get('name'), 'thumb': person['thumb']} for key, person in people_in_view]
+
+    def face_to_learn(self, stranger):
+        """The face being introduced: the only one in view, or for "this is Alex" the closest unknown face."""
+        with self.lock:
+            now = time.monotonic()
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return None
+            visible = [(key, person) for key, person in self.attention.people.items() if now - person['seen'] < .5]
+            if stranger:
+                visible = [(key, person) for key, person in visible if not person.get('name')]
+            elif len(visible) != 1:
+                return None
+            if not visible:
+                return None
+            key, person = max(visible, key=lambda item: item[1]['box'][2])
+            return self.target_source, key, person.get('name')
 
     def direction_scene(self):
         with self.lock:
@@ -395,6 +440,7 @@ class Sight:
         last_aim = None
         noticed_until = 0.
         thinking_since = None
+        last_park = 0.
         while True:
             robot = hub.get('robot')
             now = time.monotonic()
@@ -416,6 +462,8 @@ class Sight:
                 energy = min(1., hub.level) if now - hub.hearing.activity_at < .25 else 0.
             if phase == 'Understanding':
                 social = 'ponder'
+            if helper.waiting() and not speaking and phase not in ('Listening', 'Understanding') and social in (None, 'attend'):
+                social = 'ponder'   # thinking it over while ChatGPT works
             if chirping:
                 social = 'notice'
             elif social in ('ponder', 'speaking') and brain.expression and now < brain.expression[1]:
@@ -477,6 +525,13 @@ class Sight:
                 last_focus = None
             elif not target:
                 last_focus = None
+            # How awake BITCH is decides how much the body moves when no one is talking to it.
+            engaged = bool(brain and (brain.busy.is_set() or brain.followup_seconds())) or phase in ('Listening', 'Understanding')
+            state, beat = rhythm.update(target is not None, engaged, brain.last_interaction if brain else 0., now)
+            calm = state in ('attentive', 'glancing')
+            if not social and beat and idle and robot and getattr(robot, 'rhythm', False):
+                social = beat   # nodding off, or the morning stretch
+            resting = state in ('resting', 'asleep') and not social and not cue and not preview
             result = None
             if not robot or not robot.online:
                 drive = {'mode': 'Pi offline'}
@@ -521,13 +576,17 @@ class Sight:
                 }
                 label = 'Speaking' if speaking and not chirping else labels.get(social, 'Speaking')
                 drive = {'mode': label if result else 'Pi did not accept conversation pose'}
-            elif not idle:
-                robot.look('park')
-                drive = {'mode': 'Idle motion off'}
+            elif not idle or resting:
+                # Parked means unpowered. Once a second is enough to keep it parked.
+                if now - last_park >= 1:
+                    robot.look('park')
+                    last_park = now
+                drive = {'mode': 'Idle motion off' if not idle else 'Asleep' if state == 'asleep' else 'Resting'}
             elif target:
                 base, neck = attention_aim
-                result = robot.look('watch', base, neck)
-                drive = {'mode': 'Watching' if result else 'Pi did not accept tracking'}
+                result = robot.look('watch', base, neck, calm=calm)
+                drive = {'mode': ('Glancing up' if state == 'glancing' else 'Watching quietly' if calm else 'Watching')
+                         if result else 'Pi did not accept tracking'}
             else:
                 result = robot.look('scan')
                 drive = {'mode': 'Looking around' if result else 'Pi did not accept motion'}
@@ -542,7 +601,7 @@ class Sight:
                     drive['aim'] = [round(base, 2), round(neck, 2)]
             with self.lock:
                 self.drive = drive
-            time.sleep(.045 if hub.status == 'Speaking' else .08 if social else .13)
+            time.sleep(.045 if hub.status == 'Speaking' else .08 if social else .5 if resting else .13)
 
     def calibration(self, action, owner, joint=None, neck=REST_NECK, *, track=False):
         camera = hub.selected('eyes')

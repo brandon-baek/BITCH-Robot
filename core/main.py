@@ -53,6 +53,11 @@ def main():
             ask_permission('camera')
         hub.add(MacCamera(args.camera))
     hub.status = 'Waiting for “BITCH”'
+    from .people import people
+    from .rhythm import rhythm
+
+    people.on_learned = lambda name, kind: voice.earcon('learned')
+    rhythm.on_sleep = lambda: voice.earcon('sleep')
     hub.brain.start()
     hub.hearing.start()
     hub.sight.start()

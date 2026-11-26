@@ -66,6 +66,8 @@ function mood(state) {
   if (phase === 'Listening') return ['hearing', 'Listening'];
   if (phase === 'Understanding') return ['thinking', 'Got it'];
   if (phase === 'Ready') return ['listening', state.speaker_name ? 'Go ahead, ' + state.speaker_name : 'Go ahead'];
+  if (state.rhythm === 'asleep') return ['asleep', 'Asleep'];
+  if (state.rhythm === 'resting') return ['resting', 'Resting'];
   return ['idle', 'Say “Hey BITCH”'];
 }
 
@@ -75,23 +77,24 @@ const QUIET_AFTER = 45;   // seconds after a conversation ends before its captio
 function renderNow(state, feeling) {
   const messages = state.messages;
   const lastUser = messages.map(message => message.role).lastIndexOf('user');
-  const replies = messages.slice(lastUser + 1).filter(message => message.role === 'robot').slice(-2);
   const newest = messages.at(-1);
   const active = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
-  const recent = newest && state.now - newest.at < QUIET_AFTER;
   const working = state.tasks.some(task => task.state === 'working');
-  const showing = Boolean(newest) && (active || recent || working);
+  const showing = Boolean(newest) && (active || working || state.now - newest.at < QUIET_AFTER);
   const said = lastUser >= 0 ? messages[lastUser].text : '';
-  const reply = replies.map(message => message.text).join(' ');
-  if ($('said').textContent !== said) $('said').textContent = said;
-  if ($('reply').textContent !== reply) {
-    $('reply').textContent = reply;
-    $('reply').classList.toggle('short', reply.length < 180);
+  // While BITCH talks, show only what it has said aloud so far; afterwards, the whole reply.
+  const reply = state.speaking || messages.slice(lastUser + 1).filter(message => message.role === 'robot')
+    .slice(-2).map(message => message.text).join(' ');
+  if (showing) {
+    if ($('said').textContent !== said) $('said').textContent = said;
+    if ($('reply').textContent !== reply) {
+      $('reply').textContent = reply;
+      $('reply').classList.toggle('long', reply.length > 150);
+    }
   }
-  $('captions').dataset.fading = String(!showing);
-  $('hint').hidden = showing;
-  if (!showing) $('hint').textContent = state.settings.mic_muted ? 'Your mic is off. Type below.' : 'Say “Hey BITCH”, or type below.';
-  $('said').hidden = $('reply').hidden = !showing;
+  $('captions').dataset.showing = String(showing);
+  const hint = state.settings.mic_muted ? 'Your mic is off. Type below.' : 'Say “Hey BITCH”, or type below.';
+  if ($('hint').textContent !== hint) $('hint').textContent = hint;
   $('showEarlier').hidden = !messages.length;
   if ($('earlier').open) renderHistory(messages);
 }
@@ -100,24 +103,60 @@ function renderNow(state, feeling) {
 function renderCompany(state, feeling) {
   const talking = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
   const view = state.in_view;
+  const learning = state.people.learning || [];
   let text = '', by = '', add = false;
-  if (talking && state.company) {
-    text = 'With ' + state.company.name;
-    by = {voice: 'Voice', face: 'Face'}[state.company.by] || '';
+  const meeting = learning.find(entry => entry.name === state.company?.name) || learning[0];
+  if (meeting && (talking || view)) {
+    text = meeting.voice != null ? 'Listening for ' + meeting.name + '’s voice · ' + meeting.voice + ' of 3'
+      : 'Getting to know ' + meeting.name;
+    by = 'Learning';
+  } else if (talking && state.company) {
+    text = state.company.name;
+    by = {voice: 'Voice', face: 'Face', introduced: 'Introduced'}[state.company.by] || '';
   } else if (talking && view && !view.names.length && view.others === 1) {
     text = 'Someone new';
     add = true;
   } else if (view && view.names.length) {
     const names = view.names.length > 1 ? view.names.slice(0, -1).join(', ') + ' and ' + view.names.at(-1) : view.names[0];
-    text = names + (view.others ? ' and ' + view.others + (view.others === 1 ? ' other' : ' others') : '') + (view.names.length + view.others > 1 ? ' are here' : ' is here');
-  } else if (view && view.others && !state.people.profiles.length) {
-    text = view.others === 1 ? 'Someone is here' : view.others + ' people are here';
-    add = true;
+    text = names + (view.others ? ' and ' + view.others + (view.others === 1 ? ' other' : ' others') : '')
+      + (view.names.length + view.others > 1 ? ' are here' : ' is here');
   }
-  $('company').hidden = !text;
+  // The line keeps its space when empty, so nothing below it jumps.
+  $('company').classList.toggle('on', Boolean(text));
+  if (!text) return;
   if ($('companyText').textContent !== text) $('companyText').textContent = text;
   if ($('companyBy').textContent !== by) $('companyBy').textContent = by;
   $('addFromStage').hidden = !add;
+}
+
+// Faces in view, shown while BITCH is meeting someone, so you can see exactly who it means.
+let facesAt = 0;
+async function renderFaces(state, feeling) {
+  const learning = (state.people.learning || []).find(entry => entry.track != null || entry.voice != null);
+  const stranger = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling)
+    && state.in_view && state.in_view.others > 0 && !state.company;
+  const show = Boolean(learning || stranger) && state.in_view;
+  $('faces').hidden = !show;
+  if (!show || performance.now() - facesAt < 1000) return;
+  facesAt = performance.now();
+  const {faces} = await (await api('faces')).json();
+  $('faces').replaceChildren(...faces.map(face => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'face' + (learning && face.track === learning.track ? ' learning' : '');
+    const picture = document.createElement('img');
+    picture.src = face.picture;
+    picture.alt = face.name || 'Someone BITCH doesn’t know yet';
+    const label = document.createElement('span');
+    label.textContent = learning && face.track === learning.track ? 'Learning ' + learning.name
+      : face.name || (learning ? 'Is this ' + learning.name + '?' : 'Who’s this?');
+    button.append(picture, label);
+    button.disabled = Boolean(face.name);
+    button.onclick = () => (learning
+      ? api('people', {action: 'learn-face', name: learning.name, track: face.track})
+      : openPerson('', face.track)).catch(fail);
+    return button;
+  }));
 }
 
 function renderHistory(messages) {
@@ -194,6 +233,7 @@ async function refresh() {
   setIcon($('micToggle'), settings.mic_muted ? 'i-mic-off' : 'i-mic');
   renderNow(state, feeling);
   renderCompany(state, feeling);
+  renderFaces(state, feeling).catch(() => {});
   if ($('person').open) updatePerson(state.people);
   if (previewSource !== settings.camera_source) {
     previewSource = settings.camera_source;
@@ -219,7 +259,12 @@ async function refresh() {
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
   $('robot_key').placeholder = settings.robot_paired ? 'Saved' : 'Paste key';
-  for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory']) $(key).checked = settings[key];
+  for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory', 'sounds', 'sleep_at_night']) $(key).checked = settings[key];
+  const hours = Array.from({length: 24}, (_, hour) => [String(hour), new Date(2000, 0, 1, hour).toLocaleTimeString([], {hour: 'numeric'})]);
+  options('quiet_start', hours.slice(), String(settings.quiet_start));
+  options('quiet_end', hours.slice(), String(settings.quiet_end));
+  $('nightRow').hidden = !settings.sleep_at_night;
+  $('motors').textContent = state.wear ? state.wear.moving_minutes + ' min moving · ' + Math.round(state.wear.powered_minutes) + ' min on' : 'Needs the Pi update';
   if (document.activeElement !== $('volume')) {
     $('volume').value = settings.volume;
     $('volumeValue').value = settings.volume + '%';
@@ -287,15 +332,21 @@ function animateEyes(now) {
     const node = $(index ? 'pupilR' : 'pupilL');
     node.setAttribute('cx', (index ? 54 : 18) + pupil.x);
     node.setAttribute('cy', 19 + pupil.y);
-    node.setAttribute('r', 6.5 + (feeling === 'hearing' ? Math.min(1.4, eyes.hearing * 3) : feeling === 'listening' ? .6 : 0));
+    const radius = 6.5 + (feeling === 'hearing' ? Math.min(1.4, eyes.hearing * 3) : feeling === 'listening' ? .6 : 0);
+    node.setAttribute('r', radius);
+    // The glint stays up and to the left, like light from the room catching a plastic eye.
+    const glint = $(index ? 'glintR' : 'glintL');
+    glint.setAttribute('cx', (index ? 54 : 18) + pupil.x - radius * .34);
+    glint.setAttribute('cy', 19 + pupil.y - radius * .36);
   });
   // Blink now and then; close halfway when the mic is off and fully when BITCH is offline.
-  const rest = feeling === 'offline' ? 1 : feeling === 'off' ? .45 : 0;
+  const rest = feeling === 'offline' || feeling === 'asleep' ? .86 : feeling === 'off' ? .45 : feeling === 'resting' ? .3 : 0;
   if (now > eyes.blinkAt) eyes.blinkAt = now + 2600 + Math.random() * 4200;
   const blinking = !eyes.still.matches && eyes.blinkAt - now < 140;
-  const wanted = blinking ? 1 : rest;
+  const wanted = blinking ? .9 : rest;
   eyes.lid += (wanted - eyes.lid) * Math.min(1, dt * (blinking ? 40 : 10));
-  for (const id of ['lidL', 'lidR']) $(id).setAttribute('height', (eyes.lid * 34).toFixed(2));
+  // A round cardboard lid slides down over each eye.
+  for (const id of ['lidL', 'lidR']) $(id).setAttribute('cy', (-12 + eyes.lid * 31).toFixed(2));
   requestAnimationFrame(animateEyes);
 }
 
@@ -610,9 +661,10 @@ function showStep(step) {
   if (step === 'face') frameId = 0;
 }
 
-async function openPerson(name = '') {
+async function openPerson(name = '', track = null) {
   if ($('settings').open) $('settings').close();
   enroll.name = name;
+  enroll.track = track;
   $('personName').value = name;
   $('faceProgress').replaceChildren(...Array.from({length: 6}, () => document.createElement('i')));
   for (const line of $('voiceLines').children) line.className = '';
@@ -638,6 +690,13 @@ async function nextStep() {
   if (enroll.step === 'name') {
     enroll.name = $('personName').value.trim();
     if (!enroll.name) throw new Error('Type a name first.');
+    if (enroll.track != null) {
+      // Picked from the faces in view: BITCH learns that face as the conversation goes on.
+      await api('people', {action: 'learn-face', name: enroll.name, track: enroll.track});
+      showStep('done');
+      $('doneText').textContent = 'BITCH is learning ' + enroll.name + '’s face. Have them say hi so it learns their voice too.';
+      return;
+    }
     return learn('face');
   }
   if (enroll.step === 'done') return $('person').close();
@@ -692,8 +751,35 @@ action('voiceToggle', 'click', () => {
 action('stop', 'click', () => api('stop', {}));
 action('openSettings', 'click', async () => {
   $('settings').showModal();
-  await refresh();
+  await Promise.all([refresh(), loadMemories()]);
 });
+
+async function loadMemories(data) {
+  const {memories} = data || await (await api('memory')).json();
+  if (!memories.length) {
+    const p = document.createElement('p');
+    p.className = 'row muted';
+    p.textContent = 'Nothing yet';
+    return $('memories').replaceChildren(p);
+  }
+  $('memories').replaceChildren(...memories.slice(0, 40).map(item => {
+    const row = document.createElement('div');
+    row.className = 'row memory';
+    const text = document.createElement('p');
+    const when = new Date(item.t * 1000).toLocaleDateString([], {month: 'short', day: 'numeric'});
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = (item.kind === 'episode' ? 'Conversation' : 'About ' + (item.about || 'you')) + ' · ' + when;
+    text.append(meta, document.createTextNode(item.text));
+    const forget = document.createElement('button');
+    forget.className = 'text-button';
+    forget.type = 'button';
+    forget.textContent = 'Forget';
+    forget.onclick = async () => loadMemories(await (await api('memory', {id: item.id})).json()).catch(fail);
+    row.append(text, forget);
+    return row;
+  }));
+}
 action('closeSettings', 'click', () => $('settings').close());
 $('settings').addEventListener('click', event => { if (event.target === $('settings')) $('settings').close(); });
 $('settings').addEventListener('close', () => {
@@ -702,9 +788,10 @@ $('settings').addEventListener('close', () => {
 
 // Settings
 action('speakerTest', 'click', () => api('test-speaker', {}));
-for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory', 'mic_source', 'camera_source', 'speaker_source']) {
+for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory', 'sounds', 'sleep_at_night', 'quiet_start', 'quiet_end',
+  'mic_source', 'camera_source', 'speaker_source']) {
   action(key, 'change', e => {
-    const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    const value = e.target.type === 'checkbox' ? e.target.checked : key.startsWith('quiet_') ? Number(e.target.value) : e.target.value;
     settingsVersion++;
     if (key === 'camera_source' && value === 'off') {
       previewSource = 'off';
