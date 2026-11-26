@@ -2,142 +2,208 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BITCH · Desk robot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ECEAE6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="BITCH">
+  <title>BITCH</title>
   <link rel="stylesheet" href="/app/style.css">
   <script defer src="/app/app.js"></script>
 </head>
 <body>
-<main>
-  <header>
-    <div><p class="label">DESK ROBOT</p><h1>BITCH<span>.</span></h1></div>
-    <p id="status" role="status"><i></i><span>Connecting</span></p>
-  </header>
-  <p id="error" class="error" role="alert" hidden></p>
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="M15 10.5V6a3 3 0 0 0-5.6-1.5M9 9v2a3 3 0 0 0 4.7 2.5M5.5 11a6.5 6.5 0 0 0 10.4 5.2M18.5 11a6.4 6.4 0 0 1-.6 2.7M12 17.5V21M8.5 21h7M4 4l16 16"/></symbol>
+  <symbol id="i-voice" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+  <symbol id="i-voice-off" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
+</svg>
 
-  <section id="pair" hidden>
-    <h2>Connect this device</h2>
+<div class="app" id="app">
+  <header class="bar">
+    <div class="identity">
+      <svg class="eyes" id="eyes" viewBox="0 0 72 38" aria-hidden="true">
+        <defs>
+          <clipPath id="eyeClipL"><circle cx="18" cy="19" r="15"/></clipPath>
+          <clipPath id="eyeClipR"><circle cx="54" cy="19" r="15"/></clipPath>
+        </defs>
+        <g clip-path="url(#eyeClipL)"><circle class="sclera" cx="18" cy="19" r="15"/><circle class="pupil" id="pupilL" cx="18" cy="19" r="6.5"/><rect class="lid" id="lidL" x="2" y="3" width="32" height="0"/></g>
+        <g clip-path="url(#eyeClipR)"><circle class="sclera" cx="54" cy="19" r="15"/><circle class="pupil" id="pupilR" cx="54" cy="19" r="6.5"/><rect class="lid" id="lidR" x="38" y="3" width="32" height="0"/></g>
+        <circle class="rim" cx="18" cy="19" r="15"/><circle class="rim" cx="54" cy="19" r="15"/>
+      </svg>
+      <div class="titles">
+        <h1>BITCH</h1>
+        <p class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connecting</span></p>
+      </div>
+    </div>
+    <div class="bar-actions" id="barActions" hidden>
+      <button class="icon-button" id="voiceToggle" type="button" aria-pressed="false" aria-label="Mute BITCH’s voice"><svg><use href="#i-voice"/></svg></button>
+      <button class="icon-button" id="openSettings" type="button" aria-label="Settings"><svg><use href="#i-settings"/></svg></button>
+    </div>
+  </header>
+
+  <p class="banner" id="error" role="alert" hidden></p>
+
+  <section class="pair" id="pair" hidden>
+    <h2>Connect this phone</h2>
     <div id="secureSetup" hidden>
-      <p>Use the secure link to share this device’s microphone or camera. Install and trust the BITCH Home certificate first.</p>
-      <div class="actions"><a class="button" href="/BITCH-Home.crt">Get certificate</a><a class="button primary" id="secureLink">Open secure link</a></div>
-      <p class="muted">On iPhone, install the profile in Settings, then enable full trust under General → About → Certificate Trust Settings.</p>
+      <p>BITCH talks to your phone over a private link at home. Install its certificate once, then open the secure link.</p>
+      <div class="pair-actions">
+        <a class="button" href="/BITCH-Home.crt">Get certificate</a>
+        <a class="button primary" id="secureLink">Open secure link</a>
+      </div>
+      <p class="footnote">On iPhone, install the profile in Settings, then turn on full trust in General › About › Certificate Trust Settings.</p>
     </div>
     <form id="pairForm" hidden>
-      <label for="code">Pairing code from the Mac</label>
-      <div class="actions"><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required><button class="primary">Pair device</button></div>
+      <label class="footnote" for="code">Pairing code from the Mac</label>
+      <div class="pair-actions">
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required placeholder="000000">
+        <button class="button primary">Pair</button>
+      </div>
     </form>
   </section>
 
-  <div id="controls" hidden>
-    <section class="wake" id="wake">
-      <div>
-        <h2 id="turnHeading">Say “Hey BITCH”</h2>
-        <p id="listenHint">Say the name to open a conversation.</p>
+  <main class="conversation" id="conversation" hidden>
+    <div class="messages" id="messages"></div>
+    <p class="empty" id="empty">Say “Hey BITCH”, or type a message.</p>
+  </main>
+
+  <footer class="composer" id="composer" hidden>
+    <button class="stop" id="stop" type="button" hidden><svg><use href="#i-stop"/></svg>Stop</button>
+    <form class="compose" id="sayForm">
+      <button class="round" id="micToggle" type="button" aria-pressed="false" aria-label="Turn off my microphone"><svg><use href="#i-mic"/></svg></button>
+      <input id="sayText" type="text" placeholder="Message BITCH" autocomplete="off" enterkeyhint="send" maxlength="500" aria-label="Message BITCH">
+      <button class="round send" id="send" aria-label="Send" disabled><svg><use href="#i-send"/></svg></button>
+    </form>
+  </footer>
+</div>
+
+<dialog class="sheet" id="settings" aria-labelledby="settingsTitle">
+  <div class="sheet-head">
+    <h2 id="settingsTitle">Settings</h2>
+    <button class="text-button" id="closeSettings" type="button">Done</button>
+  </div>
+  <div class="sheet-body">
+    <section class="group">
+      <h3>Sound</h3>
+      <div class="list">
+        <label class="row"><span>Microphone</span><select id="mic_source"></select></label>
+        <label class="row"><span>Speaker</span><select id="speaker_source"></select></label>
+        <div class="row stack">
+          <label for="volume"><span>Voice volume</span><output id="volumeValue">100%</output></label>
+          <input id="volume" type="range" min="0" max="100" step="1" value="100">
+        </div>
+        <button class="row action" id="speakerTest" type="button">Test speaker</button>
       </div>
-      <div class="level"><label for="meter">Mic level</label><meter id="meter" min="0" max="1" value="0"></meter></div>
-      <div id="messages" aria-live="polite"></div>
     </section>
 
-    <div class="grid">
-      <section class="monitor" aria-labelledby="visionHeading">
-        <div class="heading monitor-heading">
-          <h2 id="visionHeading">What BITCH sees</h2>
-          <span class="live-state" id="feedState">Camera off</span>
+    <section class="group">
+      <h3>Camera</h3>
+      <div class="list">
+        <label class="row"><span>Camera</span><select id="camera_source"></select></label>
+        <div class="row media" id="cameraView" hidden>
+          <canvas id="picture" aria-label="What BITCH sees. Kraft marks the person it is following." hidden></canvas>
+          <span class="no-frame" id="noFrame">Camera off</span>
         </div>
-        <div class="preview">
-          <canvas id="picture" aria-label="Live camera feed. Amber indicates the selected person." hidden></canvas>
-          <span id="noFrame">Choose a camera in Connections.</span>
-        </div>
-        <div class="scene-status">
-          <div><span class="caption">Attention</span><strong id="attention">No one in view</strong></div>
-          <div><span class="caption">Body</span><strong id="drive">Idle motion off</strong><span id="aimReadout" class="muted"></span></div>
-        </div>
-        <details id="alignment">
-          <summary>Align camera to robot <span class="muted" id="calStatus"></span></summary>
-          <p>Stand at your usual distance. Aim the robot at your face from three positions, even if the camera is off to one side.</p>
-          <div class="actions"><button id="startCalibration">Start alignment</button></div>
-          <div id="calibration" hidden>
-            <p id="calStep"></p>
-            <div class="sliders">
-              <div><label for="aim">Turn <output id="angle">0.00</output></label>
-              <input id="aim" type="range" min="-0.55" max="0.55" step="0.01" value="0"></div>
-              <div><label for="neckAim">Head pitch <output id="pitch">-0.80</output></label>
-              <input id="neckAim" type="range" min="-0.88" max="-0.43" step="0.01" value="-0.80"></div>
+        <div class="row" id="attentionRow" hidden><span>Attention</span><span class="value" id="attention">No one in view</span></div>
+        <div class="row"><span>Body</span><span class="value" id="drive">Waiting for Pi</span></div>
+        <details class="row disclosure" id="alignment">
+          <summary><span>Align camera to robot</span><span class="value" id="calStatus"></span></summary>
+          <div class="disclosure-body">
+            <p class="footnote">Stand where you usually sit. Point the robot at your face from three spots, even if the camera is off to one side.</p>
+            <button class="button" id="startCalibration" type="button">Start alignment</button>
+            <div id="calibration" hidden>
+              <p class="cal-step" id="calStep"></p>
+              <label class="slider"><span>Turn <output id="angle">0.00</output></span>
+                <input id="aim" type="range" min="-0.55" max="0.55" step="0.01" value="0"></label>
+              <label class="slider"><span>Head pitch <output id="pitch">-0.80</output></span>
+                <input id="neckAim" type="range" min="-0.88" max="-0.43" step="0.01" value="-0.80"></label>
+              <p class="footnote" id="alignmentMessage" role="status"></p>
+              <div class="button-row">
+                <button class="button primary" id="sample" type="button">Capture point</button>
+                <button class="button primary" id="saveTrack" type="button" hidden>Save and track</button>
+                <button class="button" id="save" type="button" hidden>Save only</button>
+                <button class="button" id="cancel" type="button">Cancel</button>
+              </div>
             </div>
-            <p id="alignmentMessage" class="muted" role="status"></p>
-            <div class="actions"><button id="sample" class="primary">Capture point</button><button id="saveTrack" class="primary" hidden>Save &amp; start tracking</button><button id="save" hidden>Save only</button><button id="cancel">Cancel</button></div>
           </div>
         </details>
-      </section>
+      </div>
+    </section>
 
-      <section>
-        <div class="heading"><h2>Connections</h2><span id="robotStatus" class="muted"></span></div>
-        <p id="modelName" class="muted"></p>
-        <div class="switches">
-          <label><input id="idle" type="checkbox"> Idle motion</label>
-          <label><input id="muted" type="checkbox"> Mute voice</label>
-          <label><input id="keep_audio" type="checkbox"> Keep Pi audio awake</label>
-          <label><input id="check_ins" type="checkbox"> Occasional visual check-ins</label>
-          <label><input id="natural_memory" type="checkbox"> Learn my preferences</label>
-          <label id="voicechatControl" hidden><input id="voicechat_enabled" type="checkbox"> Try Nemotron VoiceChat (slow on an M1)</label>
-          <button id="speakerTest">Test speaker</button>
-          <button id="hush">Stop speech</button>
+    <section class="group">
+      <h3>Behavior</h3>
+      <div class="list">
+        <label class="row"><span>Idle motion</span><input class="switch" id="idle" type="checkbox" role="switch"></label>
+        <label class="row"><span>Keep Pi audio awake</span><input class="switch" id="keep_audio" type="checkbox" role="switch"></label>
+        <label class="row"><span>Check in when it’s quiet</span><input class="switch" id="check_ins" type="checkbox" role="switch"></label>
+        <label class="row"><span>Learn my preferences</span><input class="switch" id="natural_memory" type="checkbox" role="switch"></label>
+      </div>
+    </section>
+
+    <section class="group">
+      <h3>ChatGPT</h3>
+      <div class="list" id="tasks"><p class="row muted">Nothing asked yet</p></div>
+      <p class="footnote">For the weather, your calendar, email and the web, BITCH asks your ChatGPT on the Pi and tells you the answer.</p>
+    </section>
+
+    <section class="group" id="peopleSetup" hidden>
+      <h3>People</h3>
+      <div class="list">
+        <label class="row"><span>Name</span><input id="personName" maxlength="32" autocomplete="off" placeholder="Your name"></label>
+        <div class="row buttons">
+          <button class="text-button" id="rememberFace" type="button">Learn face</button>
+          <button class="text-button" id="rememberVoice" type="button">Learn voice</button>
+          <button class="text-button" id="cancelEnroll" type="button" hidden>Cancel</button>
         </div>
-        <div class="sources">
-          <div><label for="mic_source">Microphone</label><select id="mic_source"></select></div>
-          <div><label for="camera_source">Camera</label><select id="camera_source"></select></div>
-          <div><label for="speaker_source">Speaker</label><select id="speaker_source"></select></div>
-          <div class="volume-control">
-            <label for="volume">Voice volume <output id="volumeValue">100%</output></label>
-            <input id="volume" type="range" min="0" max="100" step="1" value="100">
-          </div>
+        <div id="profiles"></div>
+      </div>
+      <p class="footnote" id="enrollState" role="status">Only add yourself or someone who agrees. Face and voice patterns stay on this Mac.</p>
+    </section>
+
+    <section class="group" id="browserSetup">
+      <h3>This device</h3>
+      <div class="list">
+        <label class="row"><span>Microphone</span><select id="browserMic"><option value="">Default</option></select></label>
+        <label class="row"><span>Camera</span><select id="browserCamera"><option value="">Default</option></select></label>
+        <div class="row buttons">
+          <button class="text-button" id="useMic" type="button">Use as BITCH’s ears</button>
+          <button class="text-button" id="useCamera" type="button">Use as its eyes</button>
         </div>
-        <details id="peopleSetup" hidden>
-          <summary>Recognize people</summary>
-          <p>Only enroll yourself or someone who agrees. BITCH saves face and voice patterns on this Mac.</p>
-          <label for="personName">Name</label>
-          <input id="personName" maxlength="32" autocomplete="off">
-          <div class="actions">
-            <button id="rememberFace">Learn face</button>
-            <button id="rememberVoice">Learn voice</button>
-            <button id="cancelEnroll" hidden>Cancel</button>
-          </div>
-          <p id="enrollState" class="muted" role="status"></p>
-          <ul id="profiles"></ul>
-        </details>
-        <details id="browserSetup">
-          <summary>Use this browser’s devices</summary>
-          <div class="sources">
-            <label>Browser microphone <select id="browserMic"><option value="">System default</option></select></label>
-            <label>Browser camera <select id="browserCamera"><option value="">System default</option></select></label>
-          </div>
-          <div class="actions">
-            <button id="useMic">Use microphone</button>
-            <button id="useCamera">Use camera</button>
-          </div>
-        </details>
-        <details id="addDevice" hidden>
-          <summary>Pair a phone or another computer</summary>
-          <p>On the same Wi-Fi, open <a id="pairLink"></a> and follow the secure setup.</p>
-          <div class="actions"><button id="showCode">Show pairing code</button><output id="pairCode"></output></div>
-        </details>
-        <details id="robotSetup" hidden>
-          <summary>Connect the Raspberry Pi</summary>
-          <p>On the Pi, run <code>python3 brain.py --key</code> and paste the connection key here.</p>
-          <form id="robotForm">
-            <div class="sources">
-              <label>Pi hostname or IPv4 address <input id="robot_host" required></label>
-              <label>Connection key <input id="robot_key" type="password" autocomplete="off"></label>
-            </div>
-            <div class="actions"><button class="primary">Connect Pi</button></div>
-          </form>
-        </details>
-      </section>
+      </div>
+    </section>
 
+    <section class="group" id="addDevice" hidden>
+      <h3>Pair a phone</h3>
+      <div class="list">
+        <div class="row"><span>Address</span><a class="value" id="pairLink"></a></div>
+        <div class="row"><button class="text-button" id="showCode" type="button">Show pairing code</button><output class="code" id="pairCode"></output></div>
+      </div>
+    </section>
 
-    </div>
-    <p id="notice" class="muted" hidden></p>
+    <section class="group" id="robotSetup" hidden>
+      <h3>Raspberry Pi</h3>
+      <form class="list" id="robotForm">
+        <label class="row"><span>Address</span><input id="robot_host" required autocomplete="off"></label>
+        <label class="row"><span>Key</span><input id="robot_key" type="password" autocomplete="off"></label>
+        <button class="row action">Connect</button>
+      </form>
+      <p class="footnote">On the Pi, run <code>python3 brain.py --key</code> to see its key.</p>
+    </section>
+
+    <section class="group">
+      <h3>About</h3>
+      <div class="list">
+        <div class="row"><span>Pi</span><span class="value" id="robotStatus">Checking</span></div>
+        <div class="row"><span>Brain</span><span class="value" id="modelName"></span></div>
+      </div>
+      <p class="footnote" id="notice" hidden></p>
+    </section>
   </div>
-</main>
+</dialog>
 </body>
 </html>

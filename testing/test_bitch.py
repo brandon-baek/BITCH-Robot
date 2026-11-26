@@ -83,13 +83,34 @@ class WakeTests(unittest.TestCase):
     def test_brain_can_only_queue_an_explicit_agent_request(self):
         brain = Brain()
         saved = []
-        robot = SimpleNamespace(macro=lambda *args: saved.append(args) or True)
+        robot = SimpleNamespace(macro=lambda *args: saved.append(args) or True, handoff=True, auto_handoff=False)
         with patch.object(hub, 'get', return_value=robot), patch('core.brain.llm.chat', return_value='*waves* Got it.') as model:
             self.assertEqual(brain.reply('Could an agent help?', 'desk'), 'Got it.')
             self.assertEqual(saved, [])
             self.assertIn('I queued', brain.reply('Could you ask Chat GPT to draft a summary.', 'desk'))
-            self.assertEqual(saved[0][1:], ('agent', 'draft a summary.'))
+            self.assertEqual(saved[0][1], 'agent')
+            self.assertTrue(saved[0][2].startswith('draft a summary.'))
+            self.assertIn('read aloud', saved[0][2])
             model.assert_called_once()
+
+    def test_chatgpt_answers_come_back_and_are_spoken_without_markdown(self):
+        from core import helper
+
+        brain = Brain()
+        statuses = iter([{'state': 'sending'}, {'state': 'returned', 'answer': '**Sunny**, 64°F. [Forecast](https://x.y)'}])
+        robot = SimpleNamespace(macro=lambda *args: True, handoff=True, auto_handoff=True,
+                                macro_status=lambda request_id: next(statuses))
+        announced = []
+        brain.announce = lambda source, text, heard=None: announced.append((source, text))
+        with (patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'),
+              patch.object(helper.threading, 'Thread')):
+            self.assertIsNone(helper.start(brain, 'desk', None, "What's the weather?"))
+            self.assertEqual(helper.tasks[-1]['state'], 'working')
+            helper.watch(brain, 'desk', helper.tasks[-1])
+        self.assertEqual(announced, [('desk', 'Sunny, 64°F. Forecast')])
+        self.assertEqual(helper.tasks[-1]['state'], 'done')
+        self.assertTrue(helper.OUTSIDE.search("What's on my calendar tomorrow?"))
+        self.assertFalse(helper.OUTSIDE.search("What's the square root of 144?"))
 
     def test_voicechat_gets_addressed_audio_and_qwen_handles_the_local_agent_request(self):
         brain = Brain()

@@ -10,7 +10,7 @@ import time
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import config, memory, tls, voicechat
+from . import config, helper, memory, tls, voice, voicechat
 from .devices.web import WebDevice
 from .hub import hub
 from .people import people
@@ -159,6 +159,9 @@ def state(req: Request):
     data['ears_ready'] = hub.hearing.ready
     data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
     data['pointing_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'ready', False))
+    data['tasks'] = helper.recent()
+    data['voice_energy'] = round(voice.articulation()[0], 2)
+    data['robot_online'] = bool(getattr(hub.get('robot'), 'online', False))
     if owner == 'local':
         data['people'] = people.state()
         data['speaker_name'] = hub.brain.speaker if remaining else None
@@ -170,7 +173,7 @@ async def settings(req: Request):
     owner = authorize(req)
     data = await payload(req)
     for key, value in data.items():
-        if key in ('idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory') and type(value) is bool:
+        if key in ('idle', 'muted', 'mic_muted', 'keep_audio', 'check_ins', 'natural_memory') and type(value) is bool:
             continue
         if key == 'voicechat_enabled' and owner == 'local' and type(value) is bool:
             if value and not voicechat.settings():
@@ -211,6 +214,17 @@ def test_speaker(req: Request):
         raise HTTPException(400, 'Choose an available speaker first.')
     if not hub.brain.test_speaker():
         raise HTTPException(409, 'Wait until this turn finishes.')
+    return {'ok': True}
+
+
+@app.post('/api/say')
+async def say(req: Request):
+    authorize(req)
+    text = (await payload(req)).get('text')
+    if not isinstance(text, str) or not 0 < len(text.strip()) <= 500:
+        raise HTTPException(400, 'Type up to 500 characters.')
+    if not hub.brain.typed(text):
+        raise HTTPException(409, 'BITCH is busy. Try again in a moment.')
     return {'ok': True}
 
 

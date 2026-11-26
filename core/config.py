@@ -22,6 +22,7 @@ DEFAULTS = {
     'camera_calibration': {},
     'idle': True,
     'muted': False,
+    'mic_muted': False,
     'keep_audio': False,
     'check_ins': False,
     'natural_memory': False,
@@ -29,7 +30,7 @@ DEFAULTS = {
     'robot_host': 'raspberrypi.local',
     'robot_key': '',
 }
-PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'keep_audio',
+PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'mic_muted', 'keep_audio',
           'check_ins', 'natural_memory', 'voicechat_enabled', 'volume', 'robot_host'}
 path = HOME / 'settings.json'
 lock = threading.Lock()

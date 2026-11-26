@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from .hub import hub
-from . import voice
+from . import config, voice
 from .people import people
 
 SR = 16000
@@ -172,7 +172,7 @@ class Hearing:
 
     def feed(self, source, samples):
         # Audio is never dropped here: even while BITCH is busy it becomes lead-in for the next turn.
-        if not self.ready or not hub.accepts(source, 'ears'):
+        if not self.ready or not hub.accepts(source, 'ears') or config.get('mic_muted'):
             return
         try:
             self.audio.put_nowait((source, hub.brain.revision, time.monotonic(), samples))

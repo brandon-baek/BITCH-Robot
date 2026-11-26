@@ -514,7 +514,7 @@ def play(wav, duration, stop, *, text=False, ready_cue=False, delivery='neutral'
         return
     if not speaker:
         if not interim:
-            hub.note('speaker', 'No speaker available. Choose Auto or Mac speaker in Connections.')
+            hub.note('speaker', 'No speaker available. Choose a speaker in Settings.')
         return
     with wave.open(io.BytesIO(wav)) as file:
         pcm = file.readframes(file.getnframes())

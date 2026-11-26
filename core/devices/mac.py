@@ -105,8 +105,9 @@ class MacMic(Device):
             self.hub.hearing.feed(self.id, convert(data[:, 0]))
 
         while True:
-            if not self.hub.accepts(self.id, 'ears'):
-                self.detail = 'Standby'
+            if not self.hub.accepts(self.id, 'ears') or config.get('mic_muted'):
+                # Muted means the microphone is released, so macOS shows it as off.
+                self.detail = 'Muted' if config.get('mic_muted') else 'Standby'
                 time.sleep(0.4)
                 continue
             try:
@@ -115,7 +116,7 @@ class MacMic(Device):
                 convert = Resampler(rate)
                 with sd.InputStream(device=self.source, samplerate=rate, channels=1, blocksize=block, callback=receive):
                     self.detail = 'Open · ' + f'{rate / 1000:g} kHz'
-                    while self.hub.accepts(self.id, 'ears'):
+                    while self.hub.accepts(self.id, 'ears') and not config.get('mic_muted'):
                         time.sleep(0.3)
             except Exception as error:
                 self.detail = f'Microphone unavailable: {error}'

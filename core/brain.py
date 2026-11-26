@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from . import config, gaze, llm, memory, prosody, skills, streaming, voice, voicechat
+from . import config, gaze, helper, llm, memory, prosody, skills, streaming, voice, voicechat
 from .hub import hub
 
 # Whisper spells the name a few ways, and hears "Yo BITCH" as "No/You/My bitch" across a room.
@@ -731,17 +731,35 @@ class Brain:
         return None
 
     def ask_chatgpt(self, source, identity, prompt):
-        robot = hub.get('robot')
-        request_id = uuid.uuid4().hex
-        if robot and robot.macro(request_id, 'agent', prompt):
-            self.last_agent_request = (source, request_id) if not identity else None
-            if identity:
-                memory.kv_set('agent:' + identity, request_id)
-            if getattr(robot, 'auto_handoff', False):
-                return 'I’ll send it to ChatGPT through the Pi.'
-            return ('I queued it in the Pi’s ChatGPT inbox.' if getattr(robot, 'handoff', False)
-                    else 'I queued it on the Pi. Its desktop inbox needs the update.')
-        return 'I couldn’t reach the Pi to queue that request.'
+        history = self.history.get((source, None), ())
+        return helper.start(self, source, identity, prompt, history) or 'Let me ask ChatGPT.'
+
+    def announce(self, source, text, heard=None):
+        """Say something BITCH learned on its own, like ChatGPT's answer, once the floor is free."""
+        def wait_for_turn():
+            deadline = time.monotonic() + 600
+            while time.monotonic() < deadline:
+                talking = hub.hearing and hub.hearing.capture and time.monotonic() - hub.hearing.capture[3] < 1.2
+                with self.lock:
+                    if not self.busy.is_set() and not talking:
+                        history = self.history.setdefault((source, None), deque(maxlen=HISTORY_MESSAGES))
+                        history.append({'role': 'assistant', 'content': heard or text})
+                        self.history_at[(source, None)] = time.monotonic()
+                        self.active_source = source
+                        self.interruption = False
+                        self.last_interaction = time.monotonic()
+                        self.hush.clear()
+                        self.busy.set()
+                        self.requests.put_nowait((None, (source, text)))
+                        return
+                time.sleep(.4)
+
+        threading.Thread(target=wait_for_turn, daemon=True).start()
+
+    def typed(self, text):
+        """A message typed in the app joins the conversation on the current microphone."""
+        ears = hub.selected('ears')
+        return self.submit('BITCH, ' + text.strip(), ears.id if ears else 'app')
 
     def available_actions(self, text, robot, camera_ready):
         """What the model may choose to do this turn, given what is connected right now."""
@@ -761,11 +779,16 @@ class Brain:
                 actions.append('routine')
                 extra['routine'] = {'type': 'string', 'enum': routines}
                 lines.append('routine: they ask for one of your saved routines. Put its name in routine.')
-        if robot and getattr(robot, 'handoff', False) and CHATGPT.search(text):
+        if robot and getattr(robot, 'handoff', False) and (CHATGPT.search(text) or helper.OUTSIDE.search(text)):
             actions.append('chatgpt')
             extra['task'] = {'type': 'string', 'maxLength': 600}
-            lines.append('chatgpt: they want ChatGPT to do or answer something. Put what to ask ChatGPT in task, '
-                         'in their words. Say that you are asking it; never invent its answer.')
+            lines.append('chatgpt: your helper ChatGPT can check their calendar, email, files, the weather, news and '
+                         'the web, and set reminders. Use it when the answer needs live information or their accounts, '
+                         'or they ask for ChatGPT. Put the full request in task, with any details from the conversation. '
+                         'Then say only a few words like "Let me check." Never guess the answer yourself.')
+        elif helper.OUTSIDE.search(text):
+            lines.append('You have no live connection for weather, calendar, email or news right now. If they need '
+                         'that, say so in one line instead of guessing.')
         return actions, extra, lines
 
     def reply(self, text, source, *, stream=None, use_camera=False):
@@ -862,8 +885,11 @@ class Brain:
                           'required': ['do', *extra, *schema['required']]}
                 system += ('\nBegin with do. Use none for ordinary conversation. Choose an action only when the '
                            'latest request calls for it:\n- ' + '\n- '.join(lines))
+            elif lines:
+                system += '\n' + ' '.join(lines)
         if self.speaker:
             system += '\nThe enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.'
+        system += f'\nIt is {datetime.now():%A %-I:%M %p}.'
         notes = memory.relevant(identity, text)
         if PAST_MEMORY.search(text) and not notes and not any(
                 memory.keywords(text) & memory.keywords(turn['content']) for turn in history if turn['role'] == 'user'):
@@ -974,8 +1000,10 @@ class Brain:
                 elif action == 'routine' and turn.get('routine'):
                     self.performance_reply(turn['routine'])
                 elif action == 'chatgpt':
-                    outcome = self.ask_chatgpt(source, identity, (turn.get('task') or text).strip())
-                    if outcome.startswith('I couldn’t'):
+                    task = (turn.get('task') or '').strip()
+                    request = text if not task or task.casefold() == text.casefold() else f'{text}\n(BITCH’s note: {task})'
+                    outcome = helper.start(self, source, identity, request, list(history))
+                    if outcome:
                         speech = speech.rstrip() + ' ' + outcome
                 note = turn.get('note', turn.get('remember'))
                 if natural_memory:

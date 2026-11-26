@@ -6,6 +6,7 @@ let starting = new Set();
 let previewSource = 'off';
 let frameId = 0;
 let settingsVersion = 0;
+let latest = null;
 
 async function api(path, body) {
   const options = body === undefined ? {cache: 'no-store'} : {
@@ -14,7 +15,7 @@ async function api(path, body) {
   const response = await fetch('/api/' + path, options);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || 'The setup server is unavailable.');
+    throw new Error(error.detail || 'BITCH isn’t reachable right now.');
   }
   return response;
 }
@@ -22,11 +23,13 @@ async function api(path, body) {
 function fail(error) {
   $('error').textContent = error.message;
   $('error').hidden = false;
+  clearTimeout(fail.timer);
+  fail.timer = setTimeout(() => { $('error').hidden = true; }, 6000);
 }
 
 function action(id, event, fn) {
   $(id).addEventListener(event, async e => {
-    e.preventDefault();
+    if (event !== 'change' && event !== 'input') e.preventDefault();
     $('error').hidden = true;
     try { await fn(e); } catch (error) { fail(error); }
   });
@@ -35,7 +38,7 @@ function action(id, event, fn) {
 function options(id, entries, selection) {
   const node = $(id);
   if (document.activeElement === node && node.options.length) return;
-  if (!entries.some(([value]) => value === selection)) entries.push([selection, 'Disconnected source']);
+  if (!entries.some(([value]) => value === selection)) entries.push([selection, 'Disconnected']);
   const signature = JSON.stringify(entries);
   if (signature !== node.dataset.entries) {
     node.replaceChildren(...entries.map(([value, label]) => new Option(label, value)));
@@ -44,13 +47,101 @@ function options(id, entries, selection) {
   node.value = selection;
 }
 
+function setIcon(button, icon) {
+  button.querySelector('use').setAttribute('href', '#' + icon);
+}
+
+// The turn, told honestly: what BITCH is doing right now.
+function mood(state) {
+  const settings = state.settings;
+  const phase = state.turn_phase;
+  const micDevice = state.devices.find(device => device.id === settings.mic_source);
+  if (state.show_active) return ['speaking', 'Performing'];
+  if (state.status === 'Speaking') return ['speaking', 'Talking'];
+  if (state.status === 'Thinking' || state.status === 'Answering') return ['thinking', 'Thinking'];
+  if (settings.mic_muted) return ['off', 'Your mic is off'];
+  if (settings.mic_source === 'off' || !micDevice) return ['off', 'No microphone'];
+  if (!state.ears_ready) return ['idle', 'Waking up'];
+  if (phase === 'Listening') return ['hearing', 'Listening'];
+  if (phase === 'Understanding') return ['thinking', 'Got it'];
+  if (phase === 'Ready') return ['listening', state.speaker_name ? 'Go ahead, ' + state.speaker_name : 'Go ahead'];
+  return ['idle', 'Say “Hey BITCH”'];
+}
+
+function renderMessages(state) {
+  const working = state.tasks.filter(task => task.state === 'working');
+  const signature = JSON.stringify([state.messages, working.map(task => task.id)]);
+  if ($('messages').dataset.signature === signature) return;
+  $('messages').dataset.signature = signature;
+  const nodes = state.messages.map(message => {
+    const p = document.createElement('p');
+    p.className = 'bubble ' + (message.role === 'robot' ? 'robot' : 'user');
+    p.textContent = message.text;
+    return p;
+  });
+  for (const task of working) {
+    const p = document.createElement('p');
+    p.className = 'bubble working';
+    p.textContent = 'Asking ChatGPT';
+    nodes.push(p);
+  }
+  const pinned = scrollY + innerHeight >= document.documentElement.scrollHeight - 80;
+  $('messages').replaceChildren(...nodes);
+  $('empty').hidden = nodes.length > 0;
+  if (pinned) scrollTo({top: document.documentElement.scrollHeight});
+}
+
+function renderTasks(tasks) {
+  const signature = JSON.stringify(tasks);
+  if ($('tasks').dataset.signature === signature) return;
+  $('tasks').dataset.signature = signature;
+  if (!tasks.length) {
+    const p = document.createElement('p');
+    p.className = 'row muted';
+    p.textContent = 'Nothing asked yet';
+    $('tasks').replaceChildren(p);
+    return;
+  }
+  const words = {working: 'Waiting for ChatGPT…', queued: 'In the Pi inbox', slow: 'Still waiting. Check the ChatGPT tab on the Pi.', canceled: 'Canceled'};
+  $('tasks').replaceChildren(...tasks.slice().reverse().map(task => {
+    const row = document.createElement('div');
+    row.className = 'row task';
+    const ask = document.createElement('p');
+    ask.className = 'ask';
+    ask.textContent = task.request.split('\n')[0];
+    const answer = document.createElement('p');
+    answer.className = 'answer';
+    answer.textContent = task.answer || words[task.state] || '';
+    row.append(ask, answer);
+    return row;
+  }));
+}
+
 async function refresh() {
   const version = settingsVersion;
   const state = await (await api('state')).json();
   if (version !== settingsVersion) return;
-  if (state.people) renderPeople(state.people);
+  latest = state;
   const settings = state.settings;
   const {devices} = state;
+  const [feeling, words] = mood(state);
+  $('app').dataset.mood = feeling;
+  if ($('statusText').textContent !== words) $('statusText').textContent = words;
+  eyes.energy = state.voice_energy || 0;
+  eyes.hearing = state.level || 0;
+
+  $('stop').hidden = !(state.show_active || ['Speaking', 'Thinking', 'Answering', 'Performing'].includes(state.status));
+  $('voiceToggle').setAttribute('aria-pressed', String(settings.muted));
+  $('voiceToggle').setAttribute('aria-label', settings.muted ? 'Turn BITCH’s voice back on' : 'Mute BITCH’s voice');
+  setIcon($('voiceToggle'), settings.muted ? 'i-voice-off' : 'i-voice');
+  $('micToggle').setAttribute('aria-pressed', String(settings.mic_muted));
+  $('micToggle').setAttribute('aria-label', settings.mic_muted ? 'Turn my microphone back on' : 'Turn off my microphone');
+  setIcon($('micToggle'), settings.mic_muted ? 'i-mic-off' : 'i-mic');
+  renderMessages(state);
+
+  if (!$('settings').open) return;
+  if (state.people) renderPeople(state.people);
+  renderTasks(state.tasks);
   if (previewSource !== settings.camera_source) {
     previewSource = settings.camera_source;
     frameId = 0;
@@ -58,67 +149,107 @@ async function refresh() {
   }
   const entries = capability => devices
     .filter(device => device.online && device.caps.includes(capability))
-    .map(device => [device.id, device.name + (device.id === browserDevice ? ' · this browser' : '')]);
+    .map(device => [device.id, device.name + (device.id === browserDevice ? ' (this device)' : '')]);
   options('mic_source', [['off', 'Off'], ...entries('ears')], settings.mic_source);
   options('camera_source', [['off', 'Off'], ...entries('eyes')], settings.camera_source);
-  options('speaker_source', [['auto', 'Auto · Pi, then Mac'], ['off', 'Off'], ...entries('voice')], settings.speaker_source);
-  const phase = state.turn_phase;
-  const listening = phase === 'Ready' || phase === 'Listening';
-  $('status').lastElementChild.textContent = state.show_active ? 'Performing' : phase === 'Listening' ? 'Hearing you' : phase === 'Understanding' ? 'Understanding your words' : phase === 'Checking for name' ? 'Checking for the name' : state.status;
-  $('wake').dataset.listening = String(listening);
-  $('turnHeading').textContent = state.show_active ? 'Performing' : phase === 'Listening' ? 'I’m listening' : phase === 'Understanding' ? 'Got it. One moment…' : listening ? (state.speaker_name ? 'Your turn, ' + state.speaker_name : 'Your turn') : ['Thinking', 'Speaking', 'Answering'].includes(state.status)
-    ? state.status + '…' : 'Say “Hey BITCH”';
-  const micDevice = devices.find(device => device.id === settings.mic_source);
-  $('listenHint').textContent = state.show_active ? 'Say “Stop the show” or tap Stop speech.'
-    : settings.mic_source === 'off' ? 'Microphone off.'
-    : !micDevice ? 'Choose a connected microphone.'
-    : !state.ears_ready ? 'Loading on-device speech recognition…'
-    : micDevice.id === 'mac-mic' && !micDevice.detail.startsWith('Open') ? micDevice.detail
-    : phase === 'Listening' ? 'Go on. A pause is fine.'
-    : phase === 'Understanding' ? 'Finishing your sentence on the Mac…'
-    : listening ? (state.hearing_speech ? 'Hearing you…' : 'Keep talking without repeating the name · ' + Math.ceil(state.followup_seconds) + 's')
-    : state.status === 'Speaking' ? 'You can cut in while it’s talking.'
-    : settings.muted || settings.volume === 0 ? 'Voice muted. Replies appear here.'
-    : 'Say the name to open a conversation.';
-  $('meter').value = state.status === 'Speaking' || !micDevice ? 0 : Math.min(1, state.level);
+  const cameraOn = devices.some(device => device.id === settings.camera_source && device.online);
+  $('cameraView').hidden = $('attentionRow').hidden = !cameraOn;
+  options('speaker_source', [['auto', 'Automatic'], ['off', 'Off'], ...entries('voice')], settings.speaker_source);
   $('speakerTest').textContent = state.output ? 'Test ' + (state.output === 'Raspberry Pi' ? 'Pi speaker' : state.output) : 'Test speaker';
   const robot = devices.find(device => device.id === 'robot');
-  $('robotStatus').textContent = robot ? robot.detail : 'Pi disabled';
-  $('modelName').textContent = state.model
-    ? (state.voicechat_ready && settings.voicechat_enabled ? 'Nemotron VoiceChat 11B · Local agent ' : 'Brain · ') + state.model
-    : '';
-  $('voicechatControl').hidden = !(state.voicechat_ready && state.people);
+  $('robotStatus').textContent = robot ? robot.detail : 'Off';
+  $('modelName').textContent = state.model || '';
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
-  $('robot_key').placeholder = settings.robot_paired ? 'Key saved' : '';
-  for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'voicechat_enabled']) $(key).checked = settings[key];
+  $('robot_key').placeholder = settings.robot_paired ? 'Saved' : 'Paste key';
+  for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory']) $(key).checked = settings[key];
   if (document.activeElement !== $('volume')) {
     $('volume').value = settings.volume;
     $('volumeValue').value = settings.volume + '%';
-  }
-  const last = state.messages.slice(-4);
-  const contents = JSON.stringify(last);
-  if ($('messages').dataset.contents !== contents) {
-    $('messages').dataset.contents = contents;
-    $('messages').replaceChildren(...last.map(message => {
-      const p = document.createElement('p');
-      p.className = message.role;
-      const name = document.createElement('strong');
-      name.textContent = message.role === 'robot' ? 'BITCH' : 'You';
-      p.append(name, document.createTextNode(message.text));
-      return p;
-    }));
   }
   $('notice').textContent = state.notes.at(-1) || '';
   $('notice').hidden = !state.notes.length;
   if (!calibrating) {
     const points = settings.camera_calibration[settings.camera_source];
-    const label = points?.[0]?.length === 4 ? 'Aligned' : 'Turn aligned';
-    $('calStatus').textContent = points ? label + (settings.idle ? '' : ' · idle motion off') : '';
+    $('calStatus').textContent = points ? (points?.[0]?.length === 4 ? 'Aligned' : 'Turn aligned') : '';
   }
   if (mic && !starting.has('ears') && settings.mic_source !== browserDevice) stopMedia('ears');
   if (camera && !starting.has('eyes') && settings.camera_source !== browserDevice) stopMedia('eyes');
 }
+
+// Googly eyes: each pupil is a little weight on a spring, so it overshoots and wobbles.
+const eyes = {
+  pupils: [{x: 0, y: 0, vx: 0, vy: 0}, {x: 0, y: 0, vx: 0, vy: 0}],
+  target: {x: 0, y: 0}, lid: 0, blinkAt: 0, wanderAt: 0, wander: {x: 0, y: 0},
+  pointer: null, pointerAt: -1e9, energy: 0, hearing: 0, last: 0,
+  still: matchMedia('(prefers-reduced-motion: reduce)'),
+};
+
+function lookTarget(now) {
+  const feeling = $('app').dataset.mood;
+  if (feeling === 'thinking') return {x: .62, y: -.62};
+  if (feeling === 'listening' || feeling === 'hearing') return {x: 0, y: .08};
+  if (feeling === 'speaking') {
+    const shake = eyes.energy * .35;
+    return {x: Math.sin(now / 90) * shake, y: .05 + Math.cos(now / 70) * shake};
+  }
+  if (eyes.pointer && now - eyes.pointerAt < 2500) return eyes.pointer;
+  if (now > eyes.wanderAt) {
+    eyes.wander = {x: (Math.random() * 2 - 1) * .7, y: (Math.random() * 2 - 1) * .4};
+    eyes.wanderAt = now + 1800 + Math.random() * 2600;
+  }
+  return eyes.wander;
+}
+
+function animateEyes(now) {
+  const dt = Math.min(.05, (now - (eyes.last || now)) / 1000);
+  eyes.last = now;
+  const feeling = $('app').dataset.mood;
+  const target = lookTarget(now);
+  const reach = 6.2;
+  eyes.pupils.forEach((pupil, index) => {
+    if (eyes.still.matches) {
+      pupil.x = target.x * reach;
+      pupil.y = target.y * reach;
+    } else {
+      const ax = (target.x * reach - pupil.x) * 140 - pupil.vx * 9;
+      const ay = (target.y * reach - pupil.y) * 140 - pupil.vy * 9 + (feeling === 'speaking' ? (index ? 1 : -1) * eyes.energy * 40 : 0);
+      pupil.vx += ax * dt;
+      pupil.vy += ay * dt;
+      pupil.x += pupil.vx * dt;
+      pupil.y += pupil.vy * dt;
+      const length = Math.hypot(pupil.x, pupil.y);
+      if (length > reach + 1) {
+        // The pupil hits the rim and bounces back, like a real googly eye.
+        pupil.x *= (reach + 1) / length;
+        pupil.y *= (reach + 1) / length;
+        pupil.vx *= -.4;
+        pupil.vy *= -.4;
+      }
+    }
+    const node = $(index ? 'pupilR' : 'pupilL');
+    node.setAttribute('cx', (index ? 54 : 18) + pupil.x);
+    node.setAttribute('cy', 19 + pupil.y);
+    node.setAttribute('r', 6.5 + (feeling === 'hearing' ? Math.min(1.4, eyes.hearing * 3) : feeling === 'listening' ? .6 : 0));
+  });
+  // Blink now and then; close halfway when the mic is off and fully when BITCH is offline.
+  const rest = feeling === 'offline' ? 1 : feeling === 'off' ? .45 : 0;
+  if (now > eyes.blinkAt) eyes.blinkAt = now + 2600 + Math.random() * 4200;
+  const blinking = !eyes.still.matches && eyes.blinkAt - now < 140;
+  const wanted = blinking ? 1 : rest;
+  eyes.lid += (wanted - eyes.lid) * Math.min(1, dt * (blinking ? 40 : 10));
+  for (const id of ['lidL', 'lidR']) $(id).setAttribute('height', (eyes.lid * 34).toFixed(2));
+  requestAnimationFrame(animateEyes);
+}
+
+addEventListener('pointermove', event => {
+  const box = $('eyes').getBoundingClientRect();
+  const dx = event.clientX - (box.left + box.width / 2);
+  const dy = event.clientY - (box.top + box.height / 2);
+  const length = Math.max(1, Math.hypot(dx, dy));
+  eyes.pointer = {x: dx / length * Math.min(1, length / 140), y: dy / length * Math.min(1, length / 140)};
+  eyes.pointerAt = performance.now();
+}, {passive: true});
 
 function caps() {
   return [mic ? 'ears' : '', camera ? 'eyes' : ''].filter(Boolean).join(',');
@@ -136,7 +267,7 @@ function connectSocket() {
     socket.onclose = () => {
       if (mic) stopMedia('ears');
       if (camera) stopMedia('eyes');
-      reject(new Error('This browser could not connect.'));
+      reject(new Error('This device couldn’t connect to BITCH.'));
     };
   });
 }
@@ -144,7 +275,7 @@ function connectSocket() {
 function announce() {
   if (socket?.readyState !== WebSocket.OPEN) return connectSocket();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Device registration timed out.')), 2500);
+    const timer = setTimeout(() => reject(new Error('Connecting this device took too long. Try again.')), 2500);
     socket.addEventListener('message', event => {
       clearTimeout(timer);
       resolve(JSON.parse(event.data).device);
@@ -179,14 +310,14 @@ async function enumerate() {
     const node = $(id);
     const chosen = node.value;
     const choices = devices.filter(device => device.kind === kind && device.deviceId && device.label);
-    node.replaceChildren(new Option('System default', ''), ...choices.map(device => new Option(device.label, device.deviceId)));
+    node.replaceChildren(new Option('Default', ''), ...choices.map(device => new Option(device.label, device.deviceId)));
     node.value = choices.some(device => device.deviceId === chosen) ? chosen : '';
   }
 }
 
 async function useMedia(kind) {
   if (starting.size) return;
-  if (!navigator.mediaDevices) throw new Error('Open the secure setup link to use browser devices.');
+  if (!navigator.mediaDevices) throw new Error('Open the secure link to use this device’s microphone or camera.');
   const audio = kind === 'ears';
   const setting = audio ? 'mic_source' : 'camera_source';
   const id = $(audio ? 'browserMic' : 'browserCamera').value;
@@ -253,14 +384,10 @@ async function useMedia(kind) {
 }
 
 function clearPreview() {
-  const off = previewSource === 'off';
-  $('noFrame').textContent = off ? 'Choose a camera in Connections.' : 'Waiting for a camera frame…';
+  $('noFrame').textContent = previewSource === 'off' ? 'Camera off' : 'Waiting for the camera…';
   $('noFrame').hidden = false;
   $('picture').hidden = true;
-  $('feedState').textContent = off ? 'Camera off' : 'Camera waiting';
-  $('feedState').classList.remove('live');
   $('attention').textContent = 'No one in view';
-  $('aimReadout').textContent = '';
 }
 
 async function drawFrame(response, source) {
@@ -279,51 +406,47 @@ async function drawFrame(response, source) {
     }
     const ctx = canvas.getContext('2d', {alpha: false});
     ctx.drawImage(image, 0, 0);
-    const fontSize = Math.max(12, Math.round(width * 0.024));
-    ctx.font = '600 ' + fontSize + 'px system-ui';
+    const fontSize = Math.max(12, Math.round(width * 0.026));
+    ctx.font = '600 ' + fontSize + 'px -apple-system, system-ui, sans-serif';
     const active = Boolean(scene.drive.aim) && scene.drive.mode !== 'Aligning';
     for (const person of scene.people) {
       const [nx, ny, nw, nh] = person.box;
       const x = Math.round(nx * width), y = Math.round(ny * height);
       const w = Math.min(width - x, nw * width), h = Math.min(height - y, nh * height);
-      const focused = person.id === scene.focus;
-      const label = (person.name || 'Person ' + person.id) + (focused && active ? ' · Tracking' : '');
-      const color = focused && active ? '#ffc18d' : '#e1ebe3';
-      ctx.lineWidth = focused && active ? 2.5 : 1.1;
-      ctx.strokeStyle = color;
-      ctx.strokeRect(x, y, w, h);
-      const top = y > fontSize + 8 ? y - fontSize - 8 : y;
-      const labelWidth = ctx.measureText(label).width + 12;
-      const left = Math.min(x, width - labelWidth);
-      ctx.fillStyle = focused && active ? color : '#18201eea';
-      ctx.fillRect(left, top, labelWidth, fontSize + 8);
-      ctx.fillStyle = focused && active ? '#221810' : color;
-      ctx.fillText(label, left + 6, top + fontSize + 1);
+      const focused = person.id === scene.focus && active;
+      const label = person.name || 'Person ' + person.id;
+      ctx.lineWidth = focused ? 3 : 1.25;
+      ctx.strokeStyle = focused ? '#D6B084' : 'rgba(255,255,255,.75)';
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 10);
+      ctx.stroke();
+      const top = y > fontSize + 12 ? y - fontSize - 12 : y + 6;
+      const labelWidth = ctx.measureText(label).width + 16;
+      ctx.fillStyle = focused ? '#D6B084' : 'rgba(18,20,23,.78)';
+      ctx.beginPath();
+      ctx.roundRect(Math.min(x, width - labelWidth), top, labelWidth, fontSize + 10, 8);
+      ctx.fill();
+      ctx.fillStyle = focused ? '#18202E' : '#F2EFEA';
+      ctx.fillText(label, Math.min(x, width - labelWidth) + 8, top + fontSize + 2);
     }
     if (scene.drive.point) {
       const [x, y] = scene.drive.point;
       ctx.beginPath();
       ctx.arc(x * width, y * height, Math.max(9, width * .025), 0, Math.PI * 2);
       ctx.lineWidth = 3;
-      ctx.strokeStyle = '#18201e';
-      ctx.stroke();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#ffc18d';
+      ctx.strokeStyle = '#D6B084';
       ctx.stroke();
     }
     const count = scene.people.length;
     const subject = scene.people.find(person => person.id === scene.focus);
     $('attention').textContent = active && scene.focus != null
-      ? (subject ? 'Tracking ' + (subject.name || 'Person ' + subject.id) : 'Holding for Person ' + scene.focus)
-      : count === 1 ? '1 person in view' : count ? count + ' people in view' : 'No one in view';
-    const beats = {curious:'Curious lean', glance:'Glancing aside', shy:'Peeking back', peek:'Peeking back', stretch:'Stretching', proud:'Chin up', sad:'Drooping', survey:'Surveying the room'};
+      ? (subject ? 'Following ' + (subject.name || 'Person ' + subject.id) : 'Waiting for Person ' + scene.focus)
+      : count === 1 ? 'One person' : count ? count + ' people' : 'No one in view';
+    const beats = {curious: 'Curious lean', glance: 'Glancing aside', shy: 'Peeking back', peek: 'Peeking back',
+      stretch: 'Stretching', proud: 'Chin up', sad: 'Drooping', survey: 'Looking around the room'};
     $('drive').textContent = beats[scene.drive.gesture] || scene.drive.mode;
-    $('aimReadout').textContent = scene.drive.aim && Number.isFinite(scene.drive.base)
-      ? 'Turn ' + scene.drive.base.toFixed(2) + ' → ' + scene.drive.aim[0].toFixed(2) : '';
     $('noFrame').hidden = true;
     canvas.hidden = false;
-    $('feedState').textContent = 'Live';
-    $('feedState').classList.add('live');
   } finally {
     URL.revokeObjectURL(jpeg);
   }
@@ -332,8 +455,8 @@ async function drawFrame(response, source) {
 async function preview() {
   let delay = 0;
   const source = previewSource;
-  if (document.hidden || source === 'off') {
-    delay = 250;
+  if (document.hidden || source === 'off' || !$('settings').open) {
+    delay = 300;
   } else {
     try {
       const response = await api('frame?after=' + frameId);
@@ -380,16 +503,74 @@ async function calibrate(step, track = false) {
     $('calStep').textContent = captureCount < 3
       ? ['1 of 3 · Left of the robot', '2 of 3 · Straight ahead', '3 of 3 · Right of the robot'][captureCount]
       : 'All three points captured.';
-    if (step === 'sample' && captureCount < 3) align.textContent = 'Captured. Move to the next position.';
+    if (step === 'sample' && captureCount < 3) align.textContent = 'Captured. Move to the next spot.';
   } catch (error) {
     if (!calibrating) throw error;
     align.textContent = error.message;
   }
 }
 
+function renderPeople(people) {
+  const enrollment = people.enrollment;
+  $('cancelEnroll').hidden = !enrollment;
+  $('rememberFace').disabled = $('rememberVoice').disabled = Boolean(enrollment);
+  if (enrollment || people.message) {
+    $('enrollState').textContent = (enrollment ? enrollment.progress + ' of ' + enrollment.total + ' · ' : '') + people.message;
+  }
+  const list = $('profiles');
+  const signature = JSON.stringify(people.profiles);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature;
+  list.replaceChildren(...people.profiles.map(person => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('span');
+    label.textContent = person.name;
+    const known = document.createElement('span');
+    known.className = 'value';
+    known.textContent = [person.face && 'Face', person.voice && 'voice'].filter(Boolean).join(' and ');
+    const remove = document.createElement('button');
+    remove.className = 'text-button';
+    remove.type = 'button';
+    remove.textContent = 'Forget';
+    remove.setAttribute('aria-label', 'Forget ' + person.name);
+    remove.onclick = () => api('people', {action: 'remove', name: person.name}).catch(fail);
+    row.append(label, known, remove);
+    return row;
+  }));
+}
+
+// Main screen controls
+action('sayForm', 'submit', async () => {
+  const text = $('sayText').value.trim();
+  if (!text) return;
+  $('send').disabled = true;
+  await api('say', {text});
+  $('sayText').value = '';
+});
+$('sayText').addEventListener('input', () => { $('send').disabled = !$('sayText').value.trim(); });
+action('micToggle', 'click', () => {
+  settingsVersion++;
+  return api('settings', {mic_muted: !(latest?.settings.mic_muted)});
+});
+action('voiceToggle', 'click', () => {
+  settingsVersion++;
+  return api('settings', {muted: !(latest?.settings.muted)});
+});
+action('stop', 'click', () => api('stop', {}));
+action('openSettings', 'click', async () => {
+  $('settings').showModal();
+  await refresh();
+});
+action('closeSettings', 'click', () => $('settings').close());
+$('settings').addEventListener('click', event => { if (event.target === $('settings')) $('settings').close(); });
+$('settings').addEventListener('close', () => {
+  if (calibrating) calibrate('cancel').catch(fail);
+});
+
+// Settings
 action('speakerTest', 'click', () => api('test-speaker', {}));
-for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory', 'voicechat_enabled',
-  'mic_source', 'camera_source', 'speaker_source']) {
+for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory', 'mic_source', 'camera_source', 'speaker_source']) {
   action(key, 'change', e => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     settingsVersion++;
@@ -401,7 +582,11 @@ for (const key of ['idle', 'muted', 'keep_audio', 'check_ins', 'natural_memory',
     return api('settings', {[key]: value});
   });
 }
-
+$('volume').addEventListener('input', () => { $('volumeValue').value = $('volume').value + '%'; });
+action('volume', 'change', () => {
+  settingsVersion++;
+  return api('settings', {volume: Number($('volume').value)});
+});
 action('pairForm', 'submit', async () => {
   await api('pair', {code: $('code').value});
   location.reload();
@@ -416,37 +601,9 @@ action('robotForm', 'submit', async () => {
 action('showCode', 'click', async () => {
   $('pairCode').value = (await (await api('pair-code')).json()).code;
 });
-function renderPeople(people) {
-  const enrollment = people.enrollment;
-  $('cancelEnroll').hidden = !enrollment;
-  $('rememberFace').disabled = $('rememberVoice').disabled = Boolean(enrollment);
-  $('enrollState').textContent = (enrollment ? enrollment.progress + ' / ' + enrollment.total + ' · ' : '') + people.message;
-  const list = $('profiles');
-  const signature = JSON.stringify(people.profiles);
-  if (list.dataset.signature === signature) return;
-  list.dataset.signature = signature;
-  list.replaceChildren(...people.profiles.map(person => {
-    const row = document.createElement('li');
-    const label = document.createElement('span');
-    label.textContent = person.name + ' · ' + [person.face && 'face', person.voice && 'voice'].filter(Boolean).join(' and ');
-    const remove = document.createElement('button');
-    remove.textContent = 'Forget';
-    remove.setAttribute('aria-label', 'Forget ' + person.name);
-    remove.onclick = () => api('people', {action: 'remove', name: person.name}).catch(fail);
-    row.append(label, remove);
-    return row;
-  }));
-}
-
 action('rememberFace', 'click', () => api('people', {action: 'face', name: $('personName').value}));
 action('rememberVoice', 'click', () => api('people', {action: 'voice', name: $('personName').value}));
 action('cancelEnroll', 'click', () => api('people', {action: 'cancel'}));
-action('hush', 'click', () => api('stop', {}));
-$('volume').addEventListener('input', () => { $('volumeValue').value = $('volume').value + '%'; });
-action('volume', 'change', () => {
-  settingsVersion++;
-  return api('settings', {volume: Number($('volume').value)});
-});
 action('useMic', 'click', () => useMedia('ears'));
 action('useCamera', 'click', () => useMedia('eyes'));
 action('startCalibration', 'click', () => calibrate('start'));
@@ -480,12 +637,17 @@ window.addEventListener('pagehide', () => {
 });
 
 async function poll() {
-  try { await refresh(); }
-  catch (error) { $('status').lastElementChild.textContent = 'Disconnected'; }
+  try {
+    await refresh();
+  } catch {
+    $('app').dataset.mood = 'offline';
+    $('statusText').textContent = 'Can’t reach BITCH';
+  }
   setTimeout(poll, 280);
 }
 
 async function start() {
+  requestAnimationFrame(animateEyes);
   hello = await (await api('hello')).json();
   if (!hello.paired) {
     $('pair').hidden = false;
@@ -493,10 +655,10 @@ async function start() {
     $('secureSetup').hidden = secure;
     $('pairForm').hidden = !secure;
     $('secureLink').href = 'https://' + location.hostname + ':' + hello.https;
-    $('status').lastElementChild.textContent = 'Pairing';
+    $('statusText').textContent = 'Not connected yet';
     return;
   }
-  $('controls').hidden = false;
+  $('conversation').hidden = $('composer').hidden = $('barActions').hidden = false;
   $('robotSetup').hidden = $('addDevice').hidden = $('peopleSetup').hidden = !hello.local;
   const address = 'http://' + hello.host + ':' + hello.http;
   $('pairLink').href = $('pairLink').textContent = address;
@@ -510,4 +672,8 @@ async function start() {
   await poll();
 }
 
-start().catch(fail);
+start().catch(error => {
+  $('app').dataset.mood = 'offline';
+  $('statusText').textContent = 'Can’t reach BITCH';
+  fail(error);
+});
