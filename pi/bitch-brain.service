@@ -1,0 +1,15 @@
+# BITCH's body on the Pi: servos, speaker, and the ChatGPT helper.
+# update.sh installs this as a user service, so it starts with the desktop and restarts if it crashes.
+[Unit]
+Description=BITCH body (brain.py)
+After=graphical-session.target pipewire.service
+
+[Service]
+ExecStart=/usr/bin/python3 %h/brain.py
+WorkingDirectory=%h
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -1,34 +1,191 @@
-"""Use the signed-in Chromium desktop to draft and send a ChatGPT handoff."""
+"""Ask the signed-in ChatGPT on the Pi through BITCH's own Chromium.
+
+BITCH starts one Chromium with its own profile (~/.bitch-pi/chromium) and the DevTools protocol open on
+127.0.0.1 only, then drives the chatgpt.com page directly: open a new chat, paste the request, press Send,
+and read the answer from the page when it stops streaming. This is the standard way to automate a browser,
+and unlike reading the screen's accessibility tree it doesn't break when ChatGPT moves a button.
+
+The window stays on the Pi desktop, so Brandon can sign in there once and watch it work.
+Test it on the Pi with:  python3 desktop_chatgpt.py ask "What is 17 times 23?"
+"""
+import base64
 import json
 import os
 from pathlib import Path
-import re
 import shutil
-import stat
+import socket
+import struct
 import subprocess
 import sys
-import tempfile
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
-from uuid import uuid4
 
-HOME_PAGE = 'https://chatgpt.com/'
-CHAT_PATH = re.compile(r'/c/[a-f0-9-]{36}/?')
+HOME_PAGE = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/')
+PORT = int(os.environ.get('BITCH_CHROMIUM_PORT', '9223'))
+PI_HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
+PROFILE = PI_HOME / 'chromium'
+DEFAULT_PROFILE = Path('~/.config/chromium').expanduser()
 SEND_WAIT_SECONDS = 420.
+LOAD_SECONDS = 45.       # a Pi 4 needs a while to start ChatGPT's page
+
+# Everything the page script needs to know about ChatGPT's layout lives here, in one place.
+PAGE = r'''
+(() => {
+  const q = (s) => document.querySelector(s);
+  const all = (s) => Array.from(document.querySelectorAll(s));
+  const visible = (el) => !!el && el.offsetParent !== null;
+  const composer = () => all('#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[name="prompt-textarea"]')
+    .find((el) => visible(el) && (el.isContentEditable || el.tagName === 'TEXTAREA')) || null;
+  const sendButton = () => all('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]')
+    .find((el) => visible(el) && !el.disabled && !/stop/i.test(el.getAttribute('aria-label') || '')) || null;
+  const streaming = () => !!all('[data-testid="stop-button"], button[aria-label^="Stop"]').find(visible);
+  const replies = () => all('[data-message-author-role="assistant"]');
+  const asks = () => all('[data-message-author-role="user"]');
+  const loginButton = () => all('[data-testid="login-button"], a[href*="/auth/login"], button')
+    .find((el) => visible(el) && (el.matches('[data-testid="login-button"], a[href*="/auth/login"]') || /^log in$/i.test((el.innerText || '').trim())));
+  const textOf = (el) => {
+    if (!el) return '';
+    const body = el.querySelector('.markdown') || el;
+    return (body.innerText || '').trim();
+  };
+  return {composer, sendButton, streaming, replies, asks, loginButton, textOf};
+})()
+'''
 
 
-def draft(prompt):
-    return run_desktop(prompt, send=False).get('state') == 'drafted'
+# ---------------------------------------------------------------- a small WebSocket client (stdlib only)
+
+class Socket:
+    """Just enough of RFC 6455 to talk to Chromium's DevTools endpoint on localhost."""
+
+    def __init__(self, url, timeout=10.):
+        parts = urlsplit(url)
+        self.sock = socket.create_connection((parts.hostname, parts.port or 80), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = parts.path + ('?' + parts.query if parts.query else '')
+        self.sock.sendall((f'GET {path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\n'
+                           'Upgrade: websocket\r\nConnection: Upgrade\r\n'
+                           f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+        self.buffer = b''
+        while b'\r\n\r\n' not in self.buffer:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError('DevTools closed the connection')
+            self.buffer += chunk
+        head, self.buffer = self.buffer.split(b'\r\n\r\n', 1)
+        if b' 101 ' not in head.split(b'\r\n', 1)[0]:
+            raise ConnectionError('DevTools refused the connection: ' + head.split(b'\r\n', 1)[0].decode(errors='replace'))
+
+    def send(self, text, opcode=0x1):
+        data = text.encode() if isinstance(text, str) else text
+        header = bytearray([0x80 | opcode])
+        if len(data) < 126:
+            header.append(0x80 | len(data))
+        elif len(data) < 65536:
+            header += bytes([0x80 | 126]) + struct.pack('>H', len(data))
+        else:
+            header += bytes([0x80 | 127]) + struct.pack('>Q', len(data))
+        mask = os.urandom(4)
+        header += mask
+        self.sock.sendall(bytes(header) + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def _read(self, count):
+        while len(self.buffer) < count:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise ConnectionError('DevTools closed the connection')
+            self.buffer += chunk
+        data, self.buffer = self.buffer[:count], self.buffer[count:]
+        return data
+
+    def recv(self, timeout):
+        self.sock.settimeout(max(.05, timeout))
+        message = b''
+        while True:
+            first, second = self._read(2)
+            opcode, size = first & 0x0F, second & 0x7F
+            if size == 126:
+                size = struct.unpack('>H', self._read(2))[0]
+            elif size == 127:
+                size = struct.unpack('>Q', self._read(8))[0]
+            mask = self._read(4) if second & 0x80 else None
+            payload = self._read(size)
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x8:
+                raise ConnectionError('DevTools closed the connection')
+            if opcode == 0x9:
+                self.send(payload, 0xA)
+                continue
+            if opcode == 0xA:
+                continue
+            message += payload
+            if first & 0x80:
+                return message.decode('utf-8', errors='replace')
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
 
-def submit(prompt):
-    return run_desktop(prompt, send=True)
+class Tab:
+    """One Chromium page, driven over the DevTools protocol."""
+
+    def __init__(self, websocket_url):
+        self.ws = Socket(websocket_url)
+        self.next_id = 0
+
+    def call(self, method, params=None, timeout=15.):
+        self.next_id += 1
+        ident = self.next_id
+        self.ws.send(json.dumps({'id': ident, 'method': method, 'params': params or {}}))
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f'{method} took too long')
+            message = json.loads(self.ws.recv(left))
+            if message.get('id') == ident:
+                if 'error' in message:
+                    raise RuntimeError(f"{method}: {message['error'].get('message')}")
+                return message.get('result', {})
+
+    def run(self, body, timeout=15.):
+        """Run a script with ChatGPT's page helpers in scope as `page`, and return its JSON value."""
+        expression = f'(async () => {{ const page = {PAGE}; {body} }})()'
+        result = self.call('Runtime.evaluate', {'expression': expression, 'awaitPromise': True,
+                                                'returnByValue': True}, timeout)
+        if result.get('exceptionDetails'):
+            details = result['exceptionDetails']
+            raise RuntimeError((details.get('exception') or {}).get('description') or details.get('text', 'script failed'))
+        return (result.get('result') or {}).get('value')
+
+    def close(self):
+        self.ws.close()
+
+
+# ---------------------------------------------------------------- BITCH's own Chromium
+
+def devtools(path, method='GET', timeout=2.):
+    request = urllib.request.Request(f'http://127.0.0.1:{PORT}{path}', method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode() or 'null')
+
+
+def browser_up():
+    try:
+        return bool(devtools('/json/version', timeout=1.))
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
 
 
 def desktop_env():
+    """The Pi desktop session's display variables, found even when BITCH runs from a service."""
     env = dict(os.environ)
-    env.pop('NO_AT_BRIDGE', None)
-    env['ACCESSIBILITY_ENABLED'] = '1'
     runtime = Path(env.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
     if runtime.is_dir():
         env.setdefault('XDG_RUNTIME_DIR', str(runtime))
@@ -36,731 +193,285 @@ def desktop_env():
             env.setdefault('DBUS_SESSION_BUS_ADDRESS', f'unix:path={runtime / "bus"}')
         if not env.get('WAYLAND_DISPLAY'):
             for candidate in sorted(runtime.glob('wayland-*')):
-                if candidate.name.endswith('.lock'):
-                    continue
-                try:
-                    if stat.S_ISSOCK(candidate.stat().st_mode):
-                        env['WAYLAND_DISPLAY'] = candidate.name
-                        break
-                except OSError:
-                    continue
+                if not candidate.name.endswith('.lock'):
+                    env['WAYLAND_DISPLAY'] = candidate.name
+                    break
     if not env.get('WAYLAND_DISPLAY') and not env.get('DISPLAY') and Path('/tmp/.X11-unix/X0').exists():
         env['DISPLAY'] = ':0'
     return env
 
 
-def _spawn_worker(command, prompt, timeout, env):
-    with tempfile.TemporaryFile('w+', encoding='utf-8') as output:
-        process = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL,
-            encoding='utf-8', env=env,
-        )
-        try:
-            process.communicate(prompt, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            return None, True
-        output.seek(0)
-        raw = output.read().strip()
-        return (json.loads(raw) if raw else None), False
+def chromium_path():
+    return shutil.which('chromium') or shutil.which('chromium-browser') or shutil.which('google-chrome')
 
 
-def run_desktop(prompt, *, send):
-    env = desktop_env()
-    mode = 'send' if send else 'draft'
-    script = str(Path(__file__).resolve())
-    timeout = int(SEND_WAIT_SECONDS) + 45 if send else 54
-    max_sec = f'--property=RuntimeMaxSec={timeout - 5}s'
-    service = shutil.which('systemd-run')
-    env_args = ['/usr/bin/env', '-u', 'NO_AT_BRIDGE', 'ACCESSIBILITY_ENABLED=1']
-    for key in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY'):
-        if env.get(key):
-            env_args.append(f'{key}={env[key]}')
-    # The result goes to a file, not a pipe: a timed-out run whose service still held the pipe
-    # could block forever, leaving the request stuck in "sending" and every later request behind it.
-    try:
-        if service:
-            parsed, timed_out = _spawn_worker(
-                [service, '--user', '--quiet', '--wait', '--pipe', '--collect', max_sec,
-                 *env_args, sys.executable, script, mode],
-                prompt, timeout, env,
-            )
-            if timed_out:
-                return {'state': 'send_unverified', 'reason': 'Timed out waiting for ChatGPT.'} if send else {'state': 'ready'}
-            if isinstance(parsed, dict):
-                return parsed
-        parsed, timed_out = _spawn_worker([*env_args, sys.executable, script, mode], prompt, timeout, env)
-        if timed_out:
-            return {'state': 'send_unverified', 'reason': 'Timed out waiting for ChatGPT.'} if send else {'state': 'ready'}
-        if isinstance(parsed, dict):
-            return parsed
-        return {'state': 'ready', 'reason': 'Could not start the Pi desktop helper.'}
-    except (OSError, ValueError) as error:
-        return ({'state': 'send_unverified', 'reason': str(error)} if send else {'state': 'ready'})
-
-
-def children(node):
-    try:
-        count = node.get_child_count()
-    except Exception:
-        return
-    for index in range(count):
-        try:
-            child = node.get_child_at_index(index)
-        except Exception:
-            child = None
-        if child is not None:
-            yield child
-
-
-def is_nav(node, atspi):
-    try:
-        if node.get_role() == getattr(atspi.Role, 'NAVIGATION', None):
-            return True
-        attrs = node.get_attributes() or {}
-        return attrs.get('tag') == 'nav' or attrs.get('xml-roles') == 'navigation'
-    except Exception:
-        return False
-
-
-def nodes(root, *, skip_nav=False, limit=6000):
-    stack = [root]
-    for _ in range(limit):
-        if not stack:
+def stop_other_chromium():
+    """Close Chromium windows that aren't BITCH's, so the copied sign-in is consistent."""
+    subprocess.run(['pkill', '-TERM', '-u', str(os.getuid()), '-f', r'chromium(-browser)?( |$)'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 8.
+    while time.monotonic() < deadline:
+        if subprocess.run(['pgrep', '-u', str(os.getuid()), '-f', 'chromium'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
             return
-        node = stack.pop()
-        if skip_nav and node is not root and is_nav(node, _atspi()):
-            continue
-        yield node
-        stack.extend(reversed(list(children(node))))
+        time.sleep(.25)
+    subprocess.run(['pkill', '-KILL', '-u', str(os.getuid()), '-f', 'chromium'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _atspi():
-    from gi.repository import Atspi
-    return Atspi
+def seed_profile():
+    """First run: copy the Pi's normal Chromium profile so BITCH's browser is already signed in."""
+    if PROFILE.exists():
+        return
+    PI_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if DEFAULT_PROFILE.is_dir():
+        stop_other_chromium()
+        skip = shutil.ignore_patterns('Singleton*', '*Cache*', 'Crash Reports', 'GPUCache', 'Service Worker',
+                                      'component_crx_cache', 'BrowserMetrics*', 'DeferredBrowserMetrics')
+        try:
+            shutil.copytree(DEFAULT_PROFILE, PROFILE, ignore=skip, symlinks=True)
+            return
+        except (OSError, shutil.Error):
+            shutil.rmtree(PROFILE, ignore_errors=True)
+    PROFILE.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-def text_of(node):
-    Atspi = _atspi()
-    text = node.get_text_iface()
-    value = Atspi.Text.get_text(text, 0, -1) if text is not None else ''
-    return (value or '').replace('\ufffc', ' ')
+def mark_clean_exit():
+    """Skip Chromium's "restore pages?" bubble after a power cut."""
+    prefs = PROFILE / 'Default' / 'Preferences'
+    try:
+        data = json.loads(prefs.read_text(encoding='utf-8'))
+        profile = data.setdefault('profile', {})
+        if profile.get('exit_type') != 'Normal' or not profile.get('exited_cleanly', True):
+            profile.update(exit_type='Normal', exited_cleanly=True)
+            temporary = prefs.with_suffix('.bitch.tmp')
+            temporary.write_text(json.dumps(data), encoding='utf-8')
+            temporary.replace(prefs)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
-def full_text(node, depth=0):
-    """Read accessible text recursively, expanding embedded child objects (\ufffc)."""
-    if depth > 8 or node is None:
-        return ''
-    Atspi = _atspi()
-    iface = node.get_text_iface()
-    raw = (Atspi.Text.get_text(iface, 0, -1) if iface is not None else '') or ''
-    kids = list(children(node))
-    if '\ufffc' in raw and kids:
-        parts = raw.split('\ufffc')
-        rebuilt = [parts[0]]
-        for index, part in enumerate(parts[1:]):
-            child_text = full_text(kids[index], depth + 1) if index < len(kids) else ''
-            rebuilt.append(child_text)
-            rebuilt.append(part)
-        joined = ''.join(rebuilt).strip()
-        if joined:
-            return joined
-    cleaned = raw.replace('\ufffc', ' ').strip()
-    if cleaned:
-        return cleaned
-    if kids:
-        sub = [full_text(child, depth + 1) for child in kids]
-        return '\n'.join(piece for piece in sub if piece)
-    return (node.get_name() or '').strip()
+def start_browser(wait=30.):
+    """Make sure BITCH's Chromium is running with DevTools on localhost. Returns an error or None."""
+    if browser_up():
+        return None
+    chromium = chromium_path()
+    if not chromium:
+        return 'Chromium is not installed on the Pi.'
+    env = desktop_env()
+    if not env.get('WAYLAND_DISPLAY') and not env.get('DISPLAY'):
+        return 'No desktop session on the Pi. Log in to the Pi desktop first.'
+    seed_profile()
+    mark_clean_exit()
+    for name in ('SingletonLock', 'SingletonSocket', 'SingletonCookie'):
+        # A stale lock from a crash makes Chromium hand the URL to a process that no longer exists.
+        path = PROFILE / name
+        if path.is_symlink() and not browser_up():
+            path.unlink(missing_ok=True)
+    command = [chromium, f'--user-data-dir={PROFILE}', f'--remote-debugging-port={PORT}',
+               '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check',
+               '--hide-crash-restore-bubble', '--disable-session-crashed-bubble',
+               '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+               '--disable-backgrounding-occluded-windows', HOME_PAGE]
+    names = [key for key in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY') if env.get(key)]
+    service = shutil.which('systemd-run')
+    launched = False
+    if service:
+        # Its own unit, so the browser outlives a restart of brain.py.
+        launched = subprocess.run(
+            [service, '--user', '--quiet', '--collect', '--unit', f'bitch-chromium-{int(time.time())}',
+             '/usr/bin/env', *(f'{key}={env[key]}' for key in names), *command],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, timeout=10).returncode == 0
+    if not launched:
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if browser_up():
+            return None
+        time.sleep(.5)
+    return 'BITCH’s Chromium did not start on the Pi.'
 
 
-def composer_text(composer, atspi):
-    # Chromium exposes the editor's paragraph as an embedded accessible object.
-    paragraphs = [full_text(node) for node in children(composer) if node.get_role() == atspi.Role.PARAGRAPH]
-    return '\n'.join(paragraphs) if paragraphs else full_text(composer)
+def chatgpt_tab():
+    """Reuse the ChatGPT tab (closing extra ones), or open one."""
+    pages = [item for item in devtools('/json/list') if item.get('type') == 'page']
+    site = urlsplit(HOME_PAGE).hostname
+    chat = [item for item in pages if urlsplit(item.get('url', '')).hostname == site]
+    keep = chat[0] if chat else pages[0] if pages else None
+    for item in chat[1:]:
+        try:
+            devtools('/json/close/' + item['id'])
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+    if keep is None:
+        keep = devtools('/json/new?' + HOME_PAGE, method='PUT', timeout=5.)
+    try:
+        devtools('/json/activate/' + keep['id'])
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    return Tab(keep['webSocketDebuggerUrl'])
 
 
-def _parse_chatgpt_url(address):
-    address = (address or '').strip()
-    if address == 'chatgpt.com' or address.startswith(('chatgpt.com/', 'chatgpt.com#', 'chatgpt.com?')):
-        address = 'https://' + address
-    return urlsplit(address)
-
-
-def matches_address(address, marker):
-    # Chromium normally hides the scheme in the accessibility value of the address bar.
-    url = _parse_chatgpt_url(address)
-    return url.scheme == 'https' and url.netloc == 'chatgpt.com' and url.path in ('', '/') and (
-        not url.query and url.fragment == marker)
-
-
-def is_home_address(address, marker=''):
-    if matches_address(address, marker):
-        return True
-    url = _parse_chatgpt_url(address)
-    return url.scheme == 'https' and url.netloc == 'chatgpt.com' and url.path in ('', '/')
-
-
-def chat_url(address):
-    url = _parse_chatgpt_url(address)
-    if url.scheme == 'https' and url.netloc == 'chatgpt.com' and CHAT_PATH.fullmatch(url.path):
-        return 'https://chatgpt.com' + url.path.rstrip('/')
-    return None
-
-
-def is_chatgpt_address(address):
-    url = _parse_chatgpt_url(address)
-    return url.scheme == 'https' and url.netloc == 'chatgpt.com'
-
+# ---------------------------------------------------------------- asking
 
 def normalized(text):
     return ' '.join((text or '').split())
 
 
-def browser_windows(atspi):
-    found = []
-    desktop = atspi.get_desktop(0)
-    for app in children(desktop):
-        name = (app.get_name() or '').casefold()
-        if not ('chromium' in name or 'google chrome' in name or name == 'chrome'):
-            continue
-        for window in children(app):
-            active = window.get_state_set().contains(atspi.StateType.ACTIVE)
-            found.append((not active, window))
-    found.sort(key=lambda item: item[0])
-    return [window for _, window in found]
-
-
-def focus_window(window):
-    wlrctl = shutil.which('wlrctl')
-    if wlrctl:
-        for selector in ('app_id:chromium', 'app_id:chromium-browser', 'app_id:Chromium', 'title:ChatGPT'):
-            res = subprocess.run([wlrctl, 'toplevel', 'focus', selector],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5)
-            if res.returncode == 0:
-                break
-    try:
-        comp = window.get_component_iface()
-        if comp is not None:
-            comp.grab_focus()
-    except Exception:
-        pass
-
-
-def page_of(window, atspi):
-    address = document = None
-    for node in nodes(window, limit=800):
-        role = node.get_role()
-        name = (node.get_name() or '').casefold()
-        if role == atspi.Role.ENTRY and ('address' in name or 'search bar' in name or 'url' in name):
-            address = node
-        elif role == atspi.Role.DOCUMENT_WEB:
-            document = node
-        if address is not None and document is not None:
-            return window, address, document
-    return None
-
-
-def active_page(atspi):
-    candidates = []
-    for window in browser_windows(atspi):
-        page = page_of(window, atspi)
-        if page is not None:
-            if is_chatgpt_address(text_of(page[1])):
-                return page
-            candidates.append(page)
-    return candidates[0] if candidates else None
-
-
-def select_open_chat(atspi):
-    for window in browser_windows(atspi):
-        page = page_of(window, atspi)
-        if page is not None and is_chatgpt_address(text_of(page[1])):
-            focus_window(window)
-            return True
-        for node in nodes(window, limit=900):
-            if node.get_role() == atspi.Role.PAGE_TAB and 'chatgpt' in (node.get_name() or '').casefold():
-                focus_window(window)
-                if node.do_action(0):
-                    return True
-    return False
-
-
-def click_new_chat(document, atspi):
-    for node in nodes(document, limit=2500):
-        role = node.get_role()
-        label = (node.get_name() or '').strip().casefold()
-        if role in (atspi.Role.PUSH_BUTTON, atspi.Role.LINK) and label in ('new chat', 'start new chat'):
-            if node.do_action(0):
-                return True
-    return False
-
-
-def is_composer(node, atspi):
-    if node.get_role() not in (atspi.Role.ENTRY, atspi.Role.TEXT, atspi.Role.PARAGRAPH, atspi.Role.SECTION):
-        return False
-    if not node.get_state_set().contains(atspi.StateType.EDITABLE):
-        return False
-    attrs = node.get_attributes() or {}
-    if attrs.get('id') == 'pending-home-input':
-        return False
-    if attrs.get('id') == 'prompt-textarea':
-        return True
-    label = (node.get_name() or '').strip().casefold()
-    return any(phrase in label for phrase in ('ask chatgpt', 'ask anything', 'message chatgpt', 'send a message'))
-
-
-def find_composer(atspi, marker, *, allow_home=False):
-    page = active_page(atspi)
-    if page is None:
-        return None
-    addr = text_of(page[1])
-    if not (is_home_address(addr, marker) if allow_home else matches_address(addr, marker)):
-        return None
-    window, address, document = page
-    for node in nodes(document, skip_nav=True):
-        if is_composer(node, atspi):
-            return window, address, node, document
-    return None
-
-
-def logged_out(document, atspi):
-    for node in nodes(document, skip_nav=True, limit=2500):
-        if node.get_role() in (atspi.Role.PUSH_BUTTON, atspi.Role.LINK):
-            if (node.get_name() or '').strip().casefold() in ('log in', 'sign in'):
-                return True
-    return False
-
-
-def send_button(document, atspi):
-    for node in nodes(document, skip_nav=True):
-        if node.get_role() != atspi.Role.PUSH_BUTTON:
-            continue
-        if not node.get_state_set().contains(atspi.StateType.ENABLED):
-            continue
-        attrs = node.get_attributes() or {}
-        label = (node.get_name() or '').strip().casefold()
-        if (attrs.get('id') == 'composer-submit-button'
-                or attrs.get('data-testid') == 'send-button'
-                or label in ('send', 'send prompt', 'send message', 'submit')):
-            return node
-    return None
-
-
-def is_generating(document, atspi):
-    for node in nodes(document, skip_nav=True):
-        if node.get_role() != atspi.Role.PUSH_BUTTON:
-            continue
-        attrs = node.get_attributes() or {}
-        label = (node.get_name() or '').strip().casefold()
-        if (label in ('stop streaming', 'stop generating', 'stop response')
-                or attrs.get('data-testid') == 'stop-button'
-                or attrs.get('id') == 'composer-submit-button' and 'stop' in label):
-            return True
-    return False
-
-
-def prompt_matches(text, prompt):
-    norm_text = normalized(text)
-    norm_prompt = normalized(prompt)
-    if not norm_text or not norm_prompt:
-        return False
-    if norm_text == norm_prompt or norm_prompt in norm_text:
-        return True
-    # Multi-paragraph prompts can be split across sibling blocks; match the unique request body.
-    lines = [normalized(part) for part in prompt.splitlines() if len(normalized(part)) >= 12]
-    body = next((line for line in lines if not line.startswith(('BITCH robot handoff', 'I’m BITCH', 'Request from', 'Reply for BITCH', 'Put the main answer'))), '')
-    return bool(body and body in norm_text)
-
-
-def extract_turn_state(document, prompt, atspi):
-    """Locate our user turn, the assistant reply text after it, and its Copy button."""
-    seen_user = False
-    in_assistant = False
-    assistant_parts = []
-    copy_btn = None
-    last_copy_btn = None
-    last_assistant_parts = []
-
-    for node in nodes(document, skip_nav=True):
-        role = node.get_role()
-        label = (node.get_name() or '').strip().casefold()
-        attrs = node.get_attributes() or {}
-        author = attrs.get('data-message-author-role', '')
-
-        if role == atspi.Role.HEADING:
-            heading = label.rstrip(':')
-            if heading in ('you said', 'user'):
-                in_assistant = False
-            elif heading in ('chatgpt said', 'assistant') and seen_user:
-                in_assistant = True
-                assistant_parts = []
-                copy_btn = None
-                continue
-        if author == 'user':
-            in_assistant = False
-            if prompt_matches(full_text(node), prompt):
-                seen_user = True
-            continue
-        if author == 'assistant' and seen_user:
-            text = full_text(node).strip()
-            if text:
-                last_assistant_parts = [text]
-            in_assistant = True
-            continue
-
-        if not in_assistant and role in (atspi.Role.PARAGRAPH, atspi.Role.SECTION):
-            if prompt_matches(full_text(node), prompt):
-                seen_user = True
-        elif in_assistant:
-            if role == atspi.Role.PUSH_BUTTON and label in ('copy', 'copy response', 'copy message'):
-                copy_btn = node
-                last_copy_btn = node
-                if assistant_parts:
-                    last_assistant_parts = list(assistant_parts)
-                in_assistant = False
-            elif role in (atspi.Role.PARAGRAPH, atspi.Role.LIST_ITEM, atspi.Role.HEADING):
-                piece = full_text(node).strip()
-                if piece and piece.casefold().rstrip(':') not in ('chatgpt said', 'assistant'):
-                    if not assistant_parts or piece not in assistant_parts[-1]:
-                        assistant_parts.append(piece)
-
-    if assistant_parts and not last_assistant_parts:
-        last_assistant_parts = assistant_parts
-    answer_text = '\n'.join(last_assistant_parts).strip()
-    return seen_user, last_copy_btn or copy_btn, answer_text
-
-
-def read_clipboard():
-    if os.environ.get('WAYLAND_DISPLAY') and shutil.which('wl-paste'):
-        res = subprocess.run(['wl-paste', '--no-newline'], capture_output=True,
-                             text=True, encoding='utf-8', timeout=2)
-        if res.returncode == 0:
-            return res.stdout.strip()
-    if os.environ.get('DISPLAY') and shutil.which('xclip'):
-        res = subprocess.run(['xclip', '-selection', 'clipboard', '-o'], capture_output=True,
-                             text=True, encoding='utf-8', timeout=2)
-        if res.returncode == 0:
-            return res.stdout.strip()
-    return ''
-
-
-def clear_clipboard():
-    if os.environ.get('WAYLAND_DISPLAY') and shutil.which('wl-copy'):
-        subprocess.run(['wl-copy', '--clear'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-
-
-def wait_response(prompt, atspi, context, errors):
-    end = time.monotonic() + SEND_WAIT_SECONDS
-    conversation = None
-    stable_ticks = 0
-    previous_text = ''
-    sent_at = time.monotonic()
-
-    while time.monotonic() < end:
-        while context.pending():
-            context.iteration(False)
+def open_new_chat(tab):
+    """Load a fresh chat and wait for the composer. Returns an error or None."""
+    tab.call('Page.enable')
+    tab.call('Page.navigate', {'url': HOME_PAGE})
+    deadline = time.monotonic() + LOAD_SECONDS
+    state = {}
+    while time.monotonic() < deadline:
+        time.sleep(.8)
         try:
-            page = active_page(atspi)
-            if page and is_chatgpt_address(text_of(page[1])):
-                window, address_node, document = page
-                url = chat_url(text_of(address_node))
-                if url and conversation is None:
-                    conversation = url
-                if url is None or conversation is None or url == conversation:
-                    matched, button, direct_answer = extract_turn_state(document, prompt, atspi)
-                    if matched and url:
-                        conversation = url
-                    generating = is_generating(document, atspi)
-                    if matched and not generating and (button is not None or (direct_answer and time.monotonic() - sent_at > 4.)):
-                        if direct_answer == previous_text and (button is not None or len(direct_answer) > 2):
-                            stable_ticks += 1
-                        else:
-                            previous_text = direct_answer
-                            stable_ticks = 0
-                        if stable_ticks >= 1:
-                            if button is not None:
-                                focus_window(window)
-                                clear_clipboard()
-                                if button.do_action(0):
-                                    time.sleep(.3)
-                                    copied = read_clipboard()
-                                    if copied and normalized(copied) != normalized(prompt) and not prompt_matches(copied, prompt):
-                                        return {'state': 'returned', 'answer': copied[:12000], 'url': conversation}
-                            if direct_answer and normalized(direct_answer) != normalized(prompt) and not prompt_matches(direct_answer, prompt):
-                                return {'state': 'returned', 'answer': direct_answer[:12000], 'url': conversation}
-                    else:
-                        stable_ticks = 0
-        except errors:
-            pass
-        time.sleep(.65)
-    if conversation:
-        return {'state': 'submitted', 'url': conversation, 'reason': 'ChatGPT took too long to finish.'}
-    return {'state': 'send_unverified', 'reason': 'Could not read the answer back from Chromium on the Pi.'}
+            state = tab.run('return {ready: document.readyState, composer: !!page.composer(), '
+                            'login: !!page.loginButton(), url: location.href, title: document.title};', 6.)
+        except (RuntimeError, TimeoutError):
+            continue
+        if state and state.get('composer') and state.get('ready') != 'loading':
+            return None
+    if state and state.get('login'):
+        return 'Sign in to ChatGPT in the BITCH Chromium window on the Pi.'
+    if state and 'just a moment' in (state.get('title') or '').casefold():
+        return 'ChatGPT is showing a “verify you are human” check on the Pi. Click it once in the BITCH Chromium window.'
+    return 'ChatGPT did not finish loading on the Pi.'
 
 
-def chromium_running():
-    res = subprocess.run(['pgrep', '-u', str(os.getuid()), '-f', '(chromium|chrome).*--type=renderer'],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if res.returncode == 0:
-        return True
-    res = subprocess.run(['pgrep', '-u', str(os.getuid()), '-x', 'chromium'],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return res.returncode == 0
-
-
-def clean_chromium_exit_flag():
-    prefs = Path.home() / '.config' / 'chromium' / 'Default' / 'Preferences'
-    if not prefs.is_file():
-        return
-    try:
-        data = json.loads(prefs.read_text(encoding='utf-8'))
-        profile = data.get('profile')
-        if isinstance(profile, dict) and (profile.get('exit_type') != 'Normal' or not profile.get('exited_cleanly', True)):
-            profile['exit_type'] = 'Normal'
-            profile['exited_cleanly'] = True
-            tmp = prefs.with_suffix('.bitch.tmp')
-            tmp.write_text(json.dumps(data), encoding='utf-8')
-            tmp.replace(prefs)
-    except (OSError, ValueError):
-        pass
-
-
-def launch_chromium(chromium, url, *, restore=False):
-    env = desktop_env()
-    flags = [
-        '--force-renderer-accessibility',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--hide-crash-restore-bubble',
-    ]
-    if restore:
-        flags.append('--restore-last-session')
-    service = shutil.which('systemd-run')
-    env_args = ['/usr/bin/env', '-u', 'NO_AT_BRIDGE', 'ACCESSIBILITY_ENABLED=1']
-    for key in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY'):
-        if env.get(key):
-            env_args.append(f'{key}={env[key]}')
-    if service:
-        res = subprocess.run([service, '--user', '--quiet', '--collect', *env_args, chromium, *flags, url],
-                             timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-        if res.returncode == 0:
-            return
-    subprocess.Popen([*env_args, chromium, *flags, url],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, start_new_session=True)
-
-
-def restart_chromium_with_accessibility(chromium, url):
-    for pattern in ('chromium', 'chromium-browser', 'chrome'):
-        subprocess.run(['pkill', '-TERM', '-u', str(os.getuid()), '-f', pattern],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + 6.
-    while time.monotonic() < deadline and chromium_running():
-        time.sleep(.25)
-    clean_chromium_exit_flag()
-    launch_chromium(chromium, url, restore=False)
-
-
-def set_composer_via_atspi(composer, prompt, atspi, context):
-    try:
-        comp = composer.get_component_iface()
-        if comp is not None:
-            comp.grab_focus()
-        editable = composer.get_editable_text_iface()
-        if editable is None:
-            return False
-        if not atspi.EditableText.set_text_contents(editable, prompt):
-            return False
-        for _ in range(8):
-            time.sleep(.12)
-            while context.pending():
-                context.iteration(False)
-            if normalized(composer_text(composer, atspi)) == normalized(prompt):
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def paste(prompt, window, composer, copy_bin, keys_bin, atspi, context):
-    if not copy_bin or not keys_bin:
-        return False
-    focus_window(window)
-    try:
-        comp = composer.get_component_iface()
-        if comp is not None:
-            comp.grab_focus()
-    except Exception:
-        pass
-    time.sleep(.15)
-    if os.environ.get('WAYLAND_DISPLAY') and 'wl-copy' in copy_bin:
-        with subprocess.Popen([copy_bin, '--foreground', '--type', 'text/plain'], stdin=subprocess.PIPE) as clipboard:
-            try:
-                clipboard.stdin.write(prompt.encode('utf-8'))
-                clipboard.stdin.close()
-                time.sleep(.16)
-                focus_window(window)
-                try:
-                    comp = composer.get_component_iface()
-                    if comp is not None:
-                        comp.grab_focus()
-                except Exception:
-                    pass
-                time.sleep(.1)
-                subprocess.run([keys_bin, '-M', 'ctrl', '-s', '80', '-k', 'v', '-s', '80', '-m', 'ctrl'],
-                               check=True, timeout=3)
-                for _ in range(14):
-                    time.sleep(.15)
-                    while context.pending():
-                        context.iteration(False)
-                    if normalized(composer_text(composer, atspi)) == normalized(prompt):
-                        return True
-                return False
-            finally:
-                if clipboard.poll() is None:
-                    clipboard.terminate()
-                    try:
-                        clipboard.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        clipboard.kill()
-    elif os.environ.get('DISPLAY') and 'xclip' in copy_bin:
-        subprocess.run([copy_bin, '-selection', 'clipboard'], input=prompt, text=True, check=True, timeout=3)
-        subprocess.run([keys_bin, 'key', '--clearmodifiers', 'ctrl+v'], check=True, timeout=3)
-        for _ in range(14):
-            time.sleep(.15)
-            while context.pending():
-                context.iteration(False)
-            if normalized(composer_text(composer, atspi)) == normalized(prompt):
-                return True
-    return False
-
-
-def fill(prompt, *, send=False):
-    env = desktop_env()
-    os.environ.update(env)
-    os.environ.pop('NO_AT_BRIDGE', None)
-
-    import gi
-
-    gi.require_version('Atspi', '2.0')
-    from gi.repository import Atspi, GLib
-
-    if not os.environ.get('WAYLAND_DISPLAY') and not os.environ.get('DISPLAY'):
-        return {'state': 'ready', 'reason': 'No desktop display session found on the Pi.'} if send else False
-    chromium = shutil.which('chromium') or shutil.which('chromium-browser') or shutil.which('google-chrome')
-    if not chromium:
-        return {'state': 'ready', 'reason': 'Chromium is not installed on the Pi.'} if send else False
-    copy_bin = shutil.which('wl-copy') if os.environ.get('WAYLAND_DISPLAY') else shutil.which('xclip')
-    keys_bin = shutil.which('wtype') if os.environ.get('WAYLAND_DISPLAY') else shutil.which('xdotool')
-    if Atspi.init() not in (0, 1):
-        return {'state': 'ready', 'reason': 'Desktop accessibility bus unavailable on the Pi.'} if send else False
-    Atspi.set_timeout(1200, 1200)
-    context = GLib.MainContext.default()
-
-    def wait_composer(marker, seconds, *, allow_home=False):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            while context.pending():
-                context.iteration(False)
-            try:
-                target = find_composer(Atspi, marker, allow_home=allow_home)
-                if target is not None:
-                    current = normalized(composer_text(target[2], Atspi))
-                    if not current or send and current == normalized(prompt):
-                        return target
-            except GLib.Error:
-                pass
-            time.sleep(.3)
-        return None
-
-    marker = ''
-    target = None
-    if select_open_chat(Atspi):
-        target = wait_composer('', 1.8, allow_home=True)
-        if target is None:
-            page = active_page(Atspi)
-            if page is not None and is_chatgpt_address(text_of(page[1])):
-                if logged_out(page[2], Atspi):
-                    return {'state': 'ready', 'reason': 'Sign in to ChatGPT in Chromium on the Pi.'} if send else False
-                if click_new_chat(page[2], Atspi):
-                    target = wait_composer('', 4.0, allow_home=True)
-
-    if target is None:
-        marker = 'bitch-draft-' + uuid4().hex[:12]
-        url = HOME_PAGE + '#' + marker
-        had_windows = bool(browser_windows(Atspi))
-        if not had_windows and chromium_running():
-            # Chromium was started without AT-SPI accessibility; relaunch cleanly so BITCH can drive it.
-            restart_chromium_with_accessibility(chromium, url)
-        else:
-            if not had_windows:
-                clean_chromium_exit_flag()
-            launch_chromium(chromium, url)
-        target = wait_composer(marker, 22, allow_home=True)
-        if target is None and not browser_windows(Atspi) and chromium_running():
-            restart_chromium_with_accessibility(chromium, url)
-            target = wait_composer(marker, 25, allow_home=True)
-        if target is None:
-            page = active_page(Atspi)
-            if page is not None and logged_out(page[2], Atspi):
-                return {'state': 'ready', 'reason': 'Sign in to ChatGPT in Chromium on the Pi.'} if send else False
-            return {'state': 'ready', 'reason': 'Could not open the ChatGPT composer on the Pi.'} if send else False
-
-    window, address, composer, document = target
-    if logged_out(document, Atspi):
-        return {'state': 'ready', 'reason': 'Sign in to ChatGPT in Chromium on the Pi.'} if send else False
-    focus_window(window)
-    current = normalized(composer_text(composer, Atspi))
-    if current and (not send or current != normalized(prompt)):
-        return {'state': 'ready', 'reason': 'The ChatGPT composer on the Pi already had unsent text.'} if send else False
-
-    pasted = bool(current)
-    if not pasted:
-        pasted = set_composer_via_atspi(composer, prompt, Atspi, context)
-    if not pasted:
-        pasted = paste(prompt, window, composer, copy_bin, keys_bin, Atspi, context)
-    if not send:
-        return pasted
-    if not pasted:
-        return {'state': 'ready', 'reason': 'Could not enter the request into ChatGPT on the Pi.'}
-
-    page = active_page(Atspi)
-    if page is None or not is_home_address(text_of(page[1]), marker):
-        return {'state': 'ready', 'drafted': True, 'reason': 'ChatGPT page changed before sending.'}
-    document = page[2]
-    if logged_out(document, Atspi):
-        return {'state': 'ready', 'drafted': True, 'reason': 'Sign in to ChatGPT in Chromium on the Pi.'}
-
-    button = None
-    for _ in range(8):
-        while context.pending():
-            context.iteration(False)
-        button = send_button(document, Atspi)
-        if button is not None:
-            break
+def enter_prompt(tab, prompt):
+    """Paste the request into the composer the way a person would. Returns True when it's in."""
+    text = json.dumps(prompt)
+    tab.run(f'''
+        const box = page.composer();
+        if (!box) return false;
+        box.focus();
+        if (box.tagName === 'TEXTAREA') {{
+          const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+          set.call(box, {text});
+          box.dispatchEvent(new Event('input', {{bubbles: true}}));
+          return true;
+        }}
+        const data = new DataTransfer();
+        data.setData('text/plain', {text});
+        box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: data, bubbles: true, cancelable: true}}));
+        return true;''')
+    check = 'const box = page.composer(); return box ? (box.value ?? box.innerText) : "";'
+    want = normalized(prompt)
+    for _ in range(10):
         time.sleep(.2)
-    if button is None:
-        if keys_bin and os.environ.get('WAYLAND_DISPLAY') and composer.get_state_set().contains(Atspi.StateType.FOCUSED):
-            subprocess.run([keys_bin, '-k', 'Return'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            return wait_response(prompt, Atspi, context, (GLib.Error, OSError, subprocess.SubprocessError, ValueError))
-        return {'state': 'ready', 'drafted': True, 'reason': 'Could not find an enabled Send button in ChatGPT.'}
-    if not button.do_action(0):
-        if keys_bin and os.environ.get('WAYLAND_DISPLAY') and composer.get_state_set().contains(Atspi.StateType.FOCUSED):
-            subprocess.run([keys_bin, '-k', 'Return'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        if normalized(tab.run(check)) == want:
+            return True
+    # Fallback: type it as one line through the browser's own input path.
+    tab.run('const box = page.composer(); if (box) { box.focus(); document.execCommand("selectAll"); '
+            'document.execCommand("delete"); } return true;')
+    tab.call('Input.insertText', {'text': ' '.join(line.strip() for line in prompt.splitlines() if line.strip())})
+    time.sleep(.4)
+    return bool(normalized(tab.run(check)))
+
+
+def press_send(tab):
+    for _ in range(25):
+        if tab.run('const b = page.sendButton(); if (b) { b.click(); return true; } return false;'):
+            return True
+        time.sleep(.2)
+    # No button found: Enter sends in ChatGPT's composer.
+    tab.run('const box = page.composer(); if (box) box.focus(); return true;')
+    for kind in ('keyDown', 'keyUp'):
+        tab.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'Enter', 'code': 'Enter',
+                                            'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else ''})
+    return True
+
+
+def read_reply(tab, before, wait=SEND_WAIT_SECONDS):
+    """Wait for the new answer to finish streaming and return its text."""
+    deadline = time.monotonic() + wait
+    sent = False
+    last, stable = None, 0
+    started = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(1.)
+        try:
+            state = tab.run('const r = page.replies(); return {asks: page.asks().length, count: r.length, '
+                            'streaming: page.streaming(), text: page.textOf(r[r.length - 1]), url: location.href};', 8.)
+        except (RuntimeError, TimeoutError):
+            continue
+        sent = sent or state['asks'] > before[0] or '/c/' in state['url']
+        if not sent and time.monotonic() - started > 20:
+            return {'state': 'ready', 'drafted': True, 'reason': 'ChatGPT on the Pi did not take the message.'}
+        if state['count'] <= before[1] or state['streaming'] or not state['text']:
+            last, stable = None, 0
+            continue
+        if state['text'] == last:
+            stable += 1
+            if stable >= 2:
+                url = state['url'] if '/c/' in state['url'] else None
+                return {'state': 'returned', 'answer': state['text'][:12000], 'url': url}
         else:
-            return {'state': 'send_unverified', 'reason': 'Could not click Send in ChatGPT.'}
-    return wait_response(prompt, Atspi, context, (GLib.Error, OSError, subprocess.SubprocessError, ValueError))
+            last, stable = state['text'], 0
+    return {'state': 'submitted' if sent else 'send_unverified', 'reason': 'ChatGPT took too long to finish.'}
+
+
+def run_chatgpt(prompt, *, send):
+    problem = start_browser()
+    if problem:
+        return {'state': 'ready', 'reason': problem}
+    tab = None
+    sent = False
+    try:
+        tab = chatgpt_tab()
+        problem = open_new_chat(tab)
+        if problem:
+            return {'state': 'ready', 'reason': problem}
+        if not enter_prompt(tab, prompt):
+            return {'state': 'ready', 'reason': 'Could not type the request into ChatGPT on the Pi.'}
+        if not send:
+            return {'state': 'drafted'}
+        before = tab.run('return [page.asks().length, page.replies().length];')
+        press_send(tab)
+        sent = True
+        return read_reply(tab, before)
+    except (OSError, ValueError, RuntimeError, TimeoutError, KeyError, TypeError, urllib.error.URLError) as error:
+        if sent:
+            return {'state': 'send_unverified', 'reason': f'Lost the ChatGPT page while it answered: {error}'}
+        return {'state': 'ready', 'reason': f'Could not drive ChatGPT on the Pi: {error}'}
+    finally:
+        if tab is not None:
+            tab.close()
+
+
+def draft(prompt):
+    return run_chatgpt(prompt, send=False).get('state') == 'drafted'
+
+
+def submit(prompt):
+    return run_chatgpt(prompt, send=True)
+
+
+def status():
+    """What BITCH's ChatGPT browser looks like right now, for /ping and for checking by hand."""
+    if not browser_up():
+        return {'browser': False}
+    tab = None
+    try:
+        tab = chatgpt_tab()
+        state = tab.run('return {url: location.href, composer: !!page.composer(), login: !!page.loginButton(), '
+                        'title: document.title};', 6.)
+        return {'browser': True, **(state or {})}
+    except (OSError, ValueError, RuntimeError, TimeoutError, KeyError, urllib.error.URLError) as error:
+        return {'browser': True, 'error': str(error)}
+    finally:
+        if tab is not None:
+            tab.close()
 
 
 if __name__ == '__main__':
-    sending = sys.argv[1:] == ['send']
-    try:
-        message = sys.stdin.read(3001)
-        result = fill(message, send=sending) if 0 < len(message) <= 3000 else {'state': 'ready', 'reason': 'Request too long.'}
-    except (ImportError, OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-        result = {'state': 'send_unverified' if sending else 'ready', 'reason': str(exc)}
-    print(json.dumps(result if isinstance(result, dict) else {'state': 'drafted' if result else 'ready'}))
+    if sys.argv[1:2] == ['start']:
+        print(start_browser() or f'BITCH Chromium is running (DevTools on 127.0.0.1:{PORT}).')
+    elif sys.argv[1:2] == ['status']:
+        print(json.dumps(status(), indent=2))
+    elif sys.argv[1:2] == ['ask'] and len(sys.argv) > 2:
+        print(json.dumps(submit(' '.join(sys.argv[2:])), indent=2, ensure_ascii=False))
+    else:
+        print('usage: python3 desktop_chatgpt.py start | status | ask "question"')

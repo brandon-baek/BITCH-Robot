@@ -1406,32 +1406,69 @@ class ConnectionTests(unittest.TestCase):
 
 
 class PiProtocolTests(unittest.TestCase):
-    def test_desktop_chatgpt_url_and_prompt_helpers(self):
+    def test_chatgpt_handoff_prompt_carries_the_request(self):
+        self.assertIn('passing along their request on their behalf', macros.format_prompt('Find me a desk fan.'))
+        self.assertIn('\nFind me a desk fan.\n', macros.format_prompt('Find me a desk fan.'))
+
+    def test_devtools_websocket_frames_round_trip(self):
         import desktop_chatgpt as dc
 
-        self.assertTrue(dc.is_home_address('chatgpt.com'))
-        self.assertTrue(dc.is_home_address('https://chatgpt.com/?model=auto'))
-        self.assertFalse(dc.is_home_address('https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc'))
-        self.assertEqual(
-            dc.chat_url('chatgpt.com/c/12345678-1234-1234-1234-123456789abc/'),
-            'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc',
-        )
-        self.assertIsNone(dc.chat_url('https://evil.example/c/12345678-1234-1234-1234-123456789abc'))
-        prompt = macros.format_prompt('Give me a quick morning briefing for Tuesday.')
-        self.assertTrue(dc.prompt_matches('Give me a quick morning briefing for Tuesday.', prompt))
-        self.assertFalse(dc.prompt_matches('Unrelated chat message.', prompt))
-        env = dc.desktop_env()
-        self.assertEqual(env.get('ACCESSIBILITY_ENABLED'), '1')
-        self.assertNotIn('NO_AT_BRIDGE', env)
+        left, right = socket.socketpair()
+        client = dc.Socket.__new__(dc.Socket)
+        client.sock, client.buffer = left, b''
+        try:
+            big = 'x' * 70000
+            for text in ('hello', 'y' * 300, big):
+                sender = threading.Thread(target=client.send, args=(text,))
+                sender.start()
+                raw = b''
+                while True:
+                    raw += right.recv(200000)
+                    size = raw[1] & 0x7F
+                    head = 2 + (2 if size == 126 else 8 if size == 127 else 0) + 4
+                    length = (size if size < 126 else int.from_bytes(raw[2:4 if size == 126 else 10], 'big'))
+                    if len(raw) >= head + length:
+                        break
+                sender.join(5)
+                mask, body = raw[head - 4:head], raw[head:head + length]
+                self.assertEqual(bytes(b ^ mask[i % 4] for i, b in enumerate(body)).decode(), text)
+            # The server sends unmasked frames, possibly split into fragments.
+            right.sendall(bytes([0x01, 3]) + b'abc' + bytes([0x80, 126]) + (300).to_bytes(2, 'big') + b'z' * 300)
+            self.assertEqual(client.recv(2), 'abc' + 'z' * 300)
+        finally:
+            left.close()
+            right.close()
 
-    def test_chatgpt_macro_targets_only_the_new_chat_url(self):
-        from desktop_chatgpt import matches_address
+    @unittest.skipUnless(Path('/Applications/Google Chrome.app').exists() or __import__('shutil').which('chromium'),
+                         'needs Chrome or Chromium')
+    def test_chatgpt_driver_asks_a_fake_chatgpt_page_in_a_real_browser(self):
+        import shutil
+        import desktop_chatgpt as dc
 
-        self.assertIn('passing along their request on their behalf', macros.format_prompt('Find me a lamp.'))
-        self.assertIn('\nFind me a lamp.\n', macros.format_prompt('Find me a lamp.'))
-        self.assertTrue(matches_address('chatgpt.com/#bitch-draft-fixture', 'bitch-draft-fixture'))
-        self.assertFalse(matches_address('https://chatgpt.com/c/existing#bitch-draft-fixture', 'bitch-draft-fixture'))
-        self.assertFalse(matches_address('https://chatgpt.com.example/#bitch-draft-fixture', 'bitch-draft-fixture'))
+        chrome = shutil.which('chromium') or '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        page_dir = Path(__file__).with_name('fake_chatgpt')
+        with tempfile.TemporaryDirectory() as profile:
+            server = subprocess.Popen([sys.executable, '-m', 'http.server', '8798', '--bind', '127.0.0.1'],
+                                      cwd=page_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            browser = subprocess.Popen([chrome, '--headless=new', f'--user-data-dir={profile}', '--remote-debugging-port=9332',
+                                        '--remote-debugging-address=127.0.0.1', '--no-first-run', 'about:blank'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                with patch.object(dc, 'PORT', 9332), patch.object(dc, 'HOME_PAGE', 'http://127.0.0.1:8798/'):
+                    deadline = time.monotonic() + 20
+                    while not dc.browser_up() and time.monotonic() < deadline:
+                        time.sleep(.3)
+                    result = dc.submit(macros.format_prompt('What is 17 times 23?'))
+                    self.assertEqual(result['state'], 'returned', result)
+                    self.assertIn('391', result['answer'])
+                    self.assertIn('What is 17 times 23?', result['answer'])
+                    self.assertTrue(dc.draft('Just a draft.'))
+                    self.assertTrue(dc.status()['composer'])
+            finally:
+                browser.terminate()
+                server.terminate()
+                browser.wait(10)
+                server.wait(10)
 
     def test_automatic_handoff_sends_once_and_does_not_retry_an_uncertain_click(self):
         request = {'name': 'agent', 'id': '1' * 32, 'prompt': 'Test light.', 'auto_send': True}
