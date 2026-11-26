@@ -7,12 +7,14 @@ def bounded(x, low, high):
     return max(low, min(high, x))
 
 
-DEADBAND = .004   # smaller changes are below what the servo board can resolve; writing them only makes servos hunt
+DEADBAND = .004   # legacy scalar default
+# Per-joint pulse deadbands: arm (1) uses 6 us (0.012) to stay safely above PCA9685 1-LSB & MG90S hunting band.
+JOINT_DEADBAND = (.005, .012, .008, .006)
 
 
 class Actor:
     K = (55., 30., 65., 95.)
-    C = (11., 10., 11.5, 10.)
+    C = (11., 13.5, 11.5, 10.)   # arm is overdamped (zeta ~1.23) so the 148 mm stick settles with zero bounce
     LO = (-.9, -1.3, -1., -.85)
     HI = (.9, -.15, -.1, .85)
 
@@ -71,6 +73,10 @@ class Actor:
             target = bounded(self.tgt[i] + self.idle_amt * self.idle_scale[i] * idle[i], self.low[i], self.high[i])
             acc = self.K[i] * self.stiff * (target-old) - self.C[i] * math.sqrt(self.stiff) * self.v[i]
             v = self.v[i] + bounded(acc, -self.accel[i], self.accel[i]) * dt
+            # Anti-hunting settle damper on the heavy arm so it never rocks back and forth when holding still,
+            # while still converging tightly (<0.005) so park mode always reaches its 0.008 detach window.
+            if i == 1 and abs(target - old) < .014 and abs(v) < .07:
+                v = 0. if (abs(target - old) < .0045 and abs(v) < .025) else v * .65
             self.v[i] = bounded(v, -self.speed[i], self.speed[i])
             # Return gradually from a remembered show pose outside the live envelope.
             lo, hi = min(old, self.low[i]), max(old, self.high[i])
@@ -83,7 +89,8 @@ class Actor:
             if i in self.limp:
                 continue
             last = self.written[i]
-            if last is None or abs(value - last) >= DEADBAND:
+            band = JOINT_DEADBAND[i]
+            if last is None or abs(value - last) >= band:
                 if last is not None:
                     self.travel[i] += abs(value - last)
                     moved = True

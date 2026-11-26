@@ -223,8 +223,8 @@ class Motion:
             actor.speed = (1.65 * base_scale, 2.45, 3.6, 5.4)
             actor.accel = (5.8, 9.5, 15.0, 26.0)
         else:
-            actor.speed = (.58 * base_scale, 1.55, 2.2, 3.6)
-            actor.accel = (1.55, 5.5, 9.0, 16.0)
+            actor.speed = (.58 * base_scale, 1.15, 2.0, 3.4)
+            actor.accel = (1.55, 3.0, 8.0, 15.0)
         if score_frame is not None:
             pose, stiffness, idle = score_frame
             actor.idle_amt = idle * .35
@@ -244,7 +244,7 @@ class Motion:
             self.idle_phrase = None
             self.social_phrase = None
             self.social_at = now
-            self.next_beat = now + self.rng.uniform(.85, 2.1)
+            self.next_beat = now + (self.rng.uniform(16., 42.) if calm else self.rng.uniform(2.2, 4.8))
             if mode == 'scan':
                 self.scan_base = desk.cur[0]
             self.mode = mode
@@ -307,8 +307,8 @@ class Motion:
                     self.idle_anchor = base, neck
                     loneliness = float((mood or {}).get('loneliness', 0.0))
                     gap = (self.rng.uniform(22, 58) if calm
-                           else self.rng.uniform(1.6, 3.8) if loneliness > 0.5
-                           else self.rng.uniform(.75, 2.35))
+                           else self.rng.uniform(3.2, 6.2) if loneliness > 0.5
+                           else self.rng.uniform(2.5, 5.2))
                     self.next_beat = now + phrase.duration + gap
             if self.idle_beat:
                 frames, start, direction = self.idle_beat
@@ -394,9 +394,10 @@ class Motion:
                 base += side * min(.055, abs(self.throw) * .15)
             if elapsed >= 1.25:
                 self.cue_at = None
-        actor.idle_scale = (.18, 1., .9, .72) if following else (1.,) * 4
-        # When mood baseline provides organic multi-harmonic motion, scale down Actor's simple sine idle.
-        base_idle = (.25 if mood else .52) if following else (.40 if mood else .85)
+        actor.idle_scale = (.18, .28, .85, .72) if following else (.75, .35, .9, 1.)
+        # When mood baseline is active, disable Actor's built-in sine idle completely so two oscillators
+        # never fight each other and bounce the arm while trying to stay still.
+        base_idle = 0.0 if mood else (.52 if following else .85)
         actor.idle_amt = base_idle if mode not in ('aim', 'park') else 0
         if calm and not (self.idle_beat or self.idle_phrase):
             actor.idle_amt = 0

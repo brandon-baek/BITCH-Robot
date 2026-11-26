@@ -690,7 +690,21 @@ class Life:
         if now - self.last_checkin_at < 25:
             return
 
-        # Identify newly arrived people (stable in view >= 1.6s, not greeted in the last 20 minutes).
+        # Identify newly arrived people.
+        # Be patient before asking an unidentified person "who are you?" so BITCH never jumps the gun
+        # on its own owner before getting clear frontal face-recognition looks!
+        from .people import people as enrolled_people
+        has_enrolled_faces = bool(enrolled_people.names('face'))
+        owner_just_here = (
+            len(people_list) == 1
+            and not napping
+            and (now - self.greeted_names.get(self.primary_owner(), -1e9) < 45.0
+                 or now - getattr(hub.sight, 'met', {}).get(self.primary_owner(), -1e9) < 45.0)
+        )
+        known_in_room = any(p['name'] for p in people_list)
+        min_unknown_age = 3.5 if (napping or known_in_room) else (20.0 if owner_just_here else 9.0)
+        min_face_checks = 3 if (napping or known_in_room) else (10 if owner_just_here else 6)
+
         new_known = []
         new_unknown = []
         for entry in people_list:
@@ -701,8 +715,15 @@ class Life:
                 if now - self.greeted_names.get(name, -1e9) > 1200:
                     new_known.append(entry)
             else:
-                if now - self.greeted_tracks.get(entry['id'], -1e9) > 900 and entry['age'] >= 2.4:
-                    new_unknown.append(entry)
+                if now - self.greeted_tracks.get(entry['id'], -1e9) <= 900:
+                    continue
+                if entry['age'] < min_unknown_age:
+                    continue
+                if not entry.get('face_visible', True):
+                    continue
+                if has_enrolled_faces and entry.get('face_checks', 0) < min_face_checks:
+                    continue
+                new_unknown.append(entry)
 
         if not new_known and not new_unknown:
             return

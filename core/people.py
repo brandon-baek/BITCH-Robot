@@ -12,7 +12,7 @@ FACE = 'face_recognition_sface_2021dec.onnx'
 VOICE = '3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx'
 COUNT = {'face': 6, 'voice': 3}
 LEARN_SECONDS = 180   # how long BITCH keeps learning someone it was just introduced to
-THRESHOLD = {'face': (0.48, 0.075), 'voice': (0.69, 0.10)}
+THRESHOLD = {'face': (0.40, 0.075), 'voice': (0.69, 0.10)}
 
 
 def normalized(values):
@@ -228,7 +228,7 @@ class People:
 
     def face(self, image, row, source, track, alone):
         session = self.active()
-        if row[2] < 32 or not self.needed('face'):
+        if row[2] < 24 or not self.needed('face'):
             return None
         model = self.model('face')
         vector = normalized(model.feature(model.alignCrop(image, row)))
@@ -236,11 +236,30 @@ class People:
             self.enroll_sample(session, vector, track)
         learning = self.learner('face', source, track)
         now = time.monotonic()
-        if learning and row[2] >= 55 and now - learning[1]['last'] >= .35:
+        if learning and row[2] >= 48 and now - learning[1]['last'] >= .35:
             # This is the face BITCH was just introduced to, even with other people in view.
             learning[1]['last'] = now
             self.learned(learning[0], 'face', learning[1], vector)
         return self.match('face', vector)
+
+    def face_confident(self, image, row, source, track, alone):
+        """Like face(), returning (name, strong) where strong=True means high-margin single-frame match."""
+        session = self.active()
+        if row[2] < 24 or not self.needed('face'):
+            return None, False
+        model = self.model('face')
+        vector = normalized(model.feature(model.alignCrop(image, row)))
+        if session and session['kind'] == 'face' and session['source'] == source and alone:
+            self.enroll_sample(session, vector, track)
+        learning = self.learner('face', source, track)
+        now = time.monotonic()
+        if learning and row[2] >= 48 and now - learning[1]['last'] >= .35:
+            learning[1]['last'] = now
+            self.learned(learning[0], 'face', learning[1], vector)
+        strong = self.match('face', vector, extra_confidence=0.12)
+        if strong:
+            return strong, True
+        return self.match('face', vector), False
 
     def speaker(self, source, audio, voiced, addressed):
         session = self.active()

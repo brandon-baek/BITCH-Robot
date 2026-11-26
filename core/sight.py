@@ -319,11 +319,12 @@ class Sight:
                     person = face_visible[key]
                     index = min(range(len(boxes)), key=lambda i: math.dist(center(boxes[i]), center(person['box'])))
                     person['face_at'] = received
-                    self.face_at = received + 0.30
+                    self.face_at = received + 0.25
                     try:
-                        name = people.face(detection, rows[index], source, key, alone=len(visible) == 1)
+                        name, strong = people.face_confident(detection, rows[index], source, key, alone=len(visible) == 1)
+                        person['face_checks'] = person.get('face_checks', 0) + 1
                         if name:
-                            if person.get('last_name') == name or person.get('name') == name:
+                            if strong or person.get('last_name') == name or person.get('name') == name:
                                 person['name'] = name
                                 person['confirmed_at'] = received
                                 person['face_confirmed_at'] = received
@@ -432,6 +433,8 @@ class Sight:
                     'center': center(person['box']),
                     'age': max(0.0, now - person['first']),
                     'face_fresh': now - person.get('face_confirmed_at', -math.inf) < 2.5,
+                    'face_visible': now - person.get('face_seen', -math.inf) < 1.0,
+                    'face_checks': person.get('face_checks', 0),
                 })
             return {'camera': self.target_source, 'received': received, 'image': jpeg, 'people': entries}
 

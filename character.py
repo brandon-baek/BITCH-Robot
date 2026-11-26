@@ -63,7 +63,8 @@ class OrganicNoise:
         p, f = self.phases, self.freqs
         return (
             0.55 * s(t * f[0] + p[0]) + 0.30 * s(t * f[1] + p[1]) + 0.15 * s(t * f[2] + p[2]),
-            0.65 * s(t * f[3] + p[3]) + 0.25 * s(t * f[4] + p[4]) + 0.10 * s(t * f[5] + p[5]),
+            # Keep arm noise purely low-frequency so the heavy 148 mm arm never jitters or hunts.
+            0.80 * s(t * f[3] + p[3]) + 0.20 * s(t * f[4] + p[4]),
             0.55 * s(t * f[6] + p[6]) + 0.30 * s(t * f[7] + p[7]) + 0.15 * s(t * f[8] + p[8]),
             0.50 * s(t * f[9] + p[9]) + 0.35 * s(t * f[10] + p[10]) + 0.15 * s(t * f[11] + p[11]),
         )
@@ -524,23 +525,24 @@ def mood_baseline(mood, t, noise_vec):
     annoyance = clamp(float(mood.get('annoyance', 0.0)), 0.0, 1.0)
 
     # Full-body emotional silhouette:
-    # - Happy/engaged rides taller and leaned slightly closer with eyes level (d_arm & d_neck move together).
-    # - Lonely/sad slumps arm forward & drops chin low with heavy sideways head droop.
-    # - Annoyed pulls upright & tense with edgy head cock.
-    arm_posture = (0.30 * max(0.0, valence) + 0.42 * loneliness
-                   + 0.24 * max(0.0, -valence) + 0.12 * annoyance)
-    neck_posture = (0.34 * max(0.0, valence) - 0.16 * loneliness
+    # Keep steady arm posture safely behind top-dead-center (-0.80 + <=0.22 = -0.58) so gravity always
+    # preloads the MG90S gear teeth in one direction and prevents backlash rocking when standing still.
+    arm_posture = clamp(
+        0.18 * max(0.0, valence) + 0.28 * loneliness
+        + 0.16 * max(0.0, -valence) + 0.08 * annoyance,
+        -0.12, 0.24,
+    )
+    neck_posture = (0.22 * max(0.0, valence) - 0.18 * loneliness
                     - 0.10 * max(0.0, -valence) + 0.04 * annoyance)
     head_posture = 0.24 * loneliness - 0.18 * annoyance + 0.08 * max(0.0, valence)
 
-    # Breathing: whole-body chest heave on arm with counter-stabilized neck so gaze stays calm.
-    breath_rate = 0.26 + 0.16 * arousal - 0.08 * loneliness
+    # Breathing: ultra-gentle slow arm heave (no rapid reversals), lively micro-life on lightweight neck/head.
+    breath_rate = 0.20 + 0.09 * arousal - 0.05 * loneliness
     breath = math.sin(math.tau * breath_rate * t)
-    breath_amp = 0.055 + 0.025 * arousal + 0.022 * loneliness
-    d_arm = arm_posture + breath * breath_amp + 0.045 * noise_vec[1]
-    d_neck = neck_posture + breath * breath_amp * 0.72 + 0.036 * noise_vec[2]
-    d_base = 0.032 * noise_vec[0]
-    d_head = head_posture + 0.078 * noise_vec[3]
+    d_arm = arm_posture + breath * 0.014 + 0.010 * noise_vec[1]
+    d_neck = neck_posture + breath * 0.026 + 0.032 * noise_vec[2]
+    d_base = 0.024 * noise_vec[0]
+    d_head = head_posture + 0.072 * noise_vec[3]
 
     stiff_mult = clamp(1.0 + 0.32 * arousal + 0.16 * annoyance - 0.32 * loneliness - 0.18 * max(0.0, -valence), 0.52, 1.55)
     return d_base, d_arm, d_neck, d_head, stiff_mult

@@ -832,6 +832,80 @@ class MotionTests(unittest.TestCase):
         self.assertTrue(any(name in ('sigh', 'whimper', 'sad') for name, _ in sfx_log))
         self.assertTrue(any(joints == () for joints in relaxed))   # full park detach
 
+    def test_arm_settles_without_bouncing_when_holding_still(self):
+        arm_writes = []
+        desk = SimpleNamespace(
+            cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0, REST=pi.REST,
+            S=[SimpleNamespace(us=lambda u, j=i: arm_writes.append((t_now, u)) if j == 1 else None) for i in range(4)],
+            relax=lambda *joints: None,
+        )
+        motion = pi.Motion(desk)
+        motion.started = True
+        motion.next_beat = 9999.0
+        t_now = 0.0
+        # 1. Perform a full-body curious lean, then hold still in calm watch.
+        for _ in range(110):
+            motion.step('curious', 0.0, -0.8, t_now, 0.02, mood={'valence': 0.5, 'arousal': 0.6})
+            t_now += 0.02
+        calm_start = t_now
+        arm_writes.clear()
+        arm_trace = []
+        for _ in range(300):   # 6 seconds of trying to stay still
+            motion.step('watch', 0.0, -0.8, t_now, 0.02, calm=True, mood={'valence': 0.5, 'arousal': 0.6})
+            arm_trace.append(desk.cur[1])
+            t_now += 0.02
+        # After settling (last 3 seconds), zero arm servo pulse writes and zero bouncing!
+        late_writes = [w for ts, w in arm_writes if ts >= calm_start + 3.0]
+        self.assertEqual(len(late_writes), 0)
+        self.assertLess(max(arm_trace[150:]) - min(arm_trace[150:]), 0.004)
+        # Even in live (non-calm) watching with mood, arm stays safely behind vertical & calm (no wild rocking).
+        live_trace = []
+        motion.next_beat = 9999.0
+        for _ in range(300):
+            motion.step('watch', 0.0, -0.8, t_now, 0.02, calm=False, mood={'valence': 0.6, 'arousal': 0.5})
+            live_trace.append(desk.cur[1])
+            t_now += 0.02
+        self.assertLess(max(live_trace[100:]), -0.45)   # safely behind top-dead-center (gear preload preserved)
+        self.assertLess(max(live_trace[100:]) - min(live_trace[100:]), 0.06)
+
+    def test_unknown_arrival_waits_patiently_for_face_checks(self):
+        from core import life as life_mod
+        from core.people import people as enrolled_people
+        from core.rhythm import rhythm
+
+        rhythm.wake_now()
+        mgr = life_mod.Life()
+        mgr.owner_name = 'Brandon'
+        fake_brain = SimpleNamespace(busy=threading.Event(), followup_seconds=lambda: 0.0, announce=Mock())
+        fake_hearing = SimpleNamespace(ready=True, capture=None, activity_at=0.0)
+        state = {'age': 4.0, 'face_checks': 2, 'face_visible': True}
+        fake_sight = SimpleNamespace(
+            direct=Mock(return_value='accepted'),
+            met={},
+            people_snapshot=lambda: {
+                'camera': 'cam', 'received': time.monotonic(), 'image': b'jpg',
+                'people': [{'id': 99, 'name': None, 'face_fresh': False, 'age': state['age'],
+                            'face_checks': state['face_checks'], 'face_visible': state['face_visible'],
+                            'center': (0.5, 0.4), 'box': (0.4, 0.3, 0.2, 0.2)}],
+            },
+        )
+        with (patch.object(hub, 'sight', fake_sight), patch.object(hub, 'brain', fake_brain),
+              patch.object(hub, 'hearing', fake_hearing), patch.object(hub, 'selected', return_value=SimpleNamespace(id='desk')),
+              patch.object(enrolled_people, 'names', return_value={'Brandon'}),
+              patch.object(config, 'get', side_effect=lambda k, d=None: {'check_ins': True, 'muted': False, 'volume': 80}.get(k, d))):
+            # Too early (4s, only 2 face checks) -> MUST NOT ask "who are you?" yet!
+            mgr._tick_arrivals(time.monotonic() + 50.0)
+            fake_brain.announce.assert_not_called()
+            # Enough time (11s) but looking away (face_visible=False) -> STILL waits!
+            state.update(age=11.0, face_checks=7, face_visible=False)
+            mgr._tick_arrivals(time.monotonic() + 60.0)
+            fake_brain.announce.assert_not_called()
+            # Clear frontal checks (>=6) and >=9s -> now politely asks who they are.
+            state.update(age=11.0, face_checks=7, face_visible=True)
+            mgr._tick_arrivals(time.monotonic() + 70.0)
+            fake_brain.announce.assert_called_once()
+            self.assertIn('what’s your name', fake_brain.announce.call_args.args[1].lower())
+
     def test_memory_consolidation_relationships_and_visual_callbacks(self):
         owner = 'ShirtDebateFixture'
         payload = json.dumps({
