@@ -163,8 +163,10 @@ class Robot(Device):
             return state
         return None
 
-    def macro(self, request_id, name, prompt):
+    def macro(self, request_id, name, prompt, mode=None):
         item = {'id': request_id, 'name': name, 'prompt': prompt, 'auto_send': self.auto_handoff}
+        if mode in ('fast', 'think'):
+            item['mode'] = mode   # ChatGPT's thinking effort: Instant or Medium
         return bool(self.post('macro', item) or self.post('macro', item))
 
     def macro_status(self, request_id):

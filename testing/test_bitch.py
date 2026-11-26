@@ -703,6 +703,7 @@ class MotionTests(unittest.TestCase):
             desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.,
                                    S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
             motion = pi.Motion(desk)
+            motion.rng = __import__('random').Random(1)   # same gesture variation in both runs
             motion.started = True
             for tick in range(90):
                 motion.step('speak-gentle', 0., -.67, tick * .02, .02, .65, voice_accent)
@@ -721,6 +722,7 @@ class MotionTests(unittest.TestCase):
             desk = SimpleNamespace(cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.,
                                    S=[SimpleNamespace(us=lambda _: None) for _ in range(4)])
             motion = pi.Motion(desk)
+            motion.rng = __import__('random').Random(1)
             motion.started = True
             for tick in range(60):
                 motion.step('speaking', 0., -.67, tick * .02, .02, .5, 0., None, gesture)
@@ -1410,6 +1412,19 @@ class PiProtocolTests(unittest.TestCase):
         self.assertIn('passing along their request on their behalf', macros.format_prompt('Find me a desk fan.'))
         self.assertIn('\nFind me a desk fan.\n', macros.format_prompt('Find me a desk fan.'))
 
+    def test_chatgpt_effort_is_instant_for_quick_lookups_and_medium_for_reasoning(self):
+        from core import helper
+
+        for quick in ("What's the weather today?", 'What time does Costco close?', 'Who won the game last night?',
+                      'Do I have anything on my calendar tomorrow?'):
+            self.assertEqual(helper.effort(quick), 'fast', quick)
+        for deep in ('Give me my morning briefing.', 'Compare the M4 Pro and M1 Pro for coding.',
+                     'Plan a weekend in Monterey.', 'Explain how a brushless motor works.', 'Should I buy a 3D printer?'):
+            self.assertEqual(helper.effort(deep), 'think', deep)
+        with tempfile.TemporaryDirectory() as folder, patch.object(macros, 'QUEUE', Path(folder)):
+            macros.enqueue({'name': 'agent', 'id': '4' * 32, 'prompt': 'Weather?', 'auto_send': True, 'mode': 'fast'})
+            self.assertEqual(macros.read_job('4' * 32)['mode'], 'fast')
+
     def test_devtools_websocket_frames_round_trip(self):
         import desktop_chatgpt as dc
 
@@ -1483,7 +1498,7 @@ class PiProtocolTests(unittest.TestCase):
             macros.send_pending()
             macros.enqueue(request)
             macros.send_pending()
-            send.assert_called_once_with(macros.format_prompt(request['prompt']))
+            send.assert_called_once_with(macros.format_prompt(request['prompt']), mode=None)
             self.assertEqual(macros.handoff_status(request['id']), {'state': 'returned', 'answer': 'Good.'})
             self.assertEqual(macros.handoff_status(uncertain['id'])['state'], 'send_unverified')
             self.assertEqual(macros.handoff_status(manual['id'])['state'], 'queued')

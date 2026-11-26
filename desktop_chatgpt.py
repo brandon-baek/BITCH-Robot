@@ -446,7 +446,7 @@ def read_reply(tab, before, wait=SEND_WAIT_SECONDS):
     return {'state': 'submitted' if sent else 'send_unverified', 'reason': 'ChatGPT took too long to finish.'}
 
 
-def run_chatgpt(prompt, *, send):
+def run_chatgpt(prompt, *, send, mode=None):
     problem = start_browser()
     if problem:
         return {'state': 'ready', 'reason': problem}
@@ -457,6 +457,11 @@ def run_chatgpt(prompt, *, send):
         problem = open_new_chat(tab)
         if problem:
             return {'state': 'ready', 'reason': problem}
+        if mode:
+            try:
+                choose_mode(tab, mode)
+            except (RuntimeError, TimeoutError):
+                close_menu(tab)
         if not enter_prompt(tab, prompt):
             return {'state': 'ready', 'reason': 'Could not type the request into ChatGPT on the Pi.'}
         if not send:
@@ -495,33 +500,51 @@ def close_menu(tab):
         tab.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'Escape', 'code': 'Escape', 'windowsVirtualKeyCode': 27})
 
 
+def press(tab, key, code=None, keycode=0):
+    for kind in ('keyDown', 'keyUp'):
+        tab.call('Input.dispatchKeyEvent', {'type': kind, 'key': key, 'code': code or key, 'windowsVirtualKeyCode': keycode})
+
+
 def choose_mode(tab, mode):
-    """Pick ChatGPT's thinking level for this request: 'fast' or 'think'. Leaves it alone if the menu changed."""
-    wanted = MODES.get(mode)
-    if not wanted:
+    """Set ChatGPT's thinking effort for this request: 'fast' (Instant) or 'think' (Medium).
+
+    The effort control is a slider in the menu next to the composer (Instant, Medium, then higher). Setting it
+    with the keyboard is the standard way to drive a slider. Returns the level ChatGPT shows afterwards, or None
+    if the control wasn't found (then ChatGPT just uses whatever level it was on)."""
+    if mode not in MODES:
         return None
     label, items = open_mode_menu(tab)
     if label is None:
         return None
-    for pattern in wanted:
-        for index, text in enumerate(items):
-            if re.search(pattern, text, re.I):
-                if re.search(pattern, label, re.I):
-                    close_menu(tab)
-                    return text
+    level = None
+    focused = tab.run('const s = Array.from(document.querySelectorAll(\'[role="slider"]\')).find((e) => e.offsetParent); '
+                      'if (!s) return false; s.focus(); return true;')
+    if focused:
+        press(tab, 'Home', keycode=36)                       # Instant
+        if mode == 'think':
+            press(tab, 'ArrowRight', keycode=39)             # one step up: Medium
+        time.sleep(.3)
+        level = tab.run('const s = Array.from(document.querySelectorAll(\'[role="slider"]\')).find((e) => e.offsetParent); '
+                        'return s ? (s.getAttribute("aria-valuetext") || s.getAttribute("aria-valuenow")) : null;')
+    else:
+        # An older layout listed the levels as menu items instead.
+        for pattern in MODES[mode]:
+            index = next((i for i, text in enumerate(items) if re.search(pattern, text, re.I)), None)
+            if index is not None:
                 tab.run(f'const e = page.modeItems()[{index}]; if (e) e.click(); return true;')
-                time.sleep(.3)
-                return text
+                level = items[index]
+                break
     close_menu(tab)
-    return None
+    time.sleep(.2)
+    return level
 
 
 def draft(prompt):
     return run_chatgpt(prompt, send=False).get('state') == 'drafted'
 
 
-def submit(prompt):
-    return run_chatgpt(prompt, send=True)
+def submit(prompt, mode=None):
+    return run_chatgpt(prompt, send=True, mode=mode)
 
 
 def status():
@@ -560,6 +583,10 @@ if __name__ == '__main__':
     elif sys.argv[1:2] == ['status']:
         print(json.dumps(status(), indent=2))
     elif sys.argv[1:2] == ['ask'] and len(sys.argv) > 2:
-        print(json.dumps(submit(' '.join(sys.argv[2:])), indent=2, ensure_ascii=False))
+        mode = sys.argv[2] if sys.argv[2] in MODES else None
+        question = ' '.join(sys.argv[3:] if mode else sys.argv[2:])
+        started = time.monotonic()
+        print(json.dumps(submit(question, mode=mode), indent=2, ensure_ascii=False))
+        print(f'{time.monotonic() - started:.1f} s')
     else:
-        print('usage: python3 desktop_chatgpt.py start | restart | status | ask "question"')
+        print('usage: python3 desktop_chatgpt.py start | restart | status | modes | ask [fast|think] "question"')

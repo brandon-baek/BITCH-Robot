@@ -46,6 +46,8 @@ def enqueue(item):
               'created_at': datetime.now(timezone.utc).isoformat()}
     if item.get('auto_send') is True:
         record.update(auto_send=True, state='queued')
+    if item.get('mode') in ('fast', 'think'):
+        record['mode'] = item['mode']
     with tempfile.NamedTemporaryFile(mode='w', dir=QUEUE, encoding='utf-8') as temporary:
         json.dump(record, temporary, ensure_ascii=False)
         temporary.flush()
@@ -139,7 +141,7 @@ def send_pending():
                 record['state'] = 'sending'
                 write_job(path, record)
             with desktop_lock:
-                result = desktop_chatgpt.submit(format_prompt(record['prompt']))
+                result = desktop_chatgpt.submit(format_prompt(record['prompt']), mode=record.get('mode'))
             if result.get('state') not in ('ready', 'submitted', 'send_unverified', 'returned'):
                 result = {'state': 'send_unverified'}
             with handoff_lock:

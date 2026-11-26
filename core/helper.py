@@ -36,6 +36,20 @@ LOCAL_TALK = re.compile(
     r"what (?:am i|do you see|did i|do you remember|can you do)|"
     r"look (?:at|here|there|around)|follow my|dance|disco|opera|sing|routine)\b", re.I)
 
+# Requests that deserve ChatGPT's thinking (Medium) instead of Instant: reasoning, planning, writing, briefings.
+THINK = re.compile(
+    r"\b(?:brief(?:ing)?|catch me up|rundown|plan(?:ning)?|compare|comparison|versus|vs\.?|pros and cons|"
+    r"trade-?offs?|explain|why (?:do|does|is|are|did|would)|how (?:does|do|would|could|can) .{0,40}work|"
+    r"step[- ]by[- ]step|research|analy[sz]e|summari[sz]e|recommend|which (?:one|is better)|should I|"
+    r"write|draft|debug|calculate|figure out|strategy|itinerary|budget)\b", re.I)
+
+
+def effort(text):
+    """'fast' (Instant, a few seconds) for quick facts and lookups; 'think' (Medium) when it takes real reasoning."""
+    text = text or ''
+    return 'think' if THINK.search(text) or len(text.split()) > 30 else 'fast'
+
+
 WAIT = 480              # total seconds to keep watching a long background request
 BACKGROUND_AFTER = 12   # seconds before a pending lookup turns into a background notification
 LOST = 25               # seconds without hearing from the Pi before reporting connection loss
@@ -135,7 +149,7 @@ def start(brain, source, identity, request, conversation=(), *, user_text='', re
     prompt = instructions(request, list(conversation), speaker=identity or getattr(brain, 'speaker', None),
                           remembered=remembered, explicit=explicit)
     request_id = uuid.uuid4().hex
-    if not robot.macro(request_id, 'agent', prompt[:2400]):
+    if not robot.macro(request_id, 'agent', prompt[:2400], effort(user_text or request)):
         return ('I couldn’t reach the Pi to ask ChatGPT.'
                 if explicit else 'I couldn’t reach the Pi to check on that right now.')
     if identity:
