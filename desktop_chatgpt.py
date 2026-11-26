@@ -71,8 +71,10 @@ PAGE = r'''
       && /instant|light|medium|heavy|standard|extended|thinking|auto|fast|pro/i.test((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || ''))) || null;
   };
   const modeItems = () => all('[role="menuitemradio"], [role="menuitem"], [role="option"]').filter(visible);
-  const newChatLink = () => all('[data-testid="create-new-chat-button"], a[href="/"]')
-    .find((e) => visible(e) && /new chat/i.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''))) || null;
+  // Exactly "New chat": the sidebar also has "New chat in <project>" buttons, which BITCH must never use.
+  const newChatLink = () => all('[data-testid="create-new-chat-button"], a, button')
+    .find((e) => visible(e) && ((e.getAttribute('aria-label') || '').trim() === 'New chat'
+      || (e.innerText || '').trim() === 'New chat' || e.matches('[data-testid="create-new-chat-button"]'))) || null;
   // True when ChatGPT has marked the newest reply's turn as complete (it streams before that).
   const finished = () => {
     const r = replies(); const last = r[r.length - 1];
