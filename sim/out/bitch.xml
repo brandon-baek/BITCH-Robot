@@ -104,10 +104,10 @@
         <geom name="s3_cable" type="box" size="0.003 0.0018 0.0007" pos="0 -0.0065 0.1281" quat="0.5 0.5 0.5 -0.5" material="cable" mass="0.0002"/>
         <body name="neck" pos="0 0 0.148">
           <joint name="neck" axis="0 -1 0" range="-0.7854 0.7854"/>
-          <geom name="s3_hub" type="cylinder" size="0.0035 0.0025" pos="0 -0.0315 0" quat="0.707107 0.707107 0 0" material="horn" mass="0.0004"/>
-          <geom name="s3_horn" type="box" size="0.012 0.003 0.001" pos="0.008 -0.033 0" quat="0.707107 0.707107 0 0" material="horn" mass="0.0006"/>
-          <geom name="neck_side" type="box" size="0.0325 0.0025 0.015" pos="0.0185 -0.0365 0" material="kraft" mass="0.002475" class="solid"/>
-          <geom name="neck_front" type="box" size="0.0025 0.02 0.0225" pos="0.0535 -0.019 0.0075" material="kraft" mass="0.0024" class="solid"/>
+          <geom name="s3_hub" type="cylinder" size="0.0035 0.0025" pos="0 -0.0315 0" quat="0.5 0.5 -0.5 0.5" material="horn" mass="0.0004"/>
+          <geom name="s3_horn" type="box" size="0.012 0.003 0.001" pos="0 -0.033 0.008" quat="0.5 0.5 -0.5 0.5" material="horn" mass="0.0006"/>
+          <geom name="neck_side" type="box" size="0.0325 0.0025 0.015" pos="0.0185 -0.0365 0.005" material="kraft" mass="0.002475" class="solid"/>
+          <geom name="neck_front" type="box" size="0.0025 0.02 0.02" pos="0.0535 -0.019 0.01" material="kraft" mass="0.0023" class="solid"/>
           <geom name="s4_case" type="box" size="0.0114 0.0061 0.01125" pos="0.05175 -0.0156 0.016" quat="0.5 -0.5 0.5 -0.5" material="servo" mass="0.011"/>
           <geom name="s4_pcb" type="box" size="0.0089 0.00485 0.0006" pos="0.0435 -0.0156 0.016" quat="0.5 -0.5 0.5 -0.5" material="pcb" mass="0.0005"/>
           <geom name="s4_tabs" type="box" size="0.01625 0.0061 0.00125" pos="0.05725 -0.0156 0.016" quat="0.5 -0.5 0.5 -0.5" material="servo" mass="0.0006"/>

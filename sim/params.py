@@ -81,6 +81,7 @@ BRACKET = (5.0, 24.0, 28.0)   # S2's upright cardboard tab, behind the servo: th
 NECK_LENGTH = 70.0       # S3 shaft to the tip of S4's shaft, front to back  MEASURED (~)
 NECK_RISE = 16.0         # S4 shaft above S3 shaft, with BITCH upright  MEASURED
 NECK_SIDE = (65.0, 5.0, 30.0)    # side panel: length, thickness, height  MEASURED (70 x 30 x 5 incl. the front panel)
+NECK_SIDE_BELOW = 10.0       # strip below the S3 shaft (horn points up)  ESTIMATE from photo
 NECK_SIDE_BACK = -14.0   # side panel's back edge, behind the S3 shaft  ESTIMATE (photos)
 NECK_FRONT = (5.0, 40.0, 30.0)   # front panel: thickness, width, height  ESTIMATE (back photo, scaled from S4's case)
 NECK_TOP = 14.0          # top edges of both panels, above the S4 shaft  ESTIMATE (back photo)

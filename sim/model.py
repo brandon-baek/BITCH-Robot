@@ -189,16 +189,16 @@ def neck_front():
 
 
 def neck_parts():
-    parts = place(horn('s3'), (0, S3_TIP, 0), frame((0, P.S2_SIDE, 0), X))
+    parts = place(horn('s3'), (0, S3_TIP, 0), frame((0, P.S2_SIDE, 0), Z))   # horn points up at upright
     sl, st, sh = P.NECK_SIDE; ft, fw, fh = P.NECK_FRONT
     top = P.NECK_RISE + P.NECK_TOP; front = neck_front()
     side_y = SIDE_IN + P.S2_SIDE * st / 2
-    parts.append(Part('neck_side', 'box', (sl, st, sh), (P.NECK_SIDE_BACK + sl / 2, side_y, 0.0), mat='kraft',
+    parts.append(Part('neck_side', 'box', (sl, st, sh), (P.NECK_SIDE_BACK + sl / 2, side_y, sh / 2 - P.NECK_SIDE_BELOW), mat='kraft',
                       grams=cardboard(sl * sh) + P.GLUE_PER_JOINT, role='solid'))
     outer = SIDE_IN + P.S2_SIDE * st                                       # the L's outside corner
-    # the side strip is centered on the S3 shaft so the horn sits flat in the middle of it;
+    # the side strip reaches NECK_SIDE_BELOW under the S3 shaft and the rest above, so the upward horn lies on it;
     # the front panel is glued to its end, flush at the bottom, and rises to the S4 mount
-    f_bot = -sh / 2; fh = top - f_bot
+    f_bot = -P.NECK_SIDE_BELOW; fh = top - f_bot
     parts.append(Part('neck_front', 'box', (ft, fw, fh), (front - ft / 2, outer - P.S2_SIDE * fw / 2, top - fh / 2), mat='kraft',
                       grams=cardboard(fw * fh) + P.GLUE_PER_JOINT, role='solid'))
     parts += place(servo('s4'), (P.NECK_LENGTH, s4_y(), P.NECK_RISE), frame(X, (0, P.S2_SIDE, 0)))

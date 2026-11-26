@@ -74,14 +74,14 @@
     <visual name="s3_cable"><origin xyz="0 -0.0065 0.1281" rpy="1.5708 1.5708 0"/><geometry><box size="0.006 0.0036 0.0014"/></geometry><material name="c_55_25_10_100"/></visual>
   </link>
   <link name="neck">
-    <inertial><origin xyz="0.0459439 -0.0194122 0.0120559"/><mass value="0.019285"/>
-      <inertia ixx="3.5759e-06" ixy="-2.1700e-06" ixz="-1.5906e-06" iyy="7.4775e-06" iyz="-8.7584e-07" izz="8.0281e-06"/></inertial>
-    <visual name="s3_hub"><origin xyz="0 -0.0315 0" rpy="1.5708 -0 0"/><geometry><cylinder radius="0.0035" length="0.005"/></geometry><material name="c_7_7_9_100"/></visual>
-    <visual name="s3_horn"><origin xyz="0.008 -0.033 0" rpy="1.5708 -0 0"/><geometry><box size="0.024 0.006 0.002"/></geometry><material name="c_7_7_9_100"/></visual>
-    <visual name="neck_side"><origin xyz="0.0185 -0.0365 0" rpy="0 -0 0"/><geometry><box size="0.065 0.005 0.03"/></geometry><material name="c_70_55_37_100"/></visual>
-    <collision name="neck_side"><origin xyz="0.0185 -0.0365 0" rpy="0 -0 0"/><geometry><box size="0.065 0.005 0.03"/></geometry></collision>
-    <visual name="neck_front"><origin xyz="0.0535 -0.019 0.0075" rpy="0 -0 0"/><geometry><box size="0.005 0.04 0.045"/></geometry><material name="c_70_55_37_100"/></visual>
-    <collision name="neck_front"><origin xyz="0.0535 -0.019 0.0075" rpy="0 -0 0"/><geometry><box size="0.005 0.04 0.045"/></geometry></collision>
+    <inertial><origin xyz="0.0456543 -0.0194143 0.0132746"/><mass value="0.019185"/>
+      <inertia ixx="3.1088e-06" ixy="-2.2349e-06" ixz="-1.1420e-06" iyy="7.3919e-06" iyz="-6.0176e-07" izz="8.3828e-06"/></inertial>
+    <visual name="s3_hub"><origin xyz="0 -0.0315 0" rpy="1.5708 -1.5708 0"/><geometry><cylinder radius="0.0035" length="0.005"/></geometry><material name="c_7_7_9_100"/></visual>
+    <visual name="s3_horn"><origin xyz="0 -0.033 0.008" rpy="1.5708 -1.5708 0"/><geometry><box size="0.024 0.006 0.002"/></geometry><material name="c_7_7_9_100"/></visual>
+    <visual name="neck_side"><origin xyz="0.0185 -0.0365 0.005" rpy="0 -0 0"/><geometry><box size="0.065 0.005 0.03"/></geometry><material name="c_70_55_37_100"/></visual>
+    <collision name="neck_side"><origin xyz="0.0185 -0.0365 0.005" rpy="0 -0 0"/><geometry><box size="0.065 0.005 0.03"/></geometry></collision>
+    <visual name="neck_front"><origin xyz="0.0535 -0.019 0.01" rpy="0 -0 0"/><geometry><box size="0.005 0.04 0.04"/></geometry><material name="c_70_55_37_100"/></visual>
+    <collision name="neck_front"><origin xyz="0.0535 -0.019 0.01" rpy="0 -0 0"/><geometry><box size="0.005 0.04 0.04"/></geometry></collision>
     <visual name="s4_case"><origin xyz="0.05175 -0.0156 0.016" rpy="-1.5708 -0 -1.5708"/><geometry><box size="0.0228 0.0122 0.0225"/></geometry><material name="c_18_20_20_81"/></visual>
     <visual name="s4_pcb"><origin xyz="0.0435 -0.0156 0.016" rpy="-1.5708 -0 -1.5708"/><geometry><box size="0.0178 0.0097 0.0012"/></geometry><material name="c_11_41_20_100"/></visual>
     <visual name="s4_tabs"><origin xyz="0.05725 -0.0156 0.016" rpy="-1.5708 -0 -1.5708"/><geometry><box size="0.0325 0.0122 0.0025"/></geometry><material name="c_18_20_20_81"/></visual>
