@@ -202,6 +202,9 @@ def desktop_env():
 
 
 def chromium_path():
+    # The real binary, not Raspberry Pi OS's wrapper script, which forces renderer accessibility on every page.
+    if os.access('/usr/lib/chromium/chromium', os.X_OK):
+        return '/usr/lib/chromium/chromium'
     return shutil.which('chromium') or shutil.which('chromium-browser') or shutil.which('google-chrome')
 
 
@@ -268,12 +271,18 @@ def start_browser(wait=30.):
         path = PROFILE / name
         if path.is_symlink() and not browser_up():
             path.unlink(missing_ok=True)
+    # --password-store=basic: Chromium otherwise waits on the GNOME keyring for the key to its cookies, and when
+    # the keyring is stuck (two daemons, or locked with no prompt on screen) every page hangs on "Loading...".
+    # The profile folder is private to this user (0700). No accessibility bridge: it only slows the Pi down.
     command = [chromium, f'--user-data-dir={PROFILE}', f'--remote-debugging-port={PORT}',
                '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check',
+               '--password-store=basic', '--disable-renderer-accessibility',
                '--hide-crash-restore-bubble', '--disable-session-crashed-bubble',
                '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
                '--disable-backgrounding-occluded-windows', HOME_PAGE]
-    names = [key for key in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY') if env.get(key)]
+    env['NO_AT_BRIDGE'] = '1'
+    names = [key for key in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY', 'NO_AT_BRIDGE')
+             if env.get(key)]
     service = shutil.which('systemd-run')
     launched = False
     if service:
@@ -332,6 +341,9 @@ def open_new_chat(tab):
         except (RuntimeError, TimeoutError):
             continue
         if state and state.get('composer') and state.get('ready') != 'loading':
+            if state.get('login'):
+                # Signed out, ChatGPT still answers simple questions but has no access to the calendar or email.
+                return 'Sign in to ChatGPT in the BITCH Chromium window on the Pi.'
             return None
     if state and state.get('login'):
         return 'Sign in to ChatGPT in the BITCH Chromium window on the Pi.'
@@ -467,11 +479,16 @@ def status():
 
 
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['start']:
+    if sys.argv[1:2] == ['restart']:
+        subprocess.run(['pkill', '-u', str(os.getuid()), '-f', f'remote-debugging-port={PORT}'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+        print(start_browser() or f'BITCH Chromium restarted (DevTools on 127.0.0.1:{PORT}).')
+    elif sys.argv[1:2] == ['start']:
         print(start_browser() or f'BITCH Chromium is running (DevTools on 127.0.0.1:{PORT}).')
     elif sys.argv[1:2] == ['status']:
         print(json.dumps(status(), indent=2))
     elif sys.argv[1:2] == ['ask'] and len(sys.argv) > 2:
         print(json.dumps(submit(' '.join(sys.argv[2:])), indent=2, ensure_ascii=False))
     else:
-        print('usage: python3 desktop_chatgpt.py start | status | ask "question"')
+        print('usage: python3 desktop_chatgpt.py start | restart | status | ask "question"')
