@@ -34,7 +34,9 @@ personality, memory and habits, and it should notice things on its own instead o
 | `desk.py` | Pi | Servo drivers, `go()` easing, `Actor` spring-motion engine, remembered pose, bedtime and wake-up |
 | `shows.py` | Pi | Performances (disco_pro and opera are synced to the music) |
 | `sounds.py`, `music.py` | Pi (sounds.py also on the Mac) | Synthesized creature voice, original music tracks, cached files |
-| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop /move /ping /mic; lip-sync, emotion poses, plays move steps |
+| `brain.py` | Pi | HTTP server on :8765: /look /speak /emote /say /hear /stop /move /ping /mic; lip-sync, emotion poses, plays move steps. Runs as the user service `pi/bitch-brain.service` |
+| `character.py`, `actor.py` | Pi | Gestures as readable poses (turn, lean, look, tilt): one lead action each, head first then body (`lag`), held key poses; conversation states are held postures. `Actor` is the spring integrator |
+| `desktop_chatgpt.py`, `macros.py` | Pi | BITCH's own Chromium (profile `~/.bitch-pi/chromium`, DevTools on 127.0.0.1:9223, `--password-store=basic` because the GNOME keyring hangs Chromium) drives chatgpt.com: effort slider (Instant/Medium), paste, Enter, read the reply, preload the next chat. `python3 desktop_chatgpt.py status|modes|controls|ask fast "…"` |
 | `face.py`, `hardware.py` | Pi | OLED googly-eye face (SSD1306 on I2C, RES on GPIO4/pin 7; pure-Python drawing, `--png` to test on a Mac); detects screen/mic/camera and reports them as caps in /ping |
 | `control.py` | Pi | Keyboard driving mode |
 | `core/` | Mac | BITCH's mind: `python -m core` (the BITCH app runs `python -m core --app`). App on :8780 (http) and :8781 (https) |
@@ -43,18 +45,19 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Whisper for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals; Kokoro voice with word-timed gestures |
 | `core/prosody.py` | Mac | How something was said (pitch, range, loudness, pace) against that mic's usual voice, as a note for the brain |
 | `core/rhythm.py` | Mac | How awake BITCH is (engaged, attentive, resting, asleep) so the motors only work when someone is there; hourly budget for unprompted motion |
-| `core/helper.py` | Mac | Hands weather, calendar, email and web requests to the signed-in ChatGPT on the Pi and speaks the answer when it returns |
+| `core/helper.py` | Mac | Hands weather, calendar, email and web requests to the signed-in ChatGPT on the Pi (picks Instant or Medium per request) and speaks the answer when it returns (about 15 s) |
 | `core/brain.py`, `persona.md`, `tools.py`, `llm.py` | Mac | Fast brain (qwen3.5:4b) answers in schema JSON; a `do` field lets it look, perform, run a routine or ask ChatGPT, offered only when the request calls for it |
 | `core/moves.py` | Mac | Move steps shared by the robot and the app; invents new moves (keyframes from the 9B, clamped to Actor limits) |
 | `core/life.py` | Mac | Mood, timers/reminders/routines, greetings and the one-time welcome, initiative, memory reflection, diary |
-| `core/memory.py`, `config.py` | Mac | SQLite memory (facts about people and conversation summaries, full-text search, unlocked by voice or face) and settings in `~/.bitch` (never in the repo) |
+| `core/memory.py`, `config.py` | Mac | SQLite memory (facts about people and conversation summaries, full-text search, unlocked by voice or face) and settings in `~/.bitch` (never in the repo). Every saved fact must quote the person's own words; `memory.clean()` runs nightly and from the app |
 | `core/server.py`, `push.py`, `tls.py` | Mac | FastAPI app + /link, phone pairing, Web Push, home certificate for https |
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
 | `sim/` | Mac | Measured 3D model for simulation and RL: `params.py` (every dimension) → `python -m sim.build` → MuJoCo, URDF, GLB/OBJ/STL, web viewer; Gymnasium envs `Bitch-LookAt-v0`, `Bitch-Pose-v0` in desk.py units at 50 Hz |
 | `testing/` | Mac | Fake servo board, fake Ollama, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH) |
 
-The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub and links the .py files into ~.
+The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub, links the .py files into ~, and restarts
+the `bitch-brain` user service (logs: `journalctl --user -u bitch-brain -f`).
 
 ## Working rules
 - BITCH runs 24/7. Motion that nobody asked for must go through `core/rhythm.py`; parked means unpowered. The Pi's

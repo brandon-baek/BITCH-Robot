@@ -61,6 +61,20 @@ lock = threading.Lock()
 tasks = []              # recent hub requests, newest last, shown in Settings
 
 
+# Things BITCH cannot know by itself: live data, their accounts, and searches. These always go to ChatGPT.
+LIVE = re.compile(
+    r"\b(?:brief(?:ing)?|catch me up|rundown|update me|daily summary|weather|forecast|rain(?:ing)?|snow(?:ing)?|"
+    r"temperature (?:outside|today|tomorrow)|umbrella|calendar|schedule|meetings?|appointments?|agenda|am I (?:free|busy)|"
+    r"e-?mails?|inbox|gmail|unread|messages? from|news|headlines|scores?|standings|who won|stocks?|share price|"
+    r"bitcoin|crypto|prices?|how much (?:is|does|are) .{0,30}(?:cost|now)|open (?:now|today|until)|close[sd]? (?:on|at|today)|"
+    r"hours|look (?:it |that |this )?up|search (?:for|the web)|google|latest|traffic|directions|commute|flights?|"
+    r"order status|deliver(?:y|ies)|my (?:tasks|docs?|documents|files|drive))\b", re.I)
+
+
+def needs_live(text):
+    return bool(text and not LOCAL_TALK.search(text) and (EXPLICIT_GPT.search(text) or LIVE.search(text)))
+
+
 def mentions_gpt(text):
     return bool(text and EXPLICIT_GPT.search(text))
 

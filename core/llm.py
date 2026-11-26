@@ -46,6 +46,22 @@ def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_
         raise OSError('Model stream ended before completion')
 
 
+SMALL_VISION = 'qwen3.5:4b-q4_K_M'   # quick background image checks, and the fallback for camera answers
+_vision = {}
+
+
+def vision_model():
+    """The chat model when it can see (so camera answers get the smart brain), otherwise the small one."""
+    model = config.get('chat_model')
+    if model not in _vision:
+        try:
+            with request('/api/show', {'model': model}, 5) as response:
+                _vision[model] = 'vision' in (json.load(response).get('capabilities') or ())
+        except (OSError, ValueError, KeyError):
+            return SMALL_VISION
+    return model if _vision[model] else SMALL_VISION
+
+
 def warm_context(system):
     model = config.get('chat_model')
     try:

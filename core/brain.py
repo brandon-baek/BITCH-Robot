@@ -12,6 +12,7 @@ import time
 import uuid
 
 from . import config, gaze, helper, llm, memory, notifications, prosody, skills, streaming, voice, voicechat
+from .register import register
 from .hub import hub
 from .life import life
 
@@ -150,7 +151,7 @@ v is n neutral, w warm, u upbeat, g gentle, e emphatic, p playful, s sad, a mock
 say is what you say out loud. Begin with a direct answer or a concrete reaction to the latest utterance, and keep that first sentence short. Answer every part and honor requested examples, steps, or length. Don't invent details about the room, the person, previous turns, or actions you took. Ask one short question when a detail matters. Keep jokes on topic. If someone shares a hard experience, acknowledge what they actually said.
 Answer their mood with your voice code: meet excitement with u or p, sadness with g, sarcasm with a dry p or a, and real anger with a steady n or w. If the reply changes mood, put a new voice code in square brackets just before the next sentence, for example "Oh, please. [p] Fine, you win." Keep one voice when the mood stays the same.
 end is false unless the speaker is clearly wrapping up and has no further question or request. For a closing turn, use warm delivery and just acknowledge or say goodbye."""
-MEMORY_DIRECTION = """Then add note. Use the speaker's first person for a new lasting preference, named ongoing goal, or fact they ask you to keep. Otherwise use an empty string. Skip guesses, temporary details, secrets, other people's private information, and health, legal or financial details."""
+MEMORY_DIRECTION = """Then add note. When they state a new lasting preference, named ongoing project or goal, or a fact they ask you to keep, write it in THEIR words as they would say it (for example "I prefer oat milk in my coffee"). Otherwise use an empty string. Skip guesses, temporary details, secrets, other people's private information, and health, legal or financial details."""
 SPOKEN_PROPERTIES = {
     'v': {'type': 'string', 'enum': [*VOICE_CODE, *PERFORMANCE_CODE]},
     'say': {'type': 'string'},
@@ -963,10 +964,11 @@ class Brain:
                 ' Never mention ChatGPT unless they explicitly brought it up.' if not explicit_gpt else ''
             )
             lines.append(
-                'lookup: your background information hub handles almost everything informational — briefings, '
-                'catch-me-ups, weather, schedule, messages, tasks, news, web lookups, facts, explanations, '
-                'planning, recommendations, and general questions. Keep do="none" ONLY for brief casual banter, '
-                'greetings, feelings, jokes, or questions about yourself. When do="lookup", put the complete '
+                'lookup: your background information hub, for what you cannot know yourself: live or personal '
+                'data (weather, news, scores, prices, store hours, their calendar, email, messages, tasks, '
+                'briefings), web searches, and long detailed explanations or plans they ask for. Answer everything '
+                'else yourself with do="none": conversation, feelings, jokes, opinions, advice, quick math, and '
+                'everyday knowledge you are sure of. When do="lookup", put the complete '
                 'self-contained request in task (empty string when do is not lookup), and in say give ONLY a '
                 'short 2–5 word line like "Let me check.", "One sec.", or "Looking into it." Do NOT guess the '
                 'answer and do NOT mention checking calendar, email, or specific apps unless asked about them.'
@@ -1104,12 +1106,14 @@ class Brain:
                           'required': ['do', *schema['required'], *extra]}
                 system += ('\nBegin with do. Choose an action when the latest request calls for it:\n- '
                            + '\n- '.join(lines))
-                if 'lookup' in actions and helper.should_lookup(text):
+                if 'lookup' in actions and helper.needs_live(text):
                     system += '\nThis request needs your information hub: set do to "lookup".'
             elif lines:
                 system += '\n' + ' '.join(lines)
         if self.speaker:
             system += '\nThe enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.'
+        # Start polished, loosen up over the conversation as they talk casually (kept per person).
+        system += '\n' + register.direction(register.heard(identity or self.speaker or 'guest', text))
         system += f'\nIt is {datetime.now():%A %-I:%M %p}.'
         remembered = memory.context(identity, text)
         notes = bool(remembered)
@@ -1209,7 +1213,7 @@ class Brain:
 
             stream_options = {'on_delta': speak_as_written, 'stop': self.hush}
         try:
-            reply = llm.chat(messages, schema=schema, model='qwen3.5:4b-q4_K_M' if visual else None,
+            reply = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
                              temperature=.27 if not (visual or can_select_show) else .45,
                              **stream_options)
         except LookFirst:

@@ -819,9 +819,32 @@ _PREFERENCE = re.compile(r"\b(?:i (?:definitely |usually |really )?(?:prefer|lik
 _CLEAR_PREFERENCE = re.compile(r"^I (?:definitely |usually )?prefer [^.?!]+[.]?$", re.I)
 
 
+def first_person(note, owner):
+    """'I know Brandon prefers oat milk in his coffee' -> 'I prefer oat milk in my coffee'."""
+    note = re.sub(r"^(?:i (?:know|remember|noted?)(?: that)?|note:?|remember(?: that)?)\s+", '', note.strip(), flags=re.I)
+    if owner:
+        note = re.sub(rf"\b{re.escape(owner)}(?:'s|’s)\b", 'my', note, flags=re.I)
+        note = re.sub(rf"\b{re.escape(owner)}\b", 'I', note, flags=re.I)
+    pronouns = {'his': 'my', 'her': 'my', 'their': 'my', 'he': 'I', 'she': 'I', 'they': 'I', "he's": "I'm", "she's": "I'm"}
+    verbs = {'prefers': 'prefer', 'likes': 'like', 'loves': 'love', 'hates': 'hate', 'is': 'am', 'has': 'have',
+             'wants': 'want', 'uses': 'use', 'goes': 'go', 'works': 'work', 'needs': 'need'}
+    words = []
+    for word in note.split():
+        lower = word.casefold()
+        if lower in pronouns:
+            word = pronouns[lower]
+        elif lower in verbs and words and words[-1] == 'I':   # only "he prefers" -> "I prefer", not "band is"
+            word = verbs[lower]
+        words.append(word)
+    note = ' '.join(words)
+    return note[:1].upper() + note[1:] if note else note
+
+
 def remember_in_context(owner, text, suggestion):
     if not suggestion and _CLEAR_PREFERENCE.fullmatch(text.strip()):
         suggestion = text.strip()
+    if isinstance(suggestion, str) and suggestion:
+        suggestion = first_person(suggestion, owner)
     if not isinstance(suggestion, str) or not suggestion or len(suggestion) > 180:
         return False
     if '?' in text or _PRIVATE.search(text + ' ' + suggestion) or not _PREFERENCE.search(text):

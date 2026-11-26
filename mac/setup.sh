@@ -59,6 +59,8 @@ if command -v ollama >/dev/null; then
     if ollama list >/dev/null 2>&1; then break; fi
     sleep 0.5
   done
+  # The conversation brain (about 18 GB, needs 32 GB of RAM) and the small model for quick camera checks.
+  ollama pull codecraftersllc/ornith-1.5-35b-a3b-abliterated || echo "!! When Ollama is running, run: ollama pull codecraftersllc/ornith-1.5-35b-a3b-abliterated"
   ollama pull qwen3.5:4b-q4_K_M || echo "!! When Ollama is running, run: ollama pull qwen3.5:4b-q4_K_M"
 else echo "!! Ollama command not found. Open the Ollama app once, then run this again."; fi
 

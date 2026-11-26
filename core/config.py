@@ -9,7 +9,9 @@ HOME = Path(os.environ.get('BITCH_HOME', '~/.bitch')).expanduser()
 HOME.mkdir(parents=True, exist_ok=True)
 APP_DIR = ROOT / 'app'
 DEFAULTS = {
-    'chat_model': 'qwen3.5:4b-q4_K_M',
+    # Chosen by testing/eval_models.py (Nov 2026): best mix of personality, reasoning and reliable tool use.
+    'brain_v2': False,
+    'chat_model': 'codecraftersllc/ornith-1.5-35b-a3b-abliterated:latest',
     'voicechat_model': '',
     'voicechat_bin': '',
     'voicechat_enabled': False,
@@ -45,8 +47,10 @@ try:
         stored = {}
 except (OSError, ValueError):
     stored = {}
-if stored.get('chat_model') == 'qwen3.5:4b':
+if stored.get('chat_model') in ('qwen3.5:4b', 'qwen3.5:4b-q4_K_M') and not stored.get('brain_v2'):
+    # Once: move from the old small brain to the new default. A model chosen after this stays chosen.
     stored['chat_model'] = DEFAULTS['chat_model']
+    stored['brain_v2'] = True
 for old, new in [('mic_on', 'mic_source'), ('camera_on', 'camera_source')]:
     if stored.get(old) is False:
         stored.setdefault(new, 'off')
