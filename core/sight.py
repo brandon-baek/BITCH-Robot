@@ -249,7 +249,6 @@ class Sight:
         threading.Thread(target=self.pointing.run, args=(model,), daemon=True).start()
         threading.Thread(target=self.detect, daemon=True).start()
         threading.Thread(target=self.guide, daemon=True).start()
-        threading.Thread(target=self.check_ins, daemon=True).start()
 
     def feed(self, source, image):
         with self.lock:
@@ -412,6 +411,30 @@ class Sight:
             names = sorted({entry['name'] for entry in self.frame[3]['people'] if entry['name'] in known})
             return {'names': names, 'others': len(self.frame[3]['people']) - len(names)}
 
+    def people_snapshot(self):
+        """Snapshot of all currently visible tracked people with age, box, center, and image for arrival intelligence."""
+        with self.lock:
+            now = time.monotonic()
+            if not self.frame or now - self.frame[0] > .9 or not hub.accepts(self.target_source, 'eyes'):
+                return None
+            received, _, jpeg, info = self.frame
+            known = people.names('face') | people.names('voice')
+            entries = []
+            for item in info['people']:
+                person = self.attention.people.get(item['id'])
+                if not person:
+                    continue
+                name = item['name'] if item['name'] in known else None
+                entries.append({
+                    'id': item['id'],
+                    'name': name,
+                    'box': person['box'],
+                    'center': center(person['box']),
+                    'age': max(0.0, now - person['first']),
+                    'face_fresh': now - person.get('face_confirmed_at', -math.inf) < 2.5,
+                })
+            return {'camera': self.target_source, 'received': received, 'image': jpeg, 'people': entries}
+
     def faces(self):
         """Small pictures of the faces in view right now, so you can see who BITCH means. Kept in memory only."""
         with self.lock:
@@ -533,6 +556,8 @@ class Sight:
                 brain.check_in(phrase, source.id)
 
     def guide(self):
+        from .life import life
+
         last_camera = None
         last_focus = None
         last_aim = None
@@ -549,6 +574,9 @@ class Sight:
             listening = bool(brain and brain.followup_seconds()) or phase == 'Listening'
             energy, chirping, speech_pitch = voice.articulation()
             speaking = bool(brain and brain.busy.is_set() and hub.status == 'Speaking')
+            mood = life.mood_vector()
+            life_pose = life.active_pose(now)
+            sfx_volume = (config.get('volume') / 100.0) if (config.get('sounds') and not config.get('muted')) else 0.0
             # Replies usually start within a second now, so keep eye contact while thinking
             # and only look away to ponder when an answer takes longer.
             thinking_since = (thinking_since or now) if hub.status == 'Thinking' else None
@@ -627,6 +655,8 @@ class Sight:
             engaged = bool(brain and (brain.busy.is_set() or brain.followup_seconds())) or phase in ('Listening', 'Understanding')
             state, beat = rhythm.update(target is not None, engaged, brain.last_interaction if brain else 0., now)
             calm = state in ('attentive', 'glancing')
+            if not social and life_pose:
+                social = life_pose
             if not social and beat and idle and robot and getattr(robot, 'rhythm', False):
                 social = beat   # nodding off, or the morning stretch
             resting = state in ('resting', 'asleep') and not social and not cue and not preview
@@ -644,7 +674,7 @@ class Sight:
             elif cue:
                 base, neck = aim_at(*cue, calibration)
                 mode = 'look-target' if robot.joint_attention else 'watch'
-                result = robot.look(mode, base, neck)
+                result = robot.look(mode, base, neck, mood=mood, sfx_volume=sfx_volume)
                 drive = {'mode': ('Following your finger' if following_finger else 'Looking where you asked') if result else 'Pi did not accept gaze'}
                 if result:
                     drive['point'] = [round(value, 3) for value in cue]
@@ -665,12 +695,14 @@ class Sight:
                 if not robot.expressive:
                     mode = {'mirror-left': 'attend', 'mirror-right': 'attend', 'happy': 'recognize',
                             'scared': 'notice', 'sad': 'ponder', 'proud': 'recognize'}.get(mode, mode)
-                result = robot.look(mode, base, neck, energy, accent, tilt, lean)
+                result = robot.look(mode, base, neck, energy, accent, tilt, lean, mood=mood, sfx_volume=sfx_volume)
                 labels = {
                     'notice': 'Noticed you', 'double-take': 'Double take', 'seek': 'Looking for you',
                     'ponder': 'Thinking', 'attend': 'Your turn', 'listen': 'Listening',
                     'recognize': 'Recognizing', 'mirror-left': 'Mirroring your tilt', 'mirror-right': 'Mirroring your tilt',
-                    'happy': 'Happy', 'sad': 'Sympathetic', 'proud': 'Proud', 'scared': 'Startled',
+                    'happy': 'Happy', 'sad': 'Sympathetic', 'lonely': 'Feeling lonely', 'grumpy': 'Grumpy',
+                    'victory': 'Celebrating', 'alarm': 'Wake-up alarm', 'yawn': 'Sleepy',
+                    'proud': 'Proud', 'scared': 'Startled',
                 }
                 label = 'Speaking' if speaking and not chirping else labels.get(social, 'Speaking')
                 drive = {'mode': label if result else 'Pi did not accept conversation pose'}
@@ -682,11 +714,11 @@ class Sight:
                 drive = {'mode': 'Idle motion off' if not idle else 'Asleep' if state == 'asleep' else 'Resting'}
             elif target:
                 base, neck = attention_aim
-                result = robot.look('watch', base, neck, calm=calm)
+                result = robot.look('watch', base, neck, calm=calm, mood=mood, sfx_volume=sfx_volume)
                 drive = {'mode': ('Glancing up' if state == 'glancing' else 'Watching quietly' if calm else 'Watching')
                          if result else 'Pi did not accept tracking'}
             else:
-                result = robot.look('scan')
+                result = robot.look('scan', mood=mood, sfx_volume=sfx_volume)
                 drive = {'mode': 'Looking around' if result else 'Pi did not accept motion'}
             if robot and robot.online and (preview or idle or social or cue) and result:
                 if result.get('beat'):

@@ -19,6 +19,7 @@ import time
 import wave
 from urllib.parse import parse_qs, urlsplit
 
+import character
 import macros
 import stage
 from actor import Actor
@@ -98,9 +99,15 @@ BEATS = {
 BEATS['doze'] = ((0, 0, 0, 0, 0), (.9, 0, .04, -.09, .06), (2.1, 0, .07, -.2, .13),
                  (2.45, 0, .05, -.07, .07), (3.9, 0, .09, -.23, .15), (5.2, 0, .09, -.24, .15))
 BEATS['recognize'] = BEATS['happy']
+BEATS['lonely'] = BEATS['sad']
+BEATS['grumpy'] = BEATS['speak-annoyed']
+BEATS['victory'] = BEATS['happy']
+BEATS['alarm'] = BEATS['double-take']
+BEATS['yawn'] = BEATS['doze']
 SPEECH = {name for name in BEATS if name == 'speaking' or name.startswith('speak-')}
 SOCIAL = {'notice', 'attend', 'listen', 'ponder', 'speaking', 'recognize', 'mirror-left', 'mirror-right',
-          'happy', 'sad', 'scared', 'proud', 'double-take', 'seek', 'look-target', 'doze', 'stretch'} | SPEECH
+          'happy', 'sad', 'lonely', 'grumpy', 'victory', 'alarm', 'yawn',
+          'scared', 'proud', 'double-take', 'seek', 'look-target', 'doze', 'stretch'} | SPEECH
 IDLE_BEATS = ('curious', 'glance', 'shy', 'stretch', 'peek')
 ROOM_BEATS = ('survey', 'stretch', 'glance', 'sad', 'peek')
 SOFTNESS = {'doze': .4, 'stretch': .7, 'sad': .44, 'shy': .82, 'curious': .82, 'ponder': .82, 'scared': 2.1,
@@ -147,11 +154,15 @@ def clamp(value, limit):
 
 
 class Motion:
-    def __init__(self, desk):
+    def __init__(self, desk, on_sfx=None):
         self.desk = desk
+        self.on_sfx = on_sfx
         self.started = False
         self.rng = random.Random()
+        self.noise = character.OrganicNoise(self.rng)
         self.idle_beat = None
+        self.idle_phrase = None
+        self.social_phrase = None
         self.idle_anchor = None
         self.last_beat = None
         self.next_beat = 0
@@ -167,6 +178,8 @@ class Motion:
         self.gesture_side = 1
         self.recent_idle = []
         self.base_still = 0.
+        self.head_still = 0.
+        self.last_sfx_at = -100.
         self.wear = {'powered': 0., 'moving': 0., 'travel': [0.] * 4}
 
     def start(self):
@@ -183,7 +196,8 @@ class Motion:
         self.restoring = abs(REST[1] - desk.cur[1]) > 0.02
         self.started = True
 
-    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None, gesture=(0., 0.), calm=False):
+    def step(self, mode, base, neck, now, dt, energy=0.0, accent=0.0, score_frame=None, gesture=(0., 0.),
+             calm=False, mood=None, sfx_volume=0.0):
         if not self.started:
             if mode == 'park' and score_frame is None:
                 return
@@ -194,9 +208,8 @@ class Motion:
         actor = self.actor
         actor.low = (-BASE, -1.06, NECK[0], -.64)
         actor.high = (BASE, -.42, NECK[1], .64)
-        # While talking the head moves quicker, so nods and shakes land on the syllable instead of
-        # being smoothed away. The heavy base and arm keep their normal limits.
-        talking = mode in SPEECH
+        # While talking or alerting the head moves quicker so nods/shakes land cleanly.
+        talking = mode in SPEECH or mode in ('alarm', 'victory')
         actor.speed = (.58 * min(1., max(0., desk.BASE_SPEED)), .68, 1.5 if talking else .85, 2.6 if talking else 1.65)
         actor.accel = (1.55, 2.1, 3.5, 7.4)
         if score_frame is not None:
@@ -212,14 +225,22 @@ class Motion:
         if changed and (mode == 'look-target' or self.mode == 'look-target'):
             self.gaze_anchor = None
         if changed:
-            if mode in SPEECH or mode in ('ponder', 'seek', 'double-take', 'look-target'):
+            if mode in SPEECH or mode in ('ponder', 'seek', 'double-take', 'look-target', 'victory', 'alarm', 'grumpy'):
                 self.gesture_side = (-1 if base > .36 else 1 if base < -.36 else -self.gesture_side)
             self.idle_beat = None
+            self.idle_phrase = None
+            self.social_phrase = None
             self.social_at = now
             self.next_beat = now + self.rng.uniform(.85, 2.1)
             if mode == 'scan':
                 self.scan_base = desk.cur[0]
             self.mode = mode
+            if mode in SOCIAL and mode not in SPEECH:
+                beat_name = 'mirror' if mode.startswith('mirror-') else mode
+                side = (-1 if mode == 'mirror-left' else 1 if mode == 'mirror-right'
+                        else self.gesture_side if mode in ('ponder', 'seek', 'double-take', 'look-target', 'victory', 'alarm', 'grumpy')
+                        else (-1 if base > .30 else 1 if base < -.30 else self.rng.choice((-1, 1))))
+                self.social_phrase = character.synthesize_phrase(beat_name, self.rng, side=side, mood=mood)
         if mode == 'scan':
             base, neck = self.scan_base, REST[2]
         elif mode == 'park':
@@ -235,42 +256,91 @@ class Motion:
 
         self.beat = mode
         frames = None
+        active_phrase = None
+        phrase_age = 0.0
         direction = 1
         if mode in SOCIAL:
             self.beat = 'mirror' if mode.startswith('mirror-') else mode
             direction = -1 if mode == 'mirror-left' else 1
-            if mode in SPEECH or mode in ('ponder', 'seek', 'double-take', 'look-target'):
+            if mode in SPEECH or mode in ('ponder', 'seek', 'double-take', 'look-target', 'victory', 'alarm', 'grumpy'):
                 direction = self.gesture_side
-            frames, age = BEATS[self.beat], now - self.social_at
+            age = now - self.social_at
+            if self.social_phrase is not None:
+                # Re-synthesize alarm loop smoothly while alarm stays active.
+                if mode == 'alarm' and age >= self.social_phrase.duration + 0.25:
+                    self.social_at = now
+                    age = 0.0
+                    self.gesture_side = -self.gesture_side
+                    self.social_phrase = character.synthesize_phrase('alarm', self.rng, side=self.gesture_side, mood=mood)
+                active_phrase, phrase_age = self.social_phrase, age
+            else:
+                frames = BEATS[self.beat]
         elif mode in ('watch', 'scan'):
-            if self.idle_beat and self.idle_anchor and (abs(base-self.idle_anchor[0]) > .09
-                    or abs(neck-self.idle_anchor[1]) > .10):
-                self.idle_beat = None
+            if (self.idle_beat or self.idle_phrase) and self.idle_anchor and (
+                    abs(base - self.idle_anchor[0]) > .09 or abs(neck - self.idle_anchor[1]) > .10):
+                self.idle_beat = self.idle_phrase = None
                 self.next_beat = now + 1.35
-            if mode == 'watch' and not self.idle_beat and abs(base-desk.cur[0]) > .08:
-                self.next_beat = max(self.next_beat, now+1.65)
-            if calm and self.next_beat - now > 70:
-                self.next_beat = now + self.rng.uniform(25, 70)
-            if now >= self.next_beat:
-                choices = IDLE_BEATS if mode == 'watch' else ROOM_BEATS
-                self.last_beat = self.rng.choice([name for name in choices if name not in self.recent_idle])
-                self.recent_idle = (self.recent_idle + [self.last_beat])[-2:]
+            if mode == 'watch' and not (self.idle_beat or self.idle_phrase) and abs(base - desk.cur[0]) > .08:
+                self.next_beat = max(self.next_beat, now + 1.65)
+            if calm and self.next_beat - now > 65:
+                self.next_beat = now + self.rng.uniform(22, 62)
+            if now >= self.next_beat and not self.idle_beat:
+                self.last_beat = character.idle_choice_for_mood(mode, mood or {}, self.recent_idle, self.rng)
+                self.recent_idle = (self.recent_idle + [self.last_beat])[-3:]
                 side = -1 if base > .30 else 1 if base < -.30 else self.rng.choice((-1, 1))
-                self.idle_beat = (BEATS[self.last_beat], now, side)
-                self.idle_anchor = base, neck
-                # A calm BITCH glances now and then; an engaged one fidgets like it's paying attention.
-                gap = self.rng.uniform(25, 70) if calm else self.rng.uniform(.70, 2.25)
-                self.next_beat = now + BEATS[self.last_beat][-1][0] + gap
+                phrase = character.synthesize_phrase(self.last_beat, self.rng, side=side, mood=mood)
+                if phrase is not None:
+                    self.idle_phrase = (phrase, now)
+                    self.idle_anchor = base, neck
+                    loneliness = float((mood or {}).get('loneliness', 0.0))
+                    gap = (self.rng.uniform(22, 58) if calm
+                           else self.rng.uniform(1.6, 3.8) if loneliness > 0.5
+                           else self.rng.uniform(.75, 2.35))
+                    self.next_beat = now + phrase.duration + gap
             if self.idle_beat:
                 frames, start, direction = self.idle_beat
                 age = now - start
                 self.beat = self.last_beat or mode
                 if age >= frames[-1][0] + .35:
                     self.idle_beat = frames = None
+            elif self.idle_phrase:
+                phrase, start = self.idle_phrase
+                phrase_age = now - start
+                active_phrase = phrase
+                self.beat = phrase.name
+                if phrase_age >= phrase.duration + .25:
+                    self.idle_phrase = active_phrase = None
 
-        turn, lean, pitch, tilt = pose_at(frames, age) if frames else (0.,)*4
-        arm = REST[1] + lean
-        base, neck, tilt = base + direction*turn, neck + pitch, direction*tilt
+        stiff_mult = 1.0
+        if active_phrase is not None:
+            (turn, lean, pitch, tilt), stiff_mult = active_phrase.evaluate(phrase_age)
+            arm = REST[1] + lean
+            base, neck = base + turn, neck + pitch
+            if self.on_sfx and sfx_volume > 0.01 and mode not in SPEECH:
+                urgent = mode in ('alarm', 'victory', 'yawn', 'doze', 'lonely', 'grumpy')
+                for sound_name, vol in active_phrase.due_sfx(phrase_age):
+                    if urgent or now - self.last_sfx_at >= 7.5:
+                        self.last_sfx_at = now
+                        self.on_sfx(sound_name, min(1.0, vol * sfx_volume))
+        else:
+            turn, lean, pitch, tilt = pose_at(frames, age) if frames else (0.,) * 4
+            arm = REST[1] + lean
+            base, neck, tilt = base + direction * turn, neck + pitch, direction * tilt
+
+        # Layer continuous Pixar emotional baseline + organic non-repeating breathing when live.
+        if mood and mode not in ('park', 'aim', 'doze', 'yawn') and not (calm and active_phrase is None and frames is None):
+            mb, ma, mn, mh, mst = character.mood_baseline(mood, now, self.noise.sample(now))
+            if mode not in SPEECH:
+                base += mb
+            arm += ma
+            neck += mn
+            tilt += mh
+            stiff_mult *= mst
+            # Velocity-coupled arc: turning the base subtly leads with a curious head tilt.
+            if following and mode not in SPEECH and self.cue_at is None:
+                tilt += clamp(actor.v[0] * 0.20, 0.14)
+                neck += min(0.05, abs(actor.v[0]) * 0.06)
+
         if mode in SPEECH:
             weight = SPEECH_WEIGHT.get(mode, 1.)
             lean_response = 1 - math.exp(-dt / (.24 if energy > self.lean else .38))
@@ -280,7 +350,6 @@ class Motion:
             tilt += direction * weight * (.11 * energy + .92 * accent) + gesture[0]
             base -= direction * .038 * self.lean
         elif mode == 'listen':
-            # Stay inclined through a pause. The head responds more than the arm.
             self.lean += (energy - self.lean) * (1 - math.exp(-dt / .35))
             neck += .035 * self.lean
             tilt += .08 * self.lean
@@ -305,16 +374,18 @@ class Motion:
             elif elapsed < .22:
                 base = self.held_base - clamp(self.throw * .18, .055)
             elif abs(base - desk.cur[0]) < .11 and elapsed < 1.25:
-                base += side * min(.055, abs(self.throw)*.15)
+                base += side * min(.055, abs(self.throw) * .15)
             if elapsed >= 1.25:
                 self.cue_at = None
-        actor.idle_scale = (.18, 1., .9, .72) if following else (1.,)*4
-        actor.idle_amt = (.52 if following else .85) if mode not in ('aim', 'park') else 0
-        if calm and not self.idle_beat:
+        actor.idle_scale = (.18, 1., .9, .72) if following else (1.,) * 4
+        # When mood baseline provides organic multi-harmonic motion, scale down Actor's simple sine idle.
+        base_idle = (.25 if mood else .52) if following else (.40 if mood else .85)
+        actor.idle_amt = base_idle if mode not in ('aim', 'park') else 0
+        if calm and not (self.idle_beat or self.idle_phrase):
             actor.idle_amt = 0
-        if self.cue_at is not None and now-self.cue_at < .14:
+        if self.cue_at is not None and now - self.cue_at < .14:
             actor.idle_amt = 0
-        stiff = SOFTNESS.get(self.beat, 1.12)
+        stiff = max(.35, min(3.2, SOFTNESS.get(self.beat, 1.12) * stiff_mult))
         if self.restoring:
             if abs(REST[1] - desk.cur[1]) > .02:
                 base, arm, neck, tilt = desk.cur[0], REST[1], desk.cur[2], desk.cur[3]
@@ -322,10 +393,12 @@ class Motion:
             else:
                 self.restoring = False
         actor.to(base, arm, neck, tilt, stiff=stiff)
-        self.rest_base(actor, base, now, calm and mode == 'watch' and not self.idle_beat and self.cue_at is None)
+        quiet_watch = calm and mode == 'watch' and not (self.idle_beat or self.idle_phrase) and self.cue_at is None
+        self.rest_base(actor, base, now, quiet_watch)
+        self.rest_head(actor, tilt, now, quiet_watch)
         actor.step(min(.02, dt))
         self.count(actor, dt)
-        if mode == 'park' and max(abs(a-b) for a,b in zip(REST, desk.cur)) < .008 and max(map(abs, actor.v)) < .025:
+        if mode == 'park' and max(abs(a - b) for a, b in zip(REST, desk.cur)) < .008 and max(map(abs, actor.v)) < .025:
             desk.relax()
             self.started = False
 
@@ -337,9 +410,21 @@ class Motion:
                 actor.limp.discard(0)
                 actor.written[0] = None
             return
-        if 0 not in actor.limp and now - self.base_still > 4 and hasattr(self.desk, 'relax'):
+        if 0 not in actor.limp and now - self.base_still > 2.5 and hasattr(self.desk, 'relax'):
             self.desk.relax(0)
             actor.limp.add(0)
+
+    def rest_head(self, actor, tilt, now, quiet):
+        """Detach balanced head tilt after extended calm stillness to reduce servo hum and wear."""
+        if not quiet or abs(tilt - self.desk.cur[3]) > .03 or abs(actor.v[3]) > .02:
+            self.head_still = now
+            if 3 in actor.limp:
+                actor.limp.discard(3)
+                actor.written[3] = None
+            return
+        if 3 not in actor.limp and now - self.head_still > 3.5 and hasattr(self.desk, 'relax'):
+            self.desk.relax(3)
+            actor.limp.add(3)
 
     def count(self, actor, dt):
         wear = self.wear
@@ -404,6 +489,9 @@ class Body:
         self.energy = self.accent = 0.
         self.gesture = (0., 0.)
         self.calm = False
+        self.mood = None
+        self.sfx_volume = 0.
+        self.sfx_player = None
         self.wear = Wear()
         self.pose = list(REST)
         self.show = None
@@ -504,14 +592,45 @@ class Body:
                 process.wait()
         process.stdin.close()
 
-    def set_look(self, look, energy=0., accent=0., tilt=0., lean=0., calm=False):
+    def set_look(self, look, energy=0., accent=0., tilt=0., lean=0., calm=False, mood=None, sfx_volume=0.):
         with self.lock:
             self.energy, self.accent = energy, accent
             self.gesture = (tilt, lean)
             self.calm = calm
+            self.mood = mood
+            self.sfx_volume = sfx_volume
             self.look = look
             self.look_at = time.monotonic()
             return self.position
+
+    def play_sfx(self, name, volume):
+        """Play a short WALL-E creature vocalization on the Pi speaker if idle."""
+        if not self.audio or self.sink is None or volume <= 0.01:
+            return
+        with self.lock:
+            if self.show or (self.player and self.player.poll() is None):
+                return
+            if self.sfx_player and self.sfx_player.poll() is None:
+                return
+            sink = self.sink
+        def run():
+            try:
+                import sounds
+                if name not in sounds.V:
+                    return
+                path = sounds._render(name, random.randrange(sounds.VARIANTS))
+                args = [self.audio]
+                if sink:
+                    args += ['--target', sink]
+                if self.audio.endswith('pw-play'):
+                    args += ['--volume', f'{max(0.05, min(1.0, volume)):.2f}']
+                args.append(path)
+                proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self.lock:
+                    self.sfx_player = proc
+            except Exception:
+                pass
+        threading.Thread(target=run, daemon=True).start()
 
     def stop(self):
         with self.lock:
@@ -635,6 +754,8 @@ class Body:
                     energy, accent = self.energy, self.accent
                     gesture = self.gesture if now - self.look_at < .3 else (0., 0.)
                     calm = self.calm
+                    mood = self.mood
+                    sfx_volume = self.sfx_volume
                     look = self.look if now - self.look_at < 3 else ('park', 0, -0.8)
                     if self.player and self.player.poll() is not None:
                         if self.show and self.player.returncode:
@@ -655,9 +776,9 @@ class Body:
                 if self.motion_enabled and motion is None and (frame is not None or look[0] != 'park'):
                     import desk
 
-                    motion = Motion(desk)
+                    motion = Motion(desk, on_sfx=self.play_sfx)
                 if motion:
-                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame, gesture, calm)
+                    motion.step(*look, now, min(0.05, now - last), energy, accent, frame, gesture, calm, mood, sfx_volume)
                     self.wear.add(motion.wear)
                     with self.lock:
                         self.position = (motion.desk.cur[0], motion.desk.cur[2])
@@ -735,7 +856,7 @@ def listen(motion_enabled=True):
                                        'playback_monitor': True, 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
                                        'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
-                                       'motion': body.motion_enabled, 'gestures': 1, 'rhythm': 1,
+                                       'motion': body.motion_enabled, 'gestures': 1, 'rhythm': 1, 'pixar': 1,
                                        'wear': body.wear.today(), 'protocol': 1})
                 elif self.path == '/show':
                     with body.lock:
@@ -800,7 +921,21 @@ def listen(motion_enabled=True):
                             tilt, lean = float(item.get('tilt', 0)), float(item.get('lean', 0))
                             if not (math.isfinite(tilt) and math.isfinite(lean)) or abs(tilt) > .45 or abs(lean) > .25:
                                 raise ValueError('invalid gesture')
-                            base, neck = body.set_look(look, energy, accent, tilt, lean, item.get('calm') is True)
+                            raw_mood = item.get('mood')
+                            mood = None
+                            if isinstance(raw_mood, dict):
+                                mood = {}
+                                for key in ('valence', 'arousal', 'loneliness', 'annoyance'):
+                                    if key in raw_mood:
+                                        val = float(raw_mood[key])
+                                        if math.isfinite(val):
+                                            mood[key] = max(-1.0, min(1.0, val))
+                            sfx_volume = float(item.get('sfx_volume', 0))
+                            if not math.isfinite(sfx_volume) or not 0 <= sfx_volume <= 1:
+                                sfx_volume = 0.
+                            base, neck = body.set_look(look, energy, accent, tilt, lean, item.get('calm') is True, mood, sfx_volume)
+                            if isinstance(item.get('sfx'), str) and sfx_volume > 0:
+                                body.play_sfx(item['sfx'], sfx_volume)
                             self.respond(200, {'ok': True, 'base': base, 'neck': neck,
                                                'beat': body.beat, 'pose': body.pose})
                         return

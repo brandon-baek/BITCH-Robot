@@ -21,6 +21,7 @@ class Robot(Device):
         self.auto_handoff = False
         self.gestures = False
         self.rhythm = False
+        self.pixar = False
         self.wear = None
         self.audio_warm = False
         self.warming_since = None
@@ -70,6 +71,7 @@ class Robot(Device):
             self.joint_attention = bool(result and result.get('joint_attention'))
             self.gestures = bool(result and result.get('gestures'))
             self.rhythm = bool(result and result.get('rhythm'))
+            self.pixar = bool(result and result.get('pixar'))
             self.wear = result.get('wear') if result else None
             self.shows = bool(result and result.get('shows') == 1)
             self.show_active = bool(result and result.get('show_active'))
@@ -105,10 +107,20 @@ class Robot(Device):
                 self.warming_since = None
             time.sleep(2)
 
-    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0., tilt=0., lean=0., calm=False):
+    def look(self, mode, base=0, neck=-0.8, energy=0., accent=0., tilt=0., lean=0., calm=False,
+             mood=None, sfx_volume=0., sfx=None):
+        if not self.pixar and mode in ('lonely', 'grumpy', 'victory', 'alarm', 'yawn'):
+            mode = {'lonely': 'sad', 'grumpy': 'ponder', 'victory': 'happy', 'alarm': 'double-take', 'yawn': 'doze'}[mode]
         item = {'mode': mode, 'base': base, 'neck': neck, 'energy': energy}
         if calm and self.rhythm:
             item['calm'] = True
+        if self.pixar:
+            if mood:
+                item['mood'] = {k: round(float(v), 3) for k, v in mood.items()}
+            if sfx_volume > 0:
+                item['sfx_volume'] = round(max(0., min(1., float(sfx_volume))), 2)
+            if sfx:
+                item['sfx'] = sfx
         if self.gestures:
             item.update(accent=max(-.5, min(.5, accent)), tilt=max(-.45, min(.45, tilt)), lean=max(-.25, min(.25, lean)))
         else:

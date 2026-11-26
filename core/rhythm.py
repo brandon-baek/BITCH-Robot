@@ -44,6 +44,29 @@ class Rhythm:
         self.spent = deque()      # (time, seconds) of unprompted motion in the last hour
         self.last = now
         self.on_sleep = None      # called when BITCH nods off with someone watching
+        self.manual_sleep = False
+        self.sleep_until = None
+
+    def sleep_now(self, until=None, now=None):
+        """Put BITCH into quiet zero-power sleep/nap mode until woken or alarm hits."""
+        now = time.monotonic() if now is None else now
+        self.manual_sleep = True
+        self.sleep_until = until
+        if self.state != 'asleep':
+            self.enter('asleep', now)
+
+    def wake_now(self, *, celebrate=False, now=None):
+        """Wake BITCH up immediately from night sleep or nap companion mode."""
+        now = time.monotonic() if now is None else now
+        was_asleep = self.state == 'asleep' or self.manual_sleep
+        self.manual_sleep = False
+        self.sleep_until = None
+        self.state = 'engaged'
+        self.since = now
+        if celebrate:
+            self.beat = ('victory', now + 2.4)
+        elif was_asleep:
+            self.beat = ('stretch', now + STRETCH_FOR)
 
     def night(self):
         if not config.get('sleep_at_night'):
@@ -60,13 +83,21 @@ class Rhythm:
         """Return (state, beat). beat is a one-off motion to play first, like 'doze' or 'stretch'."""
         now = time.monotonic() if now is None else now
         elapsed, self.last = min(1., now - self.last), now
+        if engaged and self.manual_sleep:
+            self.manual_sleep = False
+            self.sleep_until = None
+        if self.manual_sleep and self.sleep_until is not None and time.time() >= self.sleep_until:
+            self.manual_sleep = False
+            self.sleep_until = None
         if someone and not self.someone and now - self.seen_at > 60:
             self.arrived_at = now
         if someone:
             self.seen_at = now
         self.someone = someone
         quiet = now - last_interaction
-        if engaged or quiet < ENGAGED_FOR or someone and now - self.arrived_at < ARRIVAL_FOR:
+        if self.manual_sleep:
+            state = 'asleep'
+        elif engaged or quiet < ENGAGED_FOR or someone and now - self.arrived_at < ARRIVAL_FOR:
             state = 'engaged'
         elif self.night() and quiet > NIGHT_GRACE:
             state = 'asleep'

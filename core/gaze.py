@@ -107,3 +107,69 @@ def visible_activity(image):
     ]
     result = json.loads(llm.chat(messages, max_tokens=35, schema=CHECKIN, model='qwen3.5:4b-q4_K_M', timeout=8))
     return result.get('activity')
+
+
+SCENE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'emotion': {'type': 'string', 'enum': ['neutral', 'celebrating', 'happy', 'stressed', 'tired', 'focused']},
+        'activity': {'type': 'string', 'maxLength': 80},
+        'notable': {'type': 'string', 'maxLength': 80},
+    },
+    'required': ['emotion', 'activity', 'notable'],
+    'additionalProperties': False,
+}
+
+
+def observe_scene(image):
+    """Describe only clearly visible mood, activity, and notable clothing/objects in one local VLM call."""
+    messages = [
+        {'role': 'system', 'content': (
+            'Describe ONLY what is clearly visible in this desk camera frame. Return JSON.\n'
+            '- emotion: celebrating (arms raised/fist pump/cheering), happy (clear big smile), stressed '
+            '(head in hands/rubbing temples/visibly tense), tired (yawning/head resting on desk), focused, or neutral.\n'
+            '- activity: 2 to 6 factual words for what the person is visibly doing.\n'
+            '- notable: clearly visible shirt/outfit color & type or held object (e.g. "blue button-up shirt", '
+            '"white shirt", "coffee mug"), or empty string if nothing stands out. Never guess.'
+        )},
+        {'role': 'user', 'content': 'Observe the visible person.', 'images': [base64.b64encode(image).decode('ascii')]},
+    ]
+    result = json.loads(llm.chat(messages, max_tokens=80, schema=SCENE_SCHEMA, model='qwen3.5:4b-q4_K_M', timeout=10))
+    return {
+        'emotion': result.get('emotion', 'neutral'),
+        'activity': (result.get('activity') or '').strip(),
+        'notable': (result.get('notable') or '').strip(),
+    }
+
+
+def describe_person(image, box):
+    """Return a brief polite visual cue (e.g. 'in the blue sweater') for one person crop."""
+    import cv2
+    import numpy as np
+
+    frame = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return ''
+    h, w = frame.shape[:2]
+    x, y, bw, bh = box
+    # Expand downward from the face box to include shoulders/shirt for a friendly description.
+    left = max(0, int((x - bw * 0.9) * w))
+    right = min(w, int((x + bw * 1.9) * w))
+    top = max(0, int((y - bh * 0.4) * h))
+    bottom = min(h, int((y + bh * 2.8) * h))
+    crop = frame[top:bottom, left:right]
+    if crop.size == 0:
+        return ''
+    ok, encoded = cv2.imencode('.jpg', crop)
+    if not ok:
+        return ''
+    messages = [
+        {'role': 'system', 'content': (
+            'Give a brief, polite 2 to 5 word visual cue to identify who you are addressing, focusing on '
+            'clothing color/type or glasses (for example: "in the green jacket" or "with the glasses"). '
+            'Reply with ONLY that short phrase, or empty string if unclear.'
+        )},
+        {'role': 'user', 'content': 'Describe this person briefly.', 'images': [base64.b64encode(encoded).decode('ascii')]},
+    ]
+    phrase = llm.chat(messages, max_tokens=20, model='qwen3.5:4b-q4_K_M', timeout=7).strip().strip('."\'')
+    return phrase if 3 <= len(phrase) <= 45 else ''

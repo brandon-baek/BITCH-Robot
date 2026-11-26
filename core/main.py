@@ -53,6 +53,7 @@ def main():
             ask_permission('camera')
         hub.add(MacCamera(args.camera))
     hub.status = 'Waiting for “BITCH”'
+    from .life import life
     from .people import people
     from .rhythm import rhythm
 
@@ -61,6 +62,7 @@ def main():
     hub.brain.start()
     hub.hearing.start()
     hub.sight.start()
+    life.start()
     server.start()
     llm.warm(hub.brain.spoken_system())
     if not args.quiet:

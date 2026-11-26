@@ -11,9 +11,10 @@ import time
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import config, helper, memory, tls, voice, voicechat
+from . import config, helper, memory, notifications, tls, voice, voicechat
 from .devices.web import WebDevice
 from .hub import hub
+from .life import life
 from .people import people
 from .rhythm import rhythm
 
@@ -171,6 +172,12 @@ def state(req: Request):
     # What BITCH has actually said aloud so far, so captions follow the voice phrase by phrase.
     data['speaking'] = brain.spoken_reply if brain.busy.is_set() and data['status'] == 'Speaking' else ''
     data['people'] = people.state()
+    people_meta = {p['name'].casefold(): p for p in memory.all_people()}
+    for profile in data['people']['profiles']:
+        meta = people_meta.get(profile['name'].casefold())
+        if meta and meta.get('relation'):
+            profile['relation'] = meta['relation']
+    data['life'] = life.state()
     data['rhythm'] = rhythm.state
     data['wear'] = getattr(hub.get('robot'), 'wear', None)
     data['voice_energy'] = round(voice.articulation()[0], 2)
@@ -252,6 +259,34 @@ def stop(req: Request):
     authorize(req)
     hub.brain.stop()
     threading.Timer(.25, voice.earcon, args=('stop',)).start()
+    return {'ok': True}
+
+
+@app.post('/api/wake')
+def wake_robot(req: Request):
+    authorize(req)
+    ears = hub.selected('ears')
+    source = ears.id if ears else 'app'
+    if life.alarm_ringing:
+        reply = life.dismiss_alarm(source, life.primary_owner())
+        hub.brain.announce(source, reply, chime=False)
+    elif life.napping:
+        reply = life.wake_from_nap(source, life.nap_owner)
+        hub.brain.announce(source, reply, chime=True)
+    else:
+        rhythm.wake_now(celebrate=False)
+        hub.brain.last_interaction = time.monotonic()
+    return {'ok': True}
+
+
+@app.post('/api/notify')
+async def push_notification(req: Request):
+    authorize(req)
+    data = await payload(req)
+    ok = notifications.push(data.get('app', 'Phone'), data.get('title', ''), data.get('body', ''),
+                            subtitle=data.get('subtitle', ''))
+    if not ok:
+        raise HTTPException(400, 'Include a title or body for the notification.')
     return {'ok': True}
 
 

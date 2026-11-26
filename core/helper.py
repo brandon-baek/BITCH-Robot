@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 
-from . import llm, memory, streaming
+from . import llm, memory, notifications, streaming
 from .hub import hub
 
 EXPLICIT_GPT = re.compile(r"\b(?:chat[ -]?gpt|gpt|openai)\b", re.I)
@@ -101,10 +101,13 @@ def instructions(request, conversation, *, speaker=None, remembered=None, explic
         )
         lines.append('Recent conversation: ' + recent_turns)
     if is_briefing:
+        notifs = notifications.summary(limit=6)
+        if notifs:
+            lines.append(f'Recent Mac/phone notifications: {notifs}')
         lines.append(
-            'Give a crisp personal briefing using their connected apps (calendar, email, tasks) and web search '
-            'as helpful: cover upcoming schedule, any important unread messages, local weather, and key updates. '
-            'Write 3 to 5 short, natural spoken sentences with no bullet lists, links, or markdown.'
+            'Give a crisp personal briefing using their connected apps (calendar, email, tasks), recent notifications, '
+            'and web search as helpful: cover upcoming schedule, important unread messages/notifications, local weather, '
+            'and key updates. Write 3 to 5 short, natural spoken sentences with no bullet lists, links, or markdown.'
         )
     else:
         lines.append(

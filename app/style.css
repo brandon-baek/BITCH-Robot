@@ -382,6 +382,8 @@ h1 {
   animation: pop .3s var(--ease);
 }
 .stop svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
+.wake-btn { color: var(--tint); padding: 0 14px; }
+.wake-btn.alarm { color: var(--danger); }
 @keyframes pop { from { opacity: 0; transform: scale(.9); } }
 
 /* Pairing */

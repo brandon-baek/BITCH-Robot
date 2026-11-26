@@ -782,6 +782,113 @@ class MotionTests(unittest.TestCase):
             self.assertTrue(.1 < len(sound) / voice.SR < 1.5, name)
             self.assertLess(float(np.abs(sound).max()), .5, name)
 
+    def test_procedural_pixar_motion_is_non_repeating_bounded_and_wear_safe(self):
+        import character
+        import random
+
+        # Two procedural syntheses of the same gesture must vary organically rather than replaying identical frames.
+        p1 = character.synthesize_phrase('curious', random.Random(1), side=1, mood={'valence': 0.5, 'arousal': 0.6})
+        p2 = character.synthesize_phrase('curious', random.Random(2), side=1, mood={'valence': 0.5, 'arousal': 0.6})
+        self.assertNotEqual(p1.keyframes, p2.keyframes)
+
+        sfx_log = []
+        relaxed = []
+        desk = SimpleNamespace(
+            cur=list(pi.REST), on=[True] * 4, BASE_SPEED=1.0,
+            S=[SimpleNamespace(us=lambda _: None) for _ in range(4)],
+            relax=lambda *joints: relaxed.append(joints),
+        )
+        motion = pi.Motion(desk, on_sfx=lambda name, vol: sfx_log.append((name, vol)))
+        motion.started = True
+        modes = [
+            ('watch', 0.25, -0.65, {'valence': 0.6, 'arousal': 0.7, 'loneliness': 0.0, 'annoyance': 0.0}, False),
+            ('victory', 0.0, -0.65, {'valence': 0.9, 'arousal': 0.9, 'loneliness': 0.0, 'annoyance': 0.0}, False),
+            ('lonely', -0.1, -0.75, {'valence': -0.4, 'arousal': 0.2, 'loneliness': 0.85, 'annoyance': 0.0}, False),
+            ('grumpy', 0.1, -0.72, {'valence': -0.2, 'arousal': 0.6, 'loneliness': 0.0, 'annoyance': 0.8}, False),
+            ('watch', 0.1, -0.72, {'valence': 0.1, 'arousal': 0.3, 'loneliness': 0.0, 'annoyance': 0.0}, True),
+            ('park', 0.0, -0.80, None, False),
+        ]
+        now = 0.0
+        for mode, base, neck, mood, calm in modes:
+            ticks = 450 if calm else 180
+            for _ in range(ticks):
+                motion.step(mode, base, neck, now, 0.02, calm=calm, mood=mood, sfx_volume=0.8)
+                now += 0.02
+                self.assertTrue(all(np.isfinite(desk.cur)))
+                self.assertLessEqual(abs(desk.cur[0]), pi.BASE + 0.01)
+                self.assertGreaterEqual(desk.cur[1], -1.07)
+                self.assertLessEqual(desk.cur[1], -0.41)
+                self.assertGreaterEqual(desk.cur[2], pi.NECK[0] - 0.01)
+                self.assertLessEqual(desk.cur[2], pi.NECK[1] + 0.01)
+                self.assertLessEqual(abs(desk.cur[3]), 0.65)
+            if calm:
+                # Calm watching detaches both the bearing base (0) and balanced head tilt (3).
+                self.assertIn(0, motion.actor.limp)
+                self.assertIn(3, motion.actor.limp)
+        self.assertTrue(any(name == 'tada' for name, _ in sfx_log))
+        self.assertTrue(any(name in ('sigh', 'whimper', 'sad') for name, _ in sfx_log))
+        self.assertTrue(any(joints == () for joints in relaxed))   # full park detach
+
+    def test_memory_consolidation_relationships_and_visual_callbacks(self):
+        owner = 'ShirtDebateFixture'
+        payload = json.dumps({
+            'summary': 'ShirtDebateFixture debated blue vs white shirts and mentioned Sarah.',
+            'facts': ['Prefers clean minimalist dress shirts'],
+            'debates': [{'text': 'Argued white shirts are more professional than blue shirts',
+                         'triggers': 'white shirt, blue shirt, shirt'}],
+            'people': [{'name': 'Sarah', 'relation': "ShirtDebateFixture's mom"}],
+            'status': 'ShirtDebateFixture is taking a nap right now',
+            'status_hours': 2,
+        })
+        try:
+            memory.consolidate_conversation(owner, 'Them: White shirts beat blue shirts.', chat_fn=lambda *a, **k: payload)
+            hit = memory.visual_callbacks(owner, 'putting on a blue button-up shirt')
+            self.assertIsNotNone(hit)
+            self.assertIn('white shirts', hit['text'].lower())
+            # Household context surfaces active statuses & known people even before an unknown visitor is enrolled.
+            household = memory.household_context()
+            self.assertIn('taking a nap', household)
+            self.assertIn('Sarah', household)
+            self.assertIsNone(memory.context(None, 'anything'))
+            # Relationship introduction extracts both name and relation.
+            brain = Brain()
+            with patch.object(hub, 'sight', None), patch('core.people.people.learn'):
+                answer, note = brain.meet("Hi, I'm Brandon's mom, Sarah.", 'desk')
+            self.assertIsNone(answer)
+            self.assertIn('Sarah', note)
+            self.assertEqual(memory.person_info('Sarah')['relation'], 'Brandon’s mom')
+        finally:
+            memory.forget(owner, 'everything')
+            for row in memory.everything():
+                if row['about'] == owner:
+                    memory.delete(row['id'])
+
+    def test_nap_companion_alarm_and_notifications(self):
+        from core import life as life_mod, notifications
+        from core.rhythm import rhythm
+
+        self.assertTrue(notifications.push('Messages', 'Mom', 'Dinner at 7!'))
+        self.assertIn('Dinner at 7!', notifications.summary(limit=5))
+        target = life_mod.parse_wake_time('wake me up in 45 minutes')
+        self.assertIsNotNone(target)
+        self.assertAlmostEqual(target - time.time(), 45 * 60, delta=5)
+
+        mgr = life_mod.Life()
+        with patch.object(life_mod.threading, 'Timer'):
+            reply = mgr.handle_utterance("I'm going to take a nap for 2 hours", 'desk', 'NapFixture')
+        self.assertIn('nap with you', reply)
+        self.assertTrue(mgr.napping)
+        self.assertTrue(any('nap' in text.lower() for _, text, *_ in memory.active_statuses('NapFixture')))
+
+        mgr.nap_started_at = time.time() - 10
+        notifications.push('Calendar', 'Design Review', 'Starts in 15 min')
+        wake_msg = mgr.wake_from_nap('desk', 'NapFixture', trigger_briefing=False)
+        self.assertFalse(mgr.napping)
+        self.assertEqual(mgr.active_pose(), 'victory')
+        self.assertIn('Design Review', wake_msg)
+        self.assertFalse(memory.active_statuses('NapFixture'))
+        rhythm.wake_now()
+
 
 class CharacterTests(unittest.TestCase):
     def test_idle_gesture_moves_distinct_joints_and_returns_to_the_gaze(self):

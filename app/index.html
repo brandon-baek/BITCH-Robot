@@ -69,6 +69,7 @@
     <div class="state">
       <p class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connecting</span></p>
       <button class="stop" id="stop" type="button" hidden><svg><use href="#i-stop"/></svg>Stop</button>
+      <button class="stop wake-btn" id="wakeBtn" type="button" hidden>Wake up</button>
     </div>
     <p class="company" id="company">
       <span id="companyText"></span><span class="by" id="companyBy"></span>
@@ -213,6 +214,7 @@
       <div class="list">
         <div class="row"><span>Pi</span><span class="value" id="robotStatus">Checking</span></div>
         <div class="row"><span>Brain</span><span class="value" id="modelName"></span></div>
+        <div class="row"><span>Notifications</span><span class="value" id="notifStatus">Checking</span></div>
         <div class="row"><span>Motors today</span><span class="value" id="motors">Unknown</span></div>
       </div>
       <p class="footnote" id="notice" hidden></p>

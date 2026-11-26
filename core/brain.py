@@ -11,8 +11,9 @@ import threading
 import time
 import uuid
 
-from . import config, gaze, helper, llm, memory, prosody, skills, streaming, voice, voicechat
+from . import config, gaze, helper, llm, memory, notifications, prosody, skills, streaming, voice, voicechat
 from .hub import hub
+from .life import life
 
 # Whisper spells the name a few ways, and hears "Yo BITCH" as "No/You/My bitch" across a room.
 NAME = r"(?:bitch|bich|bish|bitsch|b\.?-?\s?i\.?-?\s?t\.?-?\s?c\.?-?\s?h\.?)"
@@ -84,6 +85,13 @@ REMEMBER = re.compile(r'^remember(?: that)?\s+(.+)', re.I)
 LEAD = r"(?i:(?:(?:hi|hey|hello|oh|so|well|okay|ok|and)[,!.]?\s+)*)"
 NAME_WORD = r"([A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)?)(?=[\s.,!?]|$)"
 SELF_INTRO = re.compile(r"^" + LEAD + r"(?i:my name(?:'s|’s| is)|i'm|i’m|i am|call me|it's me,?|it’s me,?)\s+" + NAME_WORD)
+RELATION_INTRO = re.compile(
+    r"(?i:\b(?:i(?:'|’)m|i am)\s+([A-Z][a-z]+)(?:'|’)s\s+(mom|mother|dad|father|sister|brother|friend|roommate|partner|girlfriend|boyfriend|cousin|aunt|uncle|grandma|grandpa)(?:,?\s+" + NAME_WORD + r")?)"
+)
+RELATION_AFTER = re.compile(
+    r"(?i:,\s*(?:([A-Z][a-z]+)(?:'|’)s|his|her|their|your)\s+(mom|mother|dad|father|sister|brother|friend|roommate|partner|girlfriend|boyfriend|cousin|aunt|uncle|grandma|grandpa))"
+)
+NOTIF_CHECK = re.compile(r"\b(?:read|check|any|what(?:'s| are)|show)\b.{0,24}\bnotifications?\b", re.I)
 INTRO_OTHER = re.compile(r"(?i:\b(?:this is|meet|say (?:hi|hello) to|i want you to meet|introduce you to)\s+"
                          r"(?:(?:my|our)\s+(?:[a-z]+\s+){0,2})?)" + NAME_WORD)
 LEARN_ME = re.compile(r"^(?:(?:please|can you|could you|will you)\s+)?(?:remember|learn|memorize|get to know)\s+"
@@ -241,12 +249,11 @@ class Brain:
                 continue
             transcript = '\n'.join(('Them' if turn['role'] == 'user' else 'BITCH') + ': ' + turn['content'][:300]
                                    for turn in turns)
-            summary = llm.chat([
-                {'role': 'system', 'content': f'Write one or two short sentences for BITCH’s memory about this conversation '
-                                              f'with {owner}: what they talked about, plans, dates, preferences, and how '
-                                              f'they seemed. Past tense, using their name. No filler.'},
-                {'role': 'user', 'content': transcript[-4000:]}], max_tokens=90, temperature=.2)
-            episode = memory.add_episode(owner, streaming.clean(summary), self.reflected.get(key, (None, None))[1])
+            episode = memory.consolidate_conversation(
+                owner, transcript,
+                replace_episode=self.reflected.get(key, (None, None))[1],
+                chat_fn=llm.chat,
+            )
             self.reflected[key] = (signature, episode)
 
     def spoken_system(self):
@@ -816,17 +823,35 @@ class Brain:
                 return f'Done. I’ve forgotten you, {known}.', None
             return f'Done. I’ve forgotten your {kind}.', None
         other, own = INTRO_OTHER.search(text), SELF_INTRO.match(text)
+        rel_match = RELATION_INTRO.search(text)
         refresh = LEARN_ME.match(text)
-        if not (other or own or refresh):
+        if not (other or own or rel_match or refresh):
             return None, None
-        name = (other or own)[1] if (other or own) else known
+        relation = None
+        if rel_match:
+            of_who, role_word, explicit_name = rel_match[1], rel_match[2].lower(), rel_match[3]
+            relation = f"{of_who}’s {role_word}"
+            name = explicit_name or role_word.capitalize()
+        else:
+            name = (other or own)[1] if (other or own) else known
+            if after := RELATION_AFTER.search(text):
+                of_who = after[1] or life.primary_owner()
+                relation = f"{of_who}’s {after[2].lower()}"
         if not name:
             return 'Sure. What’s your name?', None
         if name.split()[0] in NOT_NAMES:
             return None, None
         stranger = bool(other)
         profile = people.profiles.get(name, {})
-        face = getattr(hub.sight, 'face_to_learn', lambda _: None)(stranger)
+        face = None
+        with life.lock:
+            pending_intro = life.awaiting_intro if life.awaiting_intro and time.monotonic() < life.awaiting_intro[1] else None
+        if pending_intro and not stranger and hub.sight and hub.sight.target_source:
+            face = (hub.sight.target_source, pending_intro[0], None)
+            with life.lock:
+                life.awaiting_intro = None
+        else:
+            face = getattr(hub.sight, 'face_to_learn', lambda _: None)(stranger)
         if face and face[2] and face[2] != name:
             face = None   # that face already belongs to someone else BITCH knows
         heard_as = self.speaker if self.speaker_evidence == 'voice' else None
@@ -840,16 +865,18 @@ class Brain:
                          face=face[:2] if learn_face else None)
         except ValueError as error:
             return str(error), None
+        memory.upsert_person(name, relation=relation, seen=bool(face), talked=not stranger)
         if not stranger:
             self.speaker, self.speaker_evidence = name, 'introduced'
         what = ' and '.join(part for part, learning in (('face', learn_face), ('voice', learn_voice)) if learning)
+        rel_note = f' They are {relation}.' if relation else ''
         if stranger:
             ask = ' and ask them to say something so you learn their voice' if learn_voice else ''
-            return None, (f'The speaker just introduced {name}, who is with them. Say hi to {name} by name{ask}. '
+            return None, (f'The speaker just introduced {name}, who is with them.{rel_note} Say hi to {name} by name{ask}. '
                           f'Keep it short.')
         if not what:
-            return None, f'They are {name}, and you already know them. Say so warmly in a few words.'
-        return None, (f'They just told you they are {name}. Greet them by name. You are quietly learning their {what} '
+            return None, f'They are {name}, and you already know them.{rel_note} Say so warmly in a few words.'
+        return None, (f'They just told you they are {name}.{rel_note} Greet them by name. You are quietly learning their {what} '
                       f'from this conversation; mention that in a few words, and that saying "forget me" undoes it.')
 
     def ask_chatgpt(self, source, identity, prompt, *, user_text=''):
@@ -951,6 +978,19 @@ class Brain:
         answer, meeting = self.meet(text, source)
         if answer:
             return answer
+        life.on_interaction(text, self.speaker,
+                            happy=bool(re.search(r'\b(?:good job|awesome|won|celebrat|love you|proud of you)\b', text, re.I)),
+                            annoyed=bool(re.search(r'\b(?:shut up|stupid|dumb|useless|annoying)\b', text, re.I)))
+        if life_reply := life.handle_utterance(text, source, self.speaker):
+            return life_reply
+        if NOTIF_CHECK.search(text):
+            summary = notifications.summary(limit=5)
+            if summary:
+                return 'Here are your recent notifications: ' + summary
+            st = notifications.status()
+            if not st['available']:
+                return 'I don’t have access to your Mac notifications yet. Turn on Full Disk Access for BITCH in System Settings.'
+            return 'No recent notifications on your Mac right now.'
         if VOICE_CHECK.search(text) and not meeting:
             if self.speaker_evidence == 'voice':
                 return f'Yeah, I recognize your voice, {self.speaker}.'
@@ -1066,6 +1106,10 @@ class Brain:
                    'remember it. Never say you can’t remember or have no memory.')
         if remembered:
             system += '\n' + remembered
+        else:
+            household = memory.household_context()
+            if household:
+                system += '\n' + household
         if meeting:
             system += '\n' + meeting
         elif not self.speaker and not history and getattr(hub.sight, 'face_to_learn', lambda _: None)(True):

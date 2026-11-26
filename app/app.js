@@ -61,6 +61,7 @@ function mood(state) {
   const micDevice = state.devices.find(device => device.id === settings.mic_source);
   const bgCount = state.tasks.filter(task => task.state === 'background').length;
   const pendingNote = bgCount ? ' · ' + (bgCount === 1 ? '1 lookup pending' : bgCount + ' lookups pending') : '';
+  if (state.life?.alarm_ringing) return ['speaking', 'Wake up!'];
   if (state.show_active) return ['speaking', 'Performing'];
   if (state.status === 'Speaking') return ['speaking', 'Talking'];
   if (state.status === 'Thinking' || state.status === 'Answering') return ['thinking', 'Thinking'];
@@ -71,7 +72,8 @@ function mood(state) {
   if (phase === 'Listening') return ['hearing', 'Listening'];
   if (phase === 'Understanding') return ['thinking', 'Got it'];
   if (phase === 'Ready') return ['listening', (state.speaker_name ? 'Go ahead, ' + state.speaker_name : 'Go ahead') + pendingNote];
-  if (state.rhythm === 'asleep') return ['asleep', 'Asleep' + pendingNote];
+  if (state.life?.napping) return ['asleep', 'Napping with you' + pendingNote];
+  if (state.rhythm === 'asleep') return ['asleep', 'Asleep · say “Hey BITCH”' + pendingNote];
   if (state.rhythm === 'resting') return ['resting', 'Resting' + pendingNote];
   return ['idle', 'Say “Hey BITCH”' + pendingNote];
 }
@@ -284,6 +286,10 @@ async function refresh() {
   eyes.hearing = state.level || 0;
 
   $('stop').hidden = !(state.show_active || ['Speaking', 'Thinking', 'Answering', 'Performing'].includes(state.status));
+  const waking = Boolean(state.life?.alarm_ringing || state.life?.napping || state.rhythm === 'asleep');
+  $('wakeBtn').hidden = !waking;
+  $('wakeBtn').textContent = state.life?.alarm_ringing ? 'Stop alarm' : 'Wake up';
+  $('wakeBtn').classList.toggle('alarm', Boolean(state.life?.alarm_ringing));
   $('voiceToggle').setAttribute('aria-pressed', String(settings.muted));
   $('voiceToggle').setAttribute('aria-label', settings.muted ? 'Turn BITCH’s voice back on' : 'Mute BITCH’s voice');
   setIcon($('voiceToggle'), settings.muted ? 'i-voice-off' : 'i-voice');
@@ -315,6 +321,7 @@ async function refresh() {
   const robot = devices.find(device => device.id === 'robot');
   $('robotStatus').textContent = robot ? robot.detail : 'Off';
   $('modelName').textContent = state.model || '';
+  $('notifStatus').textContent = state.life?.notifications?.detail || 'Unavailable';
   if ($('picture').hidden) $('drive').textContent = state.body?.mode || 'Waiting for Pi';
   if (document.activeElement !== $('robot_host')) $('robot_host').value = settings.robot_host;
   $('robot_key').placeholder = settings.robot_paired ? 'Saved' : 'Paste key';
@@ -695,7 +702,7 @@ function renderPeople(people) {
     name.onclick = () => openPerson(person.name).catch(fail);
     const known = document.createElement('span');
     known.className = 'value';
-    known.textContent = [person.face && 'Face', person.voice && 'Voice'].filter(Boolean).join(' · ') || 'Nothing yet';
+    known.textContent = [person.relation, person.face && 'Face', person.voice && 'Voice'].filter(Boolean).join(' · ') || 'Nothing yet';
     const remove = document.createElement('button');
     remove.className = 'text-button';
     remove.type = 'button';
@@ -808,6 +815,7 @@ action('voiceToggle', 'click', () => {
   return api('settings', {muted: !(latest?.settings.muted)});
 });
 action('stop', 'click', () => api('stop', {}));
+action('wakeBtn', 'click', () => api('wake', {}));
 action('openSettings', 'click', async () => {
   $('settings').showModal();
   await Promise.all([refresh(), loadMemories()]);
