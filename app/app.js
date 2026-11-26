@@ -847,6 +847,18 @@ async function loadMemories(data) {
     return row;
   }));
 }
+action('cleanMemory', 'click', async () => {
+  const button = $('cleanMemory');
+  button.disabled = true;
+  button.textContent = 'Cleaning…';
+  try {
+    const data = await (await api('memory/clean', {})).json();
+    await loadMemories(data);
+    button.textContent = data.removed.length ? `Removed ${data.removed.length}` : 'Already tidy';
+  } finally {
+    setTimeout(() => { button.disabled = false; button.textContent = 'Clean up memory'; }, 2500);
+  }
+});
 action('closeSettings', 'click', () => $('settings').close());
 $('settings').addEventListener('click', event => { if (event.target === $('settings')) $('settings').close(); });
 $('settings').addEventListener('close', () => {

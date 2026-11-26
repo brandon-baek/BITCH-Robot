@@ -106,6 +106,14 @@ def remember(owner, note, importance=3, *, kind='fact', triggers='', expires_at=
         same = database.execute(
             "select id from memories where kind = ? and about = ? and text = ? collate nocase",
             (kind, owner, note)).fetchone()
+        if not same and kind in ('fact', 'debate'):
+            # A reworded version of something already known replaces it instead of piling up.
+            for row_id, text in database.execute(
+                    'select id, text from memories where kind = ? and about = ? order by t desc limit 200', (kind, owner)):
+                if similar(note, text) >= .7:
+                    same = (row_id,)
+                    database.execute('update memories set text = ? where id = ?', (note, row_id))
+                    break
         if same:
             database.execute(
                 'update memories set t = ?, importance = max(importance, ?), triggers = case when ? != "" then ? else triggers end, '
@@ -246,8 +254,9 @@ def forget(owner, query):
     where, args = mine(owner)
     with lock, database:
         rows = database.execute(
-            f"select id, text from memories where (({where}) or (kind in ('debate', 'status') and about = ?))",
-            (*args, owner)).fetchall()
+            f"select id, text from memories where (({where}) or (kind in ('debate', 'status') and about = ?)"
+            f" or (? = 'everything' and kind = 'episode' and about = ?))",
+            (*args, owner, query, owner)).fetchall()
         matches = [row_id for row_id, text in rows if query == 'everything' or query in text.casefold()]
         database.executemany('delete from memories where id = ?', ((row_id,) for row_id in matches))
     return len(matches)
@@ -505,104 +514,271 @@ def context(owner, query):
     return '\n'.join(lines)
 
 
+# Every remembered item must quote the person's own words. The quote is checked against what THEY said (never
+# BITCH's lines), so the model can't save its own guesses, jokes or misunderstandings as facts.
+_QUOTE = {'type': 'string', 'maxLength': 200}
 CONSOLIDATE_SCHEMA = {
     'type': 'object',
     'properties': {
         'summary': {'type': 'string', 'maxLength': 280},
-        'facts': {'type': 'array', 'maxItems': 3, 'items': {'type': 'string', 'maxLength': 140}},
-        'debates': {
-            'type': 'array', 'maxItems': 2,
-            'items': {
-                'type': 'object',
-                'properties': {
-                    'text': {'type': 'string', 'maxLength': 160},
-                    'triggers': {'type': 'string', 'maxLength': 100},
-                },
-                'required': ['text', 'triggers'],
-                'additionalProperties': False,
+        'facts': {'type': 'array', 'maxItems': 3, 'items': {
+            'type': 'object', 'properties': {'quote': _QUOTE, 'fact': {'type': 'string', 'maxLength': 140}},
+            'required': ['quote', 'fact'], 'additionalProperties': False}},
+        'debates': {'type': 'array', 'maxItems': 2, 'items': {
+            'type': 'object',
+            'properties': {'quote': _QUOTE, 'text': {'type': 'string', 'maxLength': 160},
+                           'triggers': {'type': 'string', 'maxLength': 100}},
+            'required': ['quote', 'text', 'triggers'], 'additionalProperties': False}},
+        'people': {'type': 'array', 'maxItems': 3, 'items': {
+            'type': 'object',
+            'properties': {'quote': _QUOTE, 'name': {'type': 'string', 'maxLength': 32},
+                           'relation': {'type': 'string', 'maxLength': 60}},
+            'required': ['quote', 'name', 'relation'], 'additionalProperties': False}},
+        'status': {'type': 'object', 'properties': {
+            'quote': _QUOTE, 'text': {'type': 'string', 'maxLength': 140},
+            'hours': {'type': 'number', 'minimum': 0, 'maximum': 48}},
+            'required': ['quote', 'text', 'hours'], 'additionalProperties': False},
+        'schedules': {'type': 'array', 'maxItems': 2, 'items': {
+            'type': 'object',
+            'properties': {
+                'quote': _QUOTE,
+                'title': {'type': 'string', 'maxLength': 80},
+                'hour': {'type': 'integer', 'minimum': 0, 'maximum': 23},
+                'minute': {'type': 'integer', 'minimum': 0, 'maximum': 59},
+                'days': {'type': 'string', 'maxLength': 40},
+                'kind': {'type': 'string', 'enum': ['wakeup', 'reminder', 'event']},
             },
-        },
-        'people': {
-            'type': 'array', 'maxItems': 3,
-            'items': {
-                'type': 'object',
-                'properties': {
-                    'name': {'type': 'string', 'maxLength': 32},
-                    'relation': {'type': 'string', 'maxLength': 60},
-                },
-                'required': ['name', 'relation'],
-                'additionalProperties': False,
-            },
-        },
-        'status': {'type': 'string', 'maxLength': 140},
-        'status_hours': {'type': 'number', 'minimum': 0, 'maximum': 48},
-        'schedules': {
-            'type': 'array', 'maxItems': 2,
-            'items': {
-                'type': 'object',
-                'properties': {
-                    'title': {'type': 'string', 'maxLength': 80},
-                    'hour': {'type': 'integer', 'minimum': 0, 'maximum': 23},
-                    'minute': {'type': 'integer', 'minimum': 0, 'maximum': 59},
-                    'days': {'type': 'string', 'maxLength': 40},
-                    'kind': {'type': 'string', 'enum': ['wakeup', 'reminder', 'event']},
-                },
-                'required': ['title', 'hour', 'minute', 'days', 'kind'],
-                'additionalProperties': False,
-            },
-        },
+            'required': ['quote', 'title', 'hour', 'minute', 'days', 'kind'], 'additionalProperties': False}},
     },
-    'required': ['summary', 'facts', 'debates', 'people', 'status', 'status_hours', 'schedules'],
+    'required': ['summary', 'facts', 'debates', 'people', 'status', 'schedules'],
     'additionalProperties': False,
 }
+# Lines that look like facts but are really about BITCH, the conversation itself, or the model talking.
+_JUNK = re.compile(r"\b(?:the user|the speaker|the assistant|as an ai|language model|bitch (?:said|told|thinks|is|was|has|can)|"
+                   r"calls (?:me|it|the robot) bitch|met (?:for the first time|each other)|"
+                   r"(?:had|having) a conversation|talked (?:to|with) (?:bitch|the robot)|asked (?:bitch|the robot))\b", re.I)
+
+
+# "If I won the lottery I'd...", "maybe I'll...": not facts about them.
+_HYPOTHETICAL = re.compile(r"\b(?:if|would|i'd|wish|maybe|might|imagine|pretend|kidding|joking|jk)\b", re.I)
+_DAYS = re.compile(r"^(?:daily|weekdays|weekends|(?:mon|tue|wed|thu|fri|sat|sun)(?:,(?:mon|tue|wed|thu|fri|sat|sun))*)$")
+# Words a summary may use that the person didn't say themselves.
+_NARRATION = {'brandon', 'talked', 'mentioned', 'asked', 'said', 'told', 'bitch', 'robot', 'about', 'their', 'they',
+              'them', 'his', 'her', 'shared', 'discussed', 'wanted', 'chatted', 'conversation', 'joked', 'joking',
+              'goodnight', 'later', 'today', 'tonight', 'before', 'after', 'while', 'also', 'and', 'then', 'said'}
+
+
+def _plain(text):
+    return ' '.join(re.findall(r"[a-z0-9']+", (text or '').casefold().replace('’', "'")))
+
+
+def said_by_them(quote, their_words):
+    """True if the quote really is (close to) something the person said, not something BITCH said."""
+    quote = _plain(quote)
+    if len(quote) < 6:
+        return False
+    if quote in their_words:
+        return True
+    # Allow small transcription slips: most of the quote's words, in a short window of what they said.
+    words = quote.split()
+    if len(words) < 3:
+        return False
+    theirs = their_words.split()
+    need = max(3, int(len(words) * .8))
+    wanted = set(words)
+    for start in range(len(theirs)):
+        window = set(theirs[start:start + len(words) + 3])
+        if len(wanted & window) >= need:
+            return True
+    return False
+
+
+def grounded(item_text, quote, their_words, *, literal=True):
+    """The item must come from their words, and mostly use words they actually said."""
+    if not item_text or _JUNK.search(item_text) or _PRIVATE.search(item_text) or not said_by_them(quote, their_words):
+        return False
+    if literal and _HYPOTHETICAL.search(quote or ''):
+        return False
+    content = keywords(item_text) - {'brandon', 'they', 'their', 'them', 'he', 'she', 'his', 'her'}
+    support = keywords(quote) | keywords(their_words[:4000])
+    return not content or len(content - support) <= max(1, len(content) // 3)
+
+
+def similar(a, b):
+    """Word overlap between two memories (0 to 1)."""
+    ka, kb = keywords(a), keywords(b)
+    return len(ka & kb) / max(1, len(ka | kb)) if ka and kb else 0.
 
 
 def consolidate_conversation(owner, transcript, *, replace_episode=None, chat_fn=None):
-    """ChatGPT/Claude-style post-conversation consolidation into episodes, facts, debates, people, schedules, and status."""
+    """After a conversation, keep a short summary and only the facts the person clearly stated.
+
+    The transcript uses `Them:` for the person and `BITCH:` for the robot. Anything saved has to quote Them."""
     if not owner or not transcript:
         return replace_episode
     from . import llm, streaming
     run_chat = chat_fn or llm.chat
+    lines = transcript.splitlines()
+    their_lines = [line.split(':', 1)[1] for line in lines if line.startswith('Them:')]
+    their_words = _plain(' '.join(their_lines))
+    if len(their_words.split()) < 6:
+        return replace_episode
+    labeled = '\n'.join((f'{owner}:' + line[5:]) if line.startswith('Them:') else line for line in lines)
     raw = run_chat([
         {'role': 'system', 'content': (
-            f'Extract durable memory from this conversation with {owner}. Return ONLY JSON matching the schema.\n'
-            f'- summary: 1–2 past-tense sentences naming {owner}, covering what happened, plans, and mood.\n'
-            '- facts: up to 3 lasting preferences, goals, projects, ordered packages, or personal facts stated by them (skip secrets, passwords, medical/financial data, and trivial chitchat).\n'
-            '- debates: up to 2 memorable opinions, playful arguments, bets, or running jokes worth bringing up later; put comma-separated visual/topic cue keywords in triggers (e.g. "blue shirt, white shirt, shirt").\n'
-            '- people: named people mentioned with their relation (e.g. name="Sarah", relation="Brandon\'s mom").\n'
-            '- status & status_hours: if they mentioned a short-term plan or state (e.g. taking a nap, studying for an exam tomorrow), record it and how many hours it applies; otherwise empty string and 0.\n'
-            '- schedules: up to 2 explicit recurring or timed schedule items / wake-up times mentioned (e.g. school wake-up at 8:00 weekdays -> days="mon,tue,wed,thu,fri", kind="wakeup"; or daily/once:YYYY-MM-DD). Empty list if none.'
+            f'You keep the memory of BITCH, a desk robot, about {owner}. Read the conversation and return JSON.\n'
+            f'- summary: one or two plain past-tense sentences about what {owner} talked about or did, naming them as '
+            f'{owner}. Only what {owner} said or did, never what BITCH said or claimed. Treat sarcasm as sarcasm. '
+            'Never call them "the user", and never say they met or introduced themselves unless they literally did.\n'
+            f'- facts: lasting things {owner} clearly said about themselves: preferences, projects, goals, people in their '
+            'life, things they ordered or own, plans with a date. Most conversations have NONE: return an empty list '
+            'rather than guessing. Never save jokes, sarcasm, hypotheticals, questions, things BITCH said, or anything '
+            'about BITCH itself. Each fact needs quote: the exact words of ' + owner + ' that state it, copied verbatim.\n'
+            '- debates: playful arguments, opinions or bets worth teasing about later, with comma-separated visual or '
+            'topic cue words in triggers. Usually empty. quote must be their exact words.\n'
+            '- people: other people they named, with the relation they stated ("my mom Sarah" -> name Sarah, relation '
+            f'"{owner}\'s mom"). quote must contain the name.\n'
+            '- status: a short-term state they stated (napping, studying for a test tomorrow) and how many hours it '
+            'lasts; otherwise empty text, empty quote, 0 hours.\n'
+            '- schedules: only RECURRING times they stated, like "I get up at 8 every weekday" (days "mon,tue,wed,thu,fri" '
+            'or "daily"). One-off alarms are handled elsewhere; leave them out. quote must contain the time.\n'
+            'Skip passwords, health, money and legal details. When unsure, leave it out.'
         )},
-        {'role': 'user', 'content': transcript[-4500:]},
-    ], max_tokens=340, schema=CONSOLIDATE_SCHEMA, temperature=.2)
+        {'role': 'user', 'content': labeled[-4500:]},
+    ], max_tokens=420, schema=CONSOLIDATE_SCHEMA, temperature=.1)
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
-        return add_episode(owner, streaming.clean(str(raw)), replace_episode)
+        return replace_episode
 
-    episode_id = add_episode(owner, streaming.clean(data.get('summary') or ''), replace_episode)
-    for fact in data.get('facts') or ():
-        if isinstance(fact, str) and not _PRIVATE.search(fact):
-            remember(owner, fact, importance=3)
+    summary = streaming.clean(data.get('summary') or '')
+    # The summary has to be about what THEY said: its content words must come from their lines, not BITCH's.
+    content = keywords(summary) - _NARRATION - keywords(owner)
+    supported = keywords(' '.join(their_lines))
+    if summary and not _JUNK.search(summary) and len(content - supported) <= max(1, len(content) // 5):
+        episode_id = add_episode(owner, summary, replace_episode)
+    else:
+        episode_id = replace_episode
+    for item in data.get('facts') or ():
+        if isinstance(item, dict) and grounded(item.get('fact'), item.get('quote'), their_words):
+            remember(owner, item['fact'], importance=3)
     for item in data.get('debates') or ():
-        if isinstance(item, dict) and item.get('text') and not _PRIVATE.search(item['text']):
+        if isinstance(item, dict) and grounded(item.get('text'), item.get('quote'), their_words, literal=False):
             add_debate(owner, item['text'], triggers=item.get('triggers') or '', importance=4)
     for person in data.get('people') or ():
-        if isinstance(person, dict) and person.get('name') and person.get('relation'):
+        if (isinstance(person, dict) and person.get('name') and person.get('relation')
+                and _plain(person['name']) in _plain(person.get('quote'))
+                and said_by_them(person.get('quote'), their_words)):
             upsert_person(person['name'], relation=person['relation'])
-    status = (data.get('status') or '').strip()
-    hours = float(data.get('status_hours') or 0)
-    if status and hours > 0 and not _PRIVATE.search(status):
-        set_status(owner, status, ttl_seconds=hours * 3600)
+    status = data.get('status') or {}
+    if (isinstance(status, dict) and status.get('text') and float(status.get('hours') or 0) > 0
+            and grounded(status['text'], status.get('quote'), their_words)):
+        set_status(owner, status['text'], ttl_seconds=float(status['hours']) * 3600)
     for sched in data.get('schedules') or ():
-        if isinstance(sched, dict) and sched.get('title') is not None:
-            try:
-                add_schedule(owner, sched['title'], int(sched['hour']), int(sched['minute']),
-                             days=sched.get('days') or 'daily', kind=sched.get('kind') or 'reminder',
-                             lead_minutes=0 if sched.get('kind') in ('wakeup', 'reminder') else 15)
-            except (TypeError, ValueError):
-                pass
+        # Only recurring times ("every weekday at 8"). One-off alarms and reminders are set live while talking.
+        days = str(sched.get('days') or '').strip().casefold().replace(' ', '')
+        if not (isinstance(sched, dict) and sched.get('title') and _DAYS.match(days)
+                and said_by_them(sched.get('quote'), their_words)):
+            continue
+        if days == 'weekdays':
+            days = 'mon,tue,wed,thu,fri'
+        elif days == 'weekends':
+            days = 'sat,sun'
+        sched['days'] = days
+        quote = _plain(sched.get('quote'))
+        hour12 = str((int(sched.get('hour', 0)) % 12) or 12)
+        if not re.search(rf"\b(?:{hour12}|{int(sched.get('hour', 0))})\b|noon|midnight", quote):
+            continue   # the time has to be in their words, not invented
+        try:
+            add_schedule(owner, sched['title'], int(sched['hour']), int(sched['minute']),
+                         days=sched.get('days') or 'daily', kind=sched.get('kind') or 'reminder',
+                         lead_minutes=0 if sched.get('kind') in ('wakeup', 'reminder') else 15)
+        except (TypeError, ValueError):
+            pass
     return episode_id
+
+
+REVIEW_SCHEMA = {
+    'type': 'object',
+    'properties': {'drop': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'id': {'type': 'integer'},
+                       'why': {'type': 'string', 'enum': ['duplicate', 'contradicted', 'not about them', 'not lasting',
+                                                          'nonsense']}},
+        'required': ['id', 'why'], 'additionalProperties': False}}},
+    'required': ['drop'],
+    'additionalProperties': False,
+}
+EPISODES_KEPT = 30          # newest conversation summaries kept per person
+STALE_DAYS = 120            # facts never used in this long, and never marked important, fade out
+
+
+def clean(owner=None, *, chat_fn=None, review=True):
+    """Tidy memory: drop expired, junk, duplicate, contradicted and stale entries. Returns what was removed.
+
+    Runs every night and from the app's Memory page. Rules go first; then (optionally) the local model reviews
+    each person's facts and may only DROP them, never write new ones."""
+    removed = []
+    now = time.time()
+    with lock, database:
+        rows = database.execute('select id, kind, about, text, t, importance, coalesce(uses, 0), expires_at '
+                                'from memories order by t desc').fetchall()
+    owners = {owner} if owner else {row[2] for row in rows if row[2]}
+
+    def drop(row_id, text, why):
+        removed.append({'id': row_id, 'text': text, 'why': why})
+
+    kept_texts = {}
+    episode_count = {}
+    for row_id, kind, about, text, t, importance, uses, expires in rows:
+        if owner and about != owner:
+            continue
+        if expires is not None and expires < now:
+            drop(row_id, text, 'expired')
+        elif kind in ('fact', 'person', 'debate') and (_JUNK.search(text) or _PRIVATE.search(text)):
+            drop(row_id, text, 'junk')
+        elif kind in ('fact', 'debate'):
+            earlier = kept_texts.setdefault((kind, about), [])
+            # Rows are newest first, so a near-copy of something already kept is the older duplicate.
+            if any(similar(text, other) >= .7 for other in earlier):
+                drop(row_id, text, 'duplicate')
+            elif kind == 'fact' and importance < 5 and uses == 0 and now - t > STALE_DAYS * 86400:
+                drop(row_id, text, 'stale')
+            else:
+                earlier.append(text)
+        elif kind == 'episode':
+            count = episode_count[about] = episode_count.get(about, 0) + 1
+            if count > EPISODES_KEPT or _JUNK.search(text):
+                drop(row_id, text, 'old episode' if count > EPISODES_KEPT else 'junk')
+    if review:
+        from . import llm
+        run_chat = chat_fn or llm.chat
+        gone = {item['id'] for item in removed}
+        for who in sorted(o for o in owners if o):
+            facts = [(row[0], row[3]) for row in rows
+                     if row[2] == who and row[1] in ('fact', 'debate') and row[0] not in gone]
+            if len(facts) < 2:
+                continue
+            listing = '\n'.join(f'{row_id}: {text}' for row_id, text in facts[:60])
+            try:
+                verdict = json.loads(run_chat([
+                    {'role': 'system', 'content': (
+                        f'These are notes a desk robot keeps about {who}, newest first. List only the ids to DROP: '
+                        'exact or near duplicates (drop the older one, which has the smaller id), notes contradicted by a '
+                        f'newer note, notes that are about the robot or the conversation rather than {who}, notes that '
+                        'are not lasting facts, and nonsense. Keep everything else. When unsure, keep it.')},
+                    {'role': 'user', 'content': listing},
+                ], max_tokens=300, schema=REVIEW_SCHEMA, temperature=0))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            known = dict(facts)
+            for item in verdict.get('drop') or ():
+                if isinstance(item, dict) and item.get('id') in known:
+                    drop(item['id'], known[item['id']], item.get('why') or 'review')
+    if removed:
+        with lock, database:
+            database.executemany('delete from memories where id = ?', ((item['id'],) for item in removed))
+    return removed
 
 
 def everything(limit=200):

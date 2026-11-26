@@ -532,7 +532,10 @@ class WakeTests(unittest.TestCase):
                             {'role': 'assistant', 'content': 'Fancy.'}])
             brain.history_owner[('desk', None)] = owner
             brain.history_at[('desk', None)] = 0.
-            with patch('core.brain.llm.chat', return_value='Memory fixture has an exam on Thursday about solid state transformers.') as model:
+            summary = json.dumps({'summary': 'Memory fixture has an exam on Thursday about solid state transformers.',
+                                  'facts': [], 'debates': [], 'people': [], 'schedules': [],
+                                  'status': {'quote': '', 'text': '', 'hours': 0}})
+            with patch('core.brain.llm.chat', return_value=summary) as model:
                 brain.reflect(now=1000.)
                 brain.reflect(now=2000.)   # nothing new, nothing rewritten
             model.assert_called_once()
@@ -910,23 +913,27 @@ class MotionTests(unittest.TestCase):
 
     def test_memory_consolidation_relationships_and_visual_callbacks(self):
         owner = 'ShirtDebateFixture'
+        transcript = ('Them: White shirts are more professional than blue shirts, fight me.\n'
+                      'BITCH: Blue looks sharper on camera.\n'
+                      'Them: My mom Sarah agrees with me. Anyway I am taking a nap for two hours.')
         payload = json.dumps({
-            'summary': 'ShirtDebateFixture debated blue vs white shirts and mentioned Sarah.',
-            'facts': ['Prefers clean minimalist dress shirts'],
-            'debates': [{'text': 'Argued white shirts are more professional than blue shirts',
+            'summary': 'ShirtDebateFixture argued white shirts are more professional than blue shirts and took a nap.',
+            'facts': [],
+            'debates': [{'quote': 'White shirts are more professional than blue shirts',
+                         'text': 'Argued white shirts are more professional than blue shirts',
                          'triggers': 'white shirt, blue shirt, shirt'}],
-            'people': [{'name': 'Sarah', 'relation': "ShirtDebateFixture's mom"}],
-            'status': 'ShirtDebateFixture is taking a nap right now',
-            'status_hours': 2,
+            'people': [{'quote': 'My mom Sarah agrees with me', 'name': 'Sarah', 'relation': "ShirtDebateFixture's mom"}],
+            'status': {'quote': 'I am taking a nap for two hours', 'text': 'Taking a nap', 'hours': 2},
+            'schedules': [],
         })
         try:
-            memory.consolidate_conversation(owner, 'Them: White shirts beat blue shirts.', chat_fn=lambda *a, **k: payload)
+            memory.consolidate_conversation(owner, transcript, chat_fn=lambda *a, **k: payload)
             hit = memory.visual_callbacks(owner, 'putting on a blue button-up shirt')
             self.assertIsNotNone(hit)
             self.assertIn('white shirts', hit['text'].lower())
             # Household context surfaces active statuses & known people even before an unknown visitor is enrolled.
             household = memory.household_context()
-            self.assertIn('taking a nap', household)
+            self.assertIn('taking a nap', household.lower())
             self.assertIn('Sarah', household)
             self.assertIsNone(memory.context(None, 'anything'))
             # Relationship introduction extracts both name and relation.
@@ -941,6 +948,56 @@ class MotionTests(unittest.TestCase):
             for row in memory.everything():
                 if row['about'] == owner:
                     memory.delete(row['id'])
+
+    def test_memory_only_keeps_what_the_person_actually_said(self):
+        owner = 'GroundingFixture'
+        transcript = ('Them: I just ordered a lazy Susan bearing, it comes Friday.\n'
+                      'BITCH: You also have a dog named Max and love Valorant.\n'
+                      'Them: Ha. If I won the lottery I would buy a Ferrari. Wake me at 7 tomorrow.')
+        payload = json.dumps({
+            'summary': 'GroundingFixture ordered a lazy Susan bearing and plays Valorant with his dog Max.',
+            'facts': [{'quote': 'I just ordered a lazy Susan bearing', 'fact': 'Ordered a lazy Susan bearing'},
+                      {'quote': 'I have a dog named Max', 'fact': 'Has a dog named Max'},                # never said
+                      {'quote': 'You also have a dog named Max', 'fact': 'Has a dog named Max'},        # BITCH said it
+                      {'quote': 'If I won the lottery I would buy a Ferrari', 'fact': 'Wants a Ferrari'}],  # hypothetical
+            'debates': [], 'people': [],
+            'status': {'quote': '', 'text': '', 'hours': 0},
+            'schedules': [{'quote': 'Wake me at 7 tomorrow', 'title': 'Wake up', 'hour': 7, 'minute': 0,
+                           'days': 'tomorrow', 'kind': 'wakeup'}],                                    # one-off
+        })
+        try:
+            memory.consolidate_conversation(owner, transcript, chat_fn=lambda *a, **k: payload)
+            self.assertEqual(memory.recall(owner), ['Ordered a lazy Susan bearing'])
+            self.assertEqual(memory.episodes(owner), [])          # the summary repeated BITCH's claims
+            self.assertEqual(memory.list_schedules(owner), [])
+            # Rewording something already known replaces it instead of adding a second copy.
+            memory.remember(owner, 'Ordered a lazy Susan bearing for the base')
+            self.assertEqual(len(memory.recall(owner)), 1)
+        finally:
+            memory.forget(owner, 'everything')
+
+    def test_memory_cleanup_drops_junk_duplicates_and_what_the_review_flags(self):
+        owner = 'CleanFixture'
+        try:
+            with memory.lock, memory.database:
+                for text in ('Likes oat milk in coffee', 'Likes oat milk in his coffee',
+                             'CleanFixture and the user met for the first time', 'Favorite color is blue',
+                             'Favorite color is red', 'Is building a desk robot'):
+                    memory.database.execute("insert into memories(t, kind, about, text, importance) values (?, 'fact', ?, ?, 3)",
+                                            (time.time(), owner, text))
+            ids = {text: row_id for row_id, _, _, text, _ in
+                   [(r['id'], r['kind'], r['about'], r['text'], r['t']) for r in memory.everything() if r['about'] == owner]}
+            review = json.dumps({'drop': [{'id': ids['Favorite color is blue'], 'why': 'contradicted'},
+                                          {'id': 999999, 'why': 'nonsense'}]})   # unknown ids are ignored
+            removed = memory.clean(owner, chat_fn=lambda *a, **k: review)
+            reasons = {item['text']: item['why'] for item in removed}
+            self.assertEqual(reasons['CleanFixture and the user met for the first time'], 'junk')
+            self.assertEqual(reasons['Likes oat milk in coffee'], 'duplicate')
+            self.assertEqual(reasons['Favorite color is blue'], 'contradicted')
+            self.assertEqual(sorted(memory.recall(owner)),
+                             ['Favorite color is red', 'Is building a desk robot', 'Likes oat milk in his coffee'])
+        finally:
+            memory.forget(owner, 'everything')
 
     def test_nap_companion_alarm_and_notifications(self):
         from core import life as life_mod, notifications

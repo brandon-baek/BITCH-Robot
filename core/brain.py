@@ -230,13 +230,26 @@ class Brain:
         threading.Thread(target=self._reflect, daemon=True).start()
 
     def _reflect(self):
-        """Once a conversation goes quiet, remember it in a sentence or two."""
+        """Once a conversation goes quiet, remember it in a sentence or two. Tidy memory once a night."""
         while True:
             time.sleep(30)
             try:
                 self.reflect()
             except Exception as error:
                 hub.note('memory', f'Couldn’t save a conversation summary: {error}')
+            try:
+                self.nightly_clean()
+            except Exception as error:
+                hub.note('memory', f'Couldn’t tidy memory: {error}')
+
+    def nightly_clean(self, now=None):
+        """Between 3 and 5 AM, when nobody is talking, drop duplicate, contradicted, junk and stale memories."""
+        now = datetime.now() if now is None else now
+        today = now.strftime('%Y-%m-%d')
+        if not 3 <= now.hour < 5 or self.busy.is_set() or memory.kv_get('memory:cleaned') == today:
+            return None
+        memory.kv_set('memory:cleaned', today)
+        return memory.clean()
 
     def reflect(self, now=None, quiet=REFLECT_AFTER):
         now = time.monotonic() if now is None else now

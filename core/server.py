@@ -1,4 +1,5 @@
 """One setup page, with local access and pairing for external sensors."""
+import asyncio
 import base64
 import hashlib
 import json
@@ -353,6 +354,13 @@ async def forget_memory(req: Request):
         raise HTTPException(400, 'Pick a memory.')
     memory.delete(row)
     return {'memories': memory.everything()}
+
+
+@app.post('/api/memory/clean')
+async def clean_memory(req: Request):
+    authorize(req)
+    removed = await asyncio.to_thread(memory.clean)
+    return {'removed': removed, 'memories': memory.everything()}
 
 
 @app.get('/api/frame')
