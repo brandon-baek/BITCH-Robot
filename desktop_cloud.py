@@ -505,17 +505,10 @@ class CloudProvider:
             for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
             const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
             const makeDT = () => {{ const d = new DataTransfer(); d.items.add(file); return d; }};
-            // Attach via ChatGPT's hidden file input directly (always attaches exactly 1 image).
+            // Attach exactly 1 image via ChatGPT's native ProseMirror clipboard paste (no fallback double-attach).
             const hasNewThumb = () => thumbs().length > beforeThumbs;
-            const inp = Array.from(document.querySelectorAll('input[type="file"]'))
-                .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
-            if (inp) {{
-                inp.files = makeDT().files;
-                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }} else {{
-                box.focus();
-                box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
-            }}
+            box.focus();
+            box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
             // Wait up to 8 s for the attachment chip to appear and any upload spinner to finish.
             // Note: Send stays disabled while the text box is empty, so do NOT block on sendBtn().disabled here.
             const deadline = performance.now() + 8000;
@@ -612,7 +605,7 @@ class CloudProvider:
             one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
             prompt_js = json.dumps(one_line)
             use_paste = 'true' if self.name == 'chatgpt' else 'false'
-            go_script = f'''(async () => {{
+            go_script = f'''(() => {{
                 {self.helpers}
                 if (window.__bitchObs) {{ try {{ window.__bitchObs.disconnect(); }} catch (e) {{}} window.__bitchObs = null; }}
                 if (window.__bitchTimer) {{ clearInterval(window.__bitchTimer); window.__bitchTimer = null; }}
@@ -636,11 +629,8 @@ class CloudProvider:
                 }}
                 let clicked = false;
                 if (pasted) {{
-                    for (let i = 0; i < 6; i++) {{
-                        const b = sendBtn();
-                        if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') {{ b.click(); clicked = true; break; }}
-                        await new Promise(r => setTimeout(r, 25));
-                    }}
+                    const b = sendBtn();
+                    if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') {{ b.click(); clicked = true; }}
                 }}
                 let lastSent = '';
                 let stableTicks = 0;
