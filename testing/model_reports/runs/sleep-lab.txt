@@ -1,0 +1,339 @@
+W1126 17:48:33.872000 12471 torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+  super().__init__("LSTM", *args, **kwargs)
+  WeightNorm.apply(module, name, dim)
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 2374.92it/s]
+[transformers] You are using a model of type `qwen3_tts` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+  Initialized encoder codebooks
+Loaded speech tokenizer from /Users/brandon.baek/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-8bit/snapshots/50f45ef0047cde7e84c2ef04326acb8ada2436a7/speech_tokenizer
+  Turn: first words 1.8 s after you stopped
+  Turn: first words 1.8 s after you stopped
+  Turn: first words 3.1 s after you stopped
+  timer: Timer set: 5 minutes for tea.
+  weather: FAILED: the weather service did not answer. Say so briefly.
+  Turn: first words 2.1 s after you stopped
+  Turn: first words 0.4 s after you stopped
+  BITCH is in deep sleep until 6:00 PM to free up memory. Say its name or tap Wake to bring it back.
+  Power: deep sleep (asked) for 10 minutes
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 2172.37it/s]
+[transformers] You are using a model of type `qwen3_tts` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+  Initialized encoder codebooks
+Loaded speech tokenizer from /Users/brandon.baek/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-8bit/snapshots/50f45ef0047cde7e84c2ef04326acb8ada2436a7/speech_tokenizer
+  Power: awake (heard its name) in 11.7 s
+[
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, this is my family. Say hi to everyone.",
+    "heard": "this is my family. Say hi to everyone.",
+    "wer": 0.0,
+    "reply": "Well, hi. I'm BITCH, and I clearly have more googly eyes than sense. Say hi back, everyone.",
+    "first_words": 1.67,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -1.29,
+     "listen 0.49s (waited 0.00s for the GPU)": -0.8,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.34,
+     "clip-final": 0.34,
+     "transcribed": 0.34,
+     "model-start": 0.35,
+     "model-first-token": 0.77,
+     "first-phrase": 1.14,
+     "voice-first-chunk": 1.65,
+     "speak": 1.67,
+     "phrase": 1.86,
+     "model-done": 2.29,
+     "prompt": {
+      "tokens": 57,
+      "prefill_s": 0.41,
+      "out_tokens": 42,
+      "tok_per_s": 27.0
+     }
+    }
+   },
+   {
+    "say": "Hi BITCH! It's nice to meet you.",
+    "heard": "It's nice to meet you.",
+    "wer": 0.17,
+    "reply": "Likewise. Three faces, one robot who can't wave back, and here we all are.",
+    "first_words": 1.71,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.24,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.36,
+     "clip-final": 0.36,
+     "transcribed": 0.36,
+     "model-start": 0.37,
+     "model-first-token": 0.75,
+     "first-phrase": 1.09,
+     "voice-first-chunk": 1.7,
+     "speak": 1.71,
+     "phrase": 1.88,
+     "model-done": 2.22,
+     "prompt": {
+      "tokens": 54,
+      "prefill_s": 0.38,
+      "out_tokens": 36,
+      "tok_per_s": 23.7
+     }
+    }
+   },
+   {
+    "say": "Mom, do you want some tea?",
+    "heard": "Mom, do you want some tea?",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.25,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.36,
+     "clip-final": 0.37,
+     "transcribed": 0.37,
+     "speak": 0.38,
+     "prompt": {
+      "tokens": 54,
+      "prefill_s": 0.38,
+      "out_tokens": 36,
+      "tok_per_s": 23.7
+     }
+    }
+   },
+   {
+    "say": "Sure, thanks honey.",
+    "heard": "Sure, thanks honey.",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.22,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.33,
+     "clip-final": 0.35,
+     "transcribed": 0.35,
+     "speak": 0.35,
+     "prompt": {
+      "tokens": 54,
+      "prefill_s": 0.38,
+      "out_tokens": 36,
+      "tok_per_s": 23.7
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, set a timer for five minutes for the tea.",
+    "heard": "set a timer for five minutes for the tea.",
+    "wer": 0.0,
+    "reply": "Five minutes on the tea. I'll buzz you when it's done.",
+    "first_words": 3.08,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -2.01,
+     "listen 0.11s (waited 0.00s for the GPU)": -1.91,
+     "listen 0.13s (waited 0.00s for the GPU)": 0.39,
+     "clip-final": 0.39,
+     "transcribed": 0.39,
+     "model-start": 0.39,
+     "model-first-token": 1.12,
+     "first-phrase": 2.45,
+     "phrase": 2.84,
+     "voice-first-chunk": 3.07,
+     "speak": 3.08,
+     "model-done": 3.31,
+     "prompt": {
+      "tokens": 202,
+      "prefill_s": 0.72,
+      "out_tokens": 67,
+      "tok_per_s": 30.1
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, what's the weather going to be like tomorrow?",
+    "heard": "",
+    "wer": 1.0,
+    "reply": "",
+    "first_words": null,
+    "gaps": [],
+    "cues": 1,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.16,
+     "listen 0.14s (waited 0.00s for the GPU)": 0.3,
+     "clip-final": 0.32,
+     "transcribed": 0.32,
+     "model-start": 2.4,
+     "model-first-token": 3.27,
+     "speak": 4.82,
+     "model-done": 5.32,
+     "listen 0.10s (waited 0.00s for the GPU)": 5.71,
+     "prompt": {
+      "tokens": 202,
+      "prefill_s": 0.72,
+      "out_tokens": 67,
+      "tok_per_s": 30.1
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, tell us a really short joke.",
+    "heard": "what's the weather going to be like to-morrow? tell us a really short joke.",
+    "wer": 1.5,
+    "reply": "",
+    "first_words": null,
+    "gaps": [],
+    "cues": 1,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.21,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.32,
+     "clip-final": 0.33,
+     "transcribed": 0.33,
+     "model-start": 0.33,
+     "model-first-token": 1.65,
+     "speak": 1.88,
+     "prompt": {
+      "tokens": 202,
+      "prefill_s": 0.72,
+      "out_tokens": 67,
+      "tok_per_s": 30.1
+     }
+    }
+   },
+   {
+    "say": "Okay, it's your turn to do the dishes.",
+    "heard": "Okay, it's your turn to do the dishes.",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.26,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.38,
+     "clip-final": 0.38,
+     "transcribed": 0.38,
+     "model-start": 0.39,
+     "model-first-token": 1.19,
+     "speak": 1.41,
+     "prompt": {
+      "tokens": 202,
+      "prefill_s": 0.72,
+      "out_tokens": 67,
+      "tok_per_s": 30.1
+     }
+    }
+   },
+   {
+    "say": "Thanks BITCH, that's all for now.",
+    "heard": "Thanks. That's all for now.",
+    "wer": 0.0,
+    "reply": "You're welcome. I'll leave the timer running and the dishes for whoever said it's their turn.",
+    "first_words": 1.99,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.19,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.3,
+     "clip-final": 0.31,
+     "transcribed": 0.31,
+     "model-start": 0.31,
+     "model-first-token": 0.97,
+     "first-phrase": 1.46,
+     "voice-first-chunk": 1.98,
+     "speak": 1.99,
+     "phrase": 2.19,
+     "model-done": 2.59,
+     "prompt": {
+      "tokens": 168,
+      "prefill_s": 0.65,
+      "out_tokens": 45,
+      "tok_per_s": 27.2
+     }
+    }
+   }
+  ]
+ },
+ {
+  "scenario": "clip-preview",
+  "turns": [
+   {
+    "say": "Hey BITCH, take a break for ten minutes.",
+    "heard": "take a break for ten minutes.",
+    "wer": 0.0,
+    "reply": "Okay, taking a break for 10 minutes. I\u2019m freeing up my memory. Say my name if you need me.",
+    "first_words": 0.76,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.25,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.37,
+     "clip-final": 0.37,
+     "transcribed": 0.37,
+     "voice-first-chunk": 0.75,
+     "speak": 0.76,
+     "prompt": {
+      "tokens": 168,
+      "prefill_s": 0.65,
+      "out_tokens": 45,
+      "tok_per_s": 27.2
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, what's two plus two?",
+    "heard": "",
+    "wer": 1.0,
+    "reply": "Give me about 15 seconds, I\u2019m still waking up.",
+    "first_words": 0.31,
+    "gaps": [
+     0.43
+    ],
+    "cues": 1,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.19,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.3,
+     "clip-final": 0.31,
+     "transcribed": 0.31,
+     "speak": 0.31,
+     "voice-first-chunk": 5.05,
+     "model-start": 12.01,
+     "model-first-token": 16.39,
+     "first-phrase": 16.84,
+     "model-done": 17.05,
+     "prompt": {
+      "tokens": 168,
+      "prefill_s": 0.65,
+      "out_tokens": 45,
+      "tok_per_s": 27.2
+     }
+    }
+   }
+  ]
+ }
+]

@@ -553,7 +553,9 @@ class Hearing:
             text = self.read_fast(audio)
         except Exception:
             return self.transcribe(whisper, audio)
-        if need_name and not (text and wake_only(text)):
+        from .power import power
+
+        if need_name and not (text and wake_only(text)) and not power.sleeping:
             from .brain import wake_request
 
             if not text or wake_request(text) is None:
@@ -563,6 +565,18 @@ class Hearing:
         return text
 
     whisper_used = 0.
+
+    @staticmethod
+    def unload_whisper():
+        from mlx_whisper.transcribe import ModelHolder
+
+        with voice.MLX:
+            ModelHolder.model = ModelHolder.model_path = None
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:
+                pass
 
     @staticmethod
     def release_whisper():

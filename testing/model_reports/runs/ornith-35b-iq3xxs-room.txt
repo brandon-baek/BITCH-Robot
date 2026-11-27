@@ -1,0 +1,18 @@
+ok  them  0.0s  'Mom, do you want to come with us?' -> ''
+BAD me    4.6s  'What about tomorrow?' -> ''
+ok  them  0.0s  'Dad, can you check the oven?' -> ''
+ok  me    1.8s  'Actually make it twelve.' -> 'Twelve now. Twelve minutes from when you said it.'
+BAD me    2.0s  'Wait, is that true?' -> ''
+ok  them  2.2s  'Emma, did you know that?' -> ''
+ok  them  0.0s  'I think we watched that one last month, right honey?' -> ''
+ok  me    1.9s  "We've seen it. Something else?" -> "The Princess Bride. It's got sword fights, a giant, and a rat you can literally eat. What could go wrong?"
+ok  them  1.5s  'Can you pass me the salt?' -> ''
+ok  me    1.2s  'And soft-boiled?' -> 'Three or four minutes. The yolk stays runny.'
+BAD me    1.9s  'Yeah, go ahead.' -> ''
+ok  them  0.0s  'Honey, I told you it was the Warriors.' -> ''
+BAD me    2.3s  'Haha, that was terrible.' -> ''
+ok  them  2.0s  "Okay, it's your turn to do the dishes." -> ''
+ok  them  0.0s  "Thanks. Mom, dinner's ready." -> ''
+BAD me    1.6s  'And divided by four?' -> ''
+
+11/16 correct; median 1.8s

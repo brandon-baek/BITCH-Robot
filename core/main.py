@@ -9,7 +9,22 @@ import webbrowser
 from . import config, llm, voice
 
 
+def prefer_offline():
+    """Load the speech models straight from disk when they're all downloaded. Otherwise every start asks Hugging Face
+    for updates first, which hangs or fails when the Wi-Fi is down."""
+    import os
+    from pathlib import Path
+
+    from .hearing import PARAKEET, WHISPER
+
+    hub_dir = Path(os.environ.get('HF_HOME', Path.home() / '.cache' / 'huggingface')) / 'hub'
+    needed = [PARAKEET, WHISPER, voice.QWEN_MODELS.get(config.get('voice_model'), voice.QWEN_MODELS['0.6B'])]
+    if all(any((hub_dir / ('models--' + repo.replace('/', '--')) / 'snapshots').glob('*/*')) for repo in needed):
+        os.environ.setdefault('HF_HUB_OFFLINE', '1')
+
+
 def main():
+    prefer_offline()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', action='store_true', help='open a Mac window')
     parser.add_argument('--pi', help='set the Raspberry Pi hostname or IPv4 address')
@@ -63,6 +78,8 @@ def main():
     hub.hearing.start()
     hub.sight.start()
     life.start()
+    from .power import power
+    power.start()   # deep sleep, and the watchdog that keeps the Mac from running out of memory
     server.start()
     llm.warm(hub.brain.spoken_system())
     if not args.quiet:

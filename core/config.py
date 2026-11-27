@@ -38,6 +38,7 @@ DEFAULTS = {
     'volume': 100,
     'robot_host': 'raspberrypi.local',
     'robot_key': '',
+    'wake_seconds': 15,   # how long waking from deep sleep took lately (learned), for "give me about N seconds"
     'home_place': None,   # {'name', 'lat', 'lon', 'imperial'}, set by saying where you live (for weather)
 }
 PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'mic_muted', 'keep_audio',

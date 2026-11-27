@@ -238,6 +238,9 @@ class Lab:
         llm.warm_context(hub.brain.spoken_system())
         voice.render('Warming up.')
         if voice.load_qwen():
+            voice.record_lines()   # the waking lines, as the real app records them on its first start
+            from core.power import power
+            power.start()
             reply = voice.LiveReply()
             reply.add('Warming up the live voice.')
             reply.close()
@@ -467,6 +470,11 @@ SCENARIOS = {
         {'say': "Okay, it's your turn to do the dishes.", 'voice': 'af_heart', 'gap': .8, 'expect': 'quiet'},
         {'say': "Thanks BITCH, that's all for now.", 'gap': 1.},
     ],
+    'sleep': [
+        # Deep sleep on request, then a question that has to wake it: chirp, "give me about N seconds", answer.
+        {'say': "Hey BITCH, take a break for ten minutes."},
+        {'say': "Hey BITCH, what's two plus two?", 'gap': 4.},
+    ],
     'echo': [
         # A long reply with nobody talking over it: BITCH must not stop itself.
         {'say': "Hey BITCH, explain how a servo motor works, in a few sentences."},
@@ -478,4 +486,6 @@ if __name__ == '__main__':
     names = sys.argv[1:] or list(SCENARIOS)
     lab = Lab()
     report = [lab.run(name, SCENARIOS[name]) for name in names]
-    print(json.dumps(report, indent=1))
+    print(json.dumps(report, indent=1), flush=True)
+    # Leave without tearing down the speech models' background threads (that can crash Python on the way out).
+    os._exit(0)

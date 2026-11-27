@@ -567,3 +567,12 @@ input[type="range"] { width: 100%; accent-color: var(--kraft-bright); }
 .row.memory { align-items: flex-start; }
 .row.memory p { margin: 0; font-size: 15px; line-height: 1.35; }
 .row.memory .meta { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 2px; }
+
+/* Rest: how long BITCH steps aside for. */
+.row.choices { flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+.row.choices .action {
+  flex: 1 1 auto; min-height: 36px; padding: 6px 12px;
+  border: 0; border-radius: 10px; background: var(--surface-pressed); color: var(--tint); cursor: pointer;
+  font: inherit; font-size: 15px;
+}
+.row.choices .action:disabled { opacity: .4; }

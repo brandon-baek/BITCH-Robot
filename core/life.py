@@ -342,6 +342,13 @@ class Life:
         memory.set_status(owner, status_text, ttl_seconds=ttl, tag='nap')
         # Give BITCH a couple seconds to finish speaking its goodnight, then enter zero-power sleep.
         threading.Timer(4.0, lambda: rhythm.sleep_now(until=wake_at)).start()
+
+        def free_memory():
+            # Nobody's talking while you nap: let the brain and voice out of memory, back 90 s before the alarm.
+            from .power import power
+            if self.napping:
+                power.sleep(max(60., wake_at - time.time() - 90) if wake_at else 0, reason='nap')
+        threading.Timer(6.0, free_memory).start()
         if wake_at:
             extra = f' If you don’t get up, I’ll flag {backup_contact}.' if backup_contact else ''
             return f'Got it, {owner}. I’ll power down and nap with you, then wake you at {fmt_clock(wake_at)}.{extra}'

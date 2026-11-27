@@ -195,9 +195,22 @@ WMO = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fo
        96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
 
 
-def fetch(url, timeout=5):
-    with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'desk-robot'}), timeout=timeout) as r:
-        return json.load(r)
+service_down_until = 0.   # after a failed fetch, skip the weather service for a bit instead of waiting on it again
+fetch_timeout = 5
+
+
+def fetch(url, timeout=None):
+    global service_down_until
+    if time.monotonic() < service_down_until:
+        raise OSError('the weather service was not answering a moment ago')
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'desk-robot'}),
+                                    timeout=timeout or fetch_timeout) as r:
+            return json.load(r)
+    except (OSError, ValueError):
+        # No Wi-Fi, or the service is down: say so right away for the next two minutes.
+        service_down_until = time.monotonic() + 120
+        raise
 
 
 def find_place(name):
@@ -268,7 +281,12 @@ def home_weather(text):
     cached = _home_weather.get(key)
     if cached and time.monotonic() - cached[0] < 600:
         return cached[1]
-    result = weather({'place': '', 'day': day}, {})
+    global fetch_timeout
+    fetch_timeout = 2   # fetched before the model starts: never hold a reply up for long
+    try:
+        result = weather({'place': '', 'day': day}, {})
+    finally:
+        fetch_timeout = 5
     if result.startswith('FAILED'):
         return None
     _home_weather[key] = (time.monotonic(), result)

@@ -347,6 +347,50 @@ class WakeTests(unittest.TestCase):
                 llm.chat([{'role': 'user', 'content': 'Hi'}])
             ollama.assert_not_called()
 
+    def test_deep_sleep_frees_the_brain_and_wakes_on_its_name(self):
+        from core import power as P
+        from core.brain import Brain
+        # What counts as "go to deep sleep", and for how long.
+        self.assertAlmostEqual(P.asked_to_sleep('take a break for two hours'), 7200, delta=5)
+        self.assertAlmostEqual(P.asked_to_sleep('power down for 30 minutes'), 1800, delta=5)
+        self.assertEqual(P.asked_to_sleep('take five'), 300)
+        self.assertEqual(P.asked_to_sleep('free up some memory'), 0)
+        self.assertEqual(P.asked_to_sleep("I'm about to render a video, can you take a break?"), 0)
+        for other in ('take a picture', "I'm going to take a nap", 'rest of the code works', 'what time is it'):
+            self.assertIsNone(P.asked_to_sleep(other), other)
+        power = P.Power()
+        with (patch('core.llm.stop_server') as stop, patch('core.voice.unload') as unload,
+              patch('core.rhythm.rhythm.sleep_now'), patch.object(hub, 'note')):
+            power.sleep(600)
+        stop.assert_called_once()
+        unload.assert_called_once()
+        self.assertTrue(power.sleeping)
+        self.assertGreater(power.until, time.time() + 590)
+        # While asleep, nothing can quietly reload the brain behind its back.
+        from core import llm
+        with patch.object(P, 'power', power), patch('core.power.power', power):
+            self.assertFalse(llm.start_server())
+        # Its name (or "wake up") wakes it; the brain says the request, it loads, then answers.
+        with (patch.object(power, 'room_for_brain', return_value=True), patch('core.llm.start_server', return_value=True),
+              patch('core.voice.warm'), patch('core.voice.warmed') as warmed, patch('core.rhythm.rhythm.wake_now'),
+              patch('core.voice.earcon'), patch('core.voice.say_recorded'), patch.object(hub, 'note')):
+            warmed.wait.return_value = True
+            self.assertTrue(power.wake_with_words('test'))
+        self.assertFalse(power.sleeping)
+        # No room: it stays asleep and says why instead of crashing the Mac.
+        with (patch('core.llm.stop_server'), patch('core.voice.unload'), patch('core.rhythm.rhythm.sleep_now'),
+              patch.object(hub, 'note')):
+            power.sleep(0)
+        with (patch.object(power, 'room_for_brain', return_value=False), patch('core.voice.earcon'),
+              patch('core.voice.say_recorded') as said, patch.object(hub, 'note'), patch.object(power.ready, 'wait', return_value=False)):
+            self.assertFalse(power.wake_with_words('test'))
+            said.assert_called_with('cant_wake', None)
+        self.assertTrue(power.sleeping)
+        # "Go to sleep" is answered, then deep sleep starts after the goodbye.
+        brain = Brain()
+        self.assertIn('taking a break', brain.reply('take a break for an hour', 'desk'))
+        self.assertAlmostEqual(brain.pending_sleep, 3600, delta=5)
+
     def test_new_question_overrides_model_closure(self):
         brain = Brain()
         with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):

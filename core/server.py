@@ -163,6 +163,8 @@ def state(req: Request):
     data['ears_ready'] = hub.hearing.ready
     data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
     data['pointing_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'ready', False))
+    from .power import power
+    data['power'] = power.status()
     data['tasks'] = helper.recent()
     data['now'] = time.time()
     brain = hub.brain
@@ -268,7 +270,12 @@ def wake_robot(req: Request):
     authorize(req)
     ears = hub.selected('ears')
     source = ears.id if ears else 'app'
-    if life.alarm_ringing:
+    from .power import power
+    if power.sleeping:
+        # Out of deep sleep: load the brain and voice back (takes a few seconds), then say so.
+        threading.Thread(target=lambda: power.wake('app', wait=150) and hub.brain.announce(
+            source, 'I’m back.', chime=False), daemon=True).start()
+    elif life.alarm_ringing:
         reply = life.dismiss_alarm(source, life.primary_owner())
         hub.brain.announce(source, reply, chime=False)
     elif life.napping:
@@ -278,6 +285,19 @@ def wake_robot(req: Request):
         rhythm.wake_now(celebrate=False)
         hub.brain.last_interaction = time.monotonic()
     return {'ok': True}
+
+
+@app.post('/api/power/sleep')
+async def deep_sleep(req: Request):
+    """Deep sleep from the app: free the brain and voice for a while (minutes 0 = until woken)."""
+    authorize(req)
+    from .power import power
+    body = await req.json()
+    minutes = body.get('minutes', 0)
+    if not isinstance(minutes, (int, float)) or not 0 <= minutes <= 24 * 60:
+        raise HTTPException(400, 'minutes must be between 0 and 1440')
+    await asyncio.to_thread(power.sleep, minutes * 60, 'asked')
+    return power.status()
 
 
 @app.post('/api/notify')

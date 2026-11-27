@@ -14,6 +14,7 @@ import uuid
 from . import config, gaze, helper, llm, memory, notifications, prosody, skills, streaming, voice, voicechat
 from .register import register
 from . import tools
+from .power import power, asked_to_sleep, say_until, WAKE as WAKE_UP
 from .hub import hub
 from .life import life
 
@@ -291,6 +292,7 @@ class NotForMe(Exception):
 
 class Brain:
     def __init__(self):
+        self.pending_sleep = None   # seconds of deep sleep to start once the goodbye has been said
         self.voices_heard = {}   # name -> when their voice was last recognized
         self.overheard = deque(maxlen=4)   # recent lines people said to each other, not to BITCH
         self.requests = queue.Queue(maxsize=1)
@@ -446,6 +448,7 @@ class Brain:
             show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
             alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
             return bool(wake_request(text) is not None or show_stop or alarm_stop or
+                        power.sleeping and WAKE_UP.match(text.strip()) or
                         self.followup and self.followup[0] == source and heard_at < self.followup[1])
 
     def submit(self, text, source, heard_at=None, *, name=None, face=None, face_by='face', speech_end=None, audio=None):
@@ -459,6 +462,9 @@ class Brain:
             robot = hub.get('robot')
             show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
             alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
+            woken = power.sleeping and bool(WAKE_UP.match(text.strip()))
+            if woken:
+                wake = text.strip()
             if wake is None and not show_stop and not alarm_stop and (not followup or name and self.speaker and name != self.speaker):
                 return False
             continuation = self.continuation
@@ -687,11 +693,18 @@ class Brain:
             try:
                 if self.hush.is_set():
                     continue
+                self.just_woke = False
+                if power.sleeping:
+                    # Someone called (or a timer has to ring): chirp now, load the brain and voice, then answer.
+                    if not power.wake_with_words('heard its name' if text else 'has something to say'):
+                        continue
+                    self.just_woke = True
                 if text:
                     hub.chat('user', text)
                 ending = bool(text and END.fullmatch(text)) or close_proactive
                 self.close_turn = False
                 self.pending_show = None
+                self.pending_sleep = None
                 self.native_audio = None
                 self.delivery = 'neutral'
                 self.performance = 'none'
@@ -740,6 +753,11 @@ class Brain:
                     voice.say(reply, self.hush, ready_cue=ready_cue, delivery=delivery, **expression)
                 if self.pending_show and not self.hush.is_set():
                     self.start_performance()
+                    ending = True
+                if self.pending_sleep is not None:
+                    seconds, self.pending_sleep = self.pending_sleep, None
+                    voice.earcon('sleep', force=True)
+                    threading.Thread(target=power.sleep, args=(seconds,), daemon=True).start()
                     ending = True
                 if not ending and hub.accepts(source, 'ears'):
                     with self.lock:
@@ -1172,6 +1190,14 @@ class Brain:
         local_request = LOCAL_REQUEST.fullmatch(text)
         if local_request:
             text = local_request[1].strip()
+        seconds = asked_to_sleep(text)
+        if seconds is not None:
+            # Deep sleep after this goodbye is spoken: the brain and voice leave memory for whatever comes next.
+            self.pending_sleep = seconds
+            return (f'Okay, taking a break{say_until(seconds)}. I’m freeing up my memory. '
+                    'Say my name if you need me.')
+        if WAKE_UP.match(text) and getattr(self, 'just_woke', False) and not life.napping:
+            return 'I’m up. What do you need?'
         performing = self.performance_reply(text)
         if performing is not None:
             return performing

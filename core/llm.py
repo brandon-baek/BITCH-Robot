@@ -105,6 +105,10 @@ def server_up():
 def start_server(wait=240):
     """Start (or adopt) the llama-server for the chat model. Returns True when it is serving."""
     global server, server_model
+    from .power import power
+
+    if power.state == 'sleeping':
+        return False   # deep sleep: only power.wake() brings the brain back
     model = config.get('chat_model')
     with server_lock:
         if server_model == model and server and server.poll() is None and server_up():

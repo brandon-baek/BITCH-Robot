@@ -62,6 +62,8 @@ function mood(state) {
   const bgCount = state.tasks.filter(task => task.state === 'background').length;
   const pendingNote = bgCount ? ' · ' + (bgCount === 1 ? '1 lookup pending' : bgCount + ' lookups pending') : '';
   if (state.life?.alarm_ringing) return ['speaking', 'Wake up!'];
+  if (state.power?.state === 'waking') return ['idle', 'Waking up' + (state.power.eta ? ` · about ${state.power.eta} s` : '')];
+  if (state.power?.state === 'sleeping') return ['asleep', 'Deep sleep · say “Hey BITCH”' + pendingNote];
   if (state.show_active) return ['speaking', 'Performing'];
   if (state.status === 'Speaking') return ['speaking', 'Talking'];
   if (state.status === 'Thinking' || state.status === 'Answering') return ['thinking', 'Thinking'];
@@ -286,7 +288,9 @@ async function refresh() {
   eyes.hearing = state.level || 0;
 
   $('stop').hidden = !(state.show_active || ['Speaking', 'Thinking', 'Answering', 'Performing'].includes(state.status));
-  const waking = Boolean(state.life?.alarm_ringing || state.life?.napping || state.rhythm === 'asleep');
+  const waking = Boolean(state.life?.alarm_ringing || state.life?.napping || state.rhythm === 'asleep'
+    || state.power?.state === 'sleeping');
+  renderPower(state.power);
   $('wakeBtn').hidden = !waking;
   $('wakeBtn').textContent = state.life?.alarm_ringing ? 'Stop alarm' : 'Wake up';
   $('wakeBtn').classList.toggle('alarm', Boolean(state.life?.alarm_ringing));
@@ -816,6 +820,27 @@ action('voiceToggle', 'click', () => {
 });
 action('stop', 'click', () => api('stop', {}));
 action('wakeBtn', 'click', () => api('wake', {}));
+function renderPower(power) {
+  if (!power) return;
+  const until = power.until ? ' until ' + new Date(power.until * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '';
+  const words = {
+    awake: `Awake · ${power.memory_free}% of the Mac’s memory free`,
+    waking: 'Waking up' + (power.eta ? ` · about ${power.eta} s left` : '…'),
+    sleeping: power.reason === 'memory' ? 'Deep sleep · the Mac ran low on memory' : `Deep sleep${until}`,
+  }[power.state];
+  if ($('powerState').textContent !== words) $('powerState').textContent = words;
+  for (const button of $('restChoices').querySelectorAll('button')) button.disabled = power.state !== 'awake';
+}
+$('restChoices').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-minutes]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    renderPower(await (await api('power/sleep', {minutes: Number(button.dataset.minutes)})).json());
+  } catch (error) {
+    fail(error);
+  }
+});
 action('openSettings', 'click', async () => {
   $('settings').showModal();
   await Promise.all([refresh(), loadMemories()]);

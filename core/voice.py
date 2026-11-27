@@ -158,6 +158,19 @@ def load_qwen():
     return qwen
 
 
+def unload():
+    """Let go of the voice model (deep sleep). It loads again on the next line BITCH says."""
+    global qwen
+    with MLX:
+        qwen = None
+        warmed.clear()
+        try:
+            import mlx.core as mx
+            mx.clear_cache()
+        except Exception:
+            pass
+
+
 def synthesize_qwen(text, speed):
     model = load_qwen()
     if not model:
@@ -257,9 +270,71 @@ def render(text, ready_cue=False, delivery='neutral'):
     signal *= 0.9 * VOICE_GAIN.get(delivery, 1.) / max(float(np.abs(signal).max()), 0.2)
     if ready_cue:
         signal = np.concatenate((signal, np.zeros(round(SR * 0.12)), cue()))
+    render.signal = signal   # kept so a line can be saved before the volume is applied
     result = encode(signal)
     remember_gestures(result[0], gestures(words))
     return result
+
+
+# Lines BITCH says while its voice model is out of memory (deep sleep, waking up). Recorded in its own voice the
+# first time the voice is loaded, then played from disk, so they need no model, no GPU and no internet.
+RECORDED = {
+    'waking_short': 'One sec, I’m waking up.',
+    'waking': 'Give me about {} seconds, I’m still waking up.',
+    'waking_long': 'Hang on, waking up. This one takes about half a minute.',
+    'almost': 'Almost there.',
+    'cant_wake': 'My memory’s too full to wake up right now. Close something heavy and call me again.',
+    'memory_nap': 'Your Mac’s running low on memory, so I’m taking a nap. Say my name if you need me.',
+}
+WAKING_SECONDS = (10, 15, 20)
+
+
+def recorded_path(key):
+    return config.HOME / 'lines' / f'{key}.wav'
+
+
+def record_lines():
+    """Save the sleep and waking lines in BITCH's own voice (once; cheap to check afterwards)."""
+    import soundfile
+
+    folder = config.HOME / 'lines'
+    folder.mkdir(parents=True, exist_ok=True)
+    wanted = {key: text for key, text in RECORDED.items() if '{}' not in text}
+    wanted.update({f'waking_{n}': RECORDED['waking'].format(n) for n in WAKING_SECONDS})
+    for key, text in wanted.items():
+        path = recorded_path(key)
+        if path.exists():
+            continue
+        try:
+            render(text, delivery='warm')
+            soundfile.write(str(path), np.asarray(render.signal, dtype=np.float32), SR)
+        except Exception as error:
+            hub.note('voice', f'Could not record "{text}": {error}')
+            return
+
+
+def say_recorded(key, stop=None, wait=True):
+    """Play a saved line at the current volume (or a soft chirp if it hasn't been recorded yet)."""
+    path = recorded_path(key)
+    if not path.exists():
+        earcon('waking', force=True)
+        return False
+    try:
+        import soundfile
+
+        signal, _ = soundfile.read(str(path), dtype='float32')
+        wav, duration = encode(signal)
+        text = next((line for name, line in RECORDED.items() if key.startswith(name)), '')
+        if text:
+            hub.chat('robot', text.format(key.rsplit('_', 1)[-1]) if '{}' in text else text)
+        if wait:
+            play(wav, duration, stop or threading.Event(), text=True, delivery='warm')
+        else:
+            threading.Thread(target=play, args=(wav, duration, stop or threading.Event()),
+                             kwargs={'text': True, 'delivery': 'warm'}, daemon=True).start()
+        return True
+    except Exception:
+        return False
 
 
 AFFIRM = {'yes', 'yeah', 'yep', 'yup', 'right', 'exactly', 'sure', 'totally', 'absolutely', 'definitely',
@@ -378,6 +453,7 @@ EARCONS = {
     'stop': lambda: glide(560, 270, .15, .22),
     'learned': lambda: np.concatenate([note(hz, .075, .16) for hz in (523, 659, 784)] + [note(1046, .18, .14)]),
     'answer': lambda: np.concatenate((bell(784, .28), bell(1175, .5))),
+    'waking': lambda: np.concatenate((glide(300, 520, .35, .12), pause(.05), glide(520, 880, .25, .12))),
     'sleep': lambda: glide(620, 280, .85, .12) * (.8 + .2 * np.sin(2 * np.pi * 7 * np.arange(round(SR * .85)) / SR)),
 }
 
@@ -488,6 +564,7 @@ def warm():
             render('Hello there.')
             for text in ACKNOWLEDGE:
                 cached(text)
+            record_lines()
         except Exception as error:
             hub.note('voice', f'Speech synthesis unavailable: {error}')
         finally:

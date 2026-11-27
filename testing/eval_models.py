@@ -192,7 +192,8 @@ def run_model(model):
                 saved = memory.recall('Brandon')
                 out['notes'].append({'prompt': prompt, 'saved': saved, 'ok': bool(saved) == should})
             memory.forget('Brandon', 'everything')
-    out['memory'] = memory_traps(model)
+    with patch.object(config, 'get', side_effect=fake_get):
+        out['memory'] = memory_traps(model)
     import subprocess
     if llm.server:
         # How much memory the model server really holds once it has answered a few dozen turns.
@@ -215,7 +216,7 @@ def memory_traps(model):
     for transcript, wanted in cases:
         owner = 'Brandon'
         memory.forget(owner, 'everything')
-        memory.consolidate_conversation(owner, transcript, chat_fn=lambda messages, **kw: llm.chat(messages, model=model, **kw))
+        memory.consolidate_conversation(owner, transcript, chat_fn=lambda messages, **kw: llm.chat(messages, **kw))   # the model under test, on BITCH's own server
         found = ' '.join(memory.recall(owner) + [d for d, _ in memory.debates(owner)]
                          + [e for _, e in memory.episodes(owner, 3)]).casefold()
         false += [word for word in ('valorant', 'max', 'taxes', 'ferrari', 'lottery', 'the user') if word in found]

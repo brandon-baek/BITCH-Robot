@@ -44,6 +44,7 @@ personality, memory and habits, and it should notice things on its own instead o
 | `core/devices/` | Mac | Drivers: `robot.py` (the Pi over HTTP; voice streams to the Pi's `/speak_stream` as it is made), `mac.py` (mic, camera, speaker), `web.py` (phones/app over the /link WebSocket). New hardware = a new driver |
 | `core/hearing.py`, `sight.py`, `faces.py`, `voice.py` | Mac | Silero VAD + Parakeet (Whisper only when the name was missed) for any ears device (name prompt, early end of turn, never-deaf lead-in, `EchoGate` for talk-over); YuNet/SFace faces, desk map, arrivals, eyes stay on whoever BITCH is talking with; BITCH's own cloned voice (Qwen3-TTS, `core/voices/`, Kokoro as backup) streamed as it is written, with word-timed gestures and a glance at anyone it names |
 | `core/prosody.py` | Mac | How something was said (pitch, range, loudness, pace) against that mic's usual voice, as a note for the brain |
+| `core/power.py` | Mac | Deep sleep ("BITCH, take a break for an hour", the app's Rest buttons, or by itself when the Mac runs low on memory): unloads the brain, voice and Whisper (about 19 GB), parks, keeps the fast ears listening. Wakes on its name, a timer or an alarm, saying a pre-recorded "give me about N seconds" (learned from real wake-ups). The watchdog reads `kern.memorystatus_level` so the Mac never runs out |
 | `core/rhythm.py` | Mac | How awake BITCH is (engaged, attentive, resting, asleep) so the motors only work when someone is there; hourly budget for unprompted motion |
 | `core/helper.py` | Mac | Hands weather, calendar, email and web requests to the signed-in ChatGPT on the Pi (picks Instant or Medium per request) and speaks the answer when it returns (about 15 s) |
 | `core/brain.py`, `persona.md`, `llm.py` | Mac | Brain (Ornith 1.5 35B-A3B in BITCH's own llama-server, cached prompt) answers in schema JSON; a `do` field lets it look, perform, run a routine, use a tool or ask ChatGPT, offered only when the request calls for it. In a group, a line without the name is checked for who it was meant for ("Mom, ..." never goes to BITCH) |
@@ -55,13 +56,16 @@ personality, memory and habits, and it should notice things on its own instead o
 | `app/` | Browser | The app (phone + Mac window): talk, see, life, memory, more; `rig.js` draws BITCH with the Actor's spring physics |
 | `mac/setup.sh` | Mac | Sets up Python 3.12 with uv, installs everything, downloads the models, builds `~/Applications/BITCH.app` |
 | `sim/` | Mac | Measured 3D model for simulation and RL: `params.py` (every dimension) → `python -m sim.build` → MuJoCo, URDF, GLB/OBJ/STL, web viewer; Gymnasium envs `Bitch-LookAt-v0`, `Bitch-Pose-v0` in desk.py units at 50 Hz. `python -m sim.speech_motion` plays spoken lines through the real gesture code and checks each nod, shake, tilt and name glance on the body |
-| `testing/` | Mac | Fake servo board, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH). With the real models: `conversation_lab` (simulated room, voices, echo; scenarios quick, chat, pauses, barge, echo, family), `eval_tools`, `eval_group` |
+| `testing/` | Mac | Fake servo board, pretend phone, `python -m unittest testing.test_bitch` (runs on port 8790, safe next to the real BITCH). With the real models: `conversation_lab` (simulated room, voices, echo; scenarios quick, chat, pauses, barge, echo, family, sleep), `eval_candidate.sh MODEL` (any model, live in a terminal: personality, tools, busy room), `try_deep_sleep` |
 
 The Pi updates with `bash ~/BITCH-Robot/update.sh`, which pulls from GitHub, links the .py files into ~, and restarts
 the `bitch-brain` user service (logs: `journalctl --user -u bitch-brain -f`).
 
 ## Working rules
-- BITCH runs 24/7. Motion that nobody asked for must go through `core/rhythm.py`; parked means unpowered. The Pi's
+- BITCH runs 24/7. Memory is the Mac's hard limit: the brain is loaded once, by BITCH's own llama-server only (never a
+  second copy in Ollama), and `core/power.py` steps aside before memory runs out. Lab numbers are only valid with the
+  live app closed.
+- Motion that nobody asked for must go through `core/rhythm.py`; parked means unpowered. The Pi's
   `Actor` only writes servo changes above its deadband, and `~/.bitch-pi/wear.json` logs motor time per day.
 - Measure voice changes with real models before shipping: far-field clips for wake and word errors, a scripted
   conversation with a fake Pi that echoes BITCH back into the mic, and the `Turn: first words … s` log line.
