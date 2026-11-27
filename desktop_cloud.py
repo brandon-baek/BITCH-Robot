@@ -131,9 +131,10 @@ class StreamTab:
             if msg.get('method') == 'Runtime.bindingCalled':
                 self.events.append(msg.get('params', {}))
 
-    def eval(self, expression, timeout=15.):
+    def eval(self, expression, timeout=15., user_gesture=False):
         res = self.call('Runtime.evaluate', {
             'expression': expression, 'awaitPromise': True, 'returnByValue': True,
+            'userGesture': user_gesture,
         }, timeout)
         if res.get('exceptionDetails'):
             det = res['exceptionDetails']
@@ -407,7 +408,7 @@ class CloudProvider:
         tab.call('DOM.enable', timeout=4.)
         tab.call('Page.setInterceptFileChooserDialog', {'enabled': True}, timeout=4.)
         try:
-            opened = tab.eval('''(async () => {
+            menu_ready = tab.eval('''(async () => {
                 const btn = Array.from(document.querySelectorAll('button'))
                     .find(b => b.offsetParent !== null && /upload|add files/i.test(b.ariaLabel || b.textContent || ''));
                 if (!btn) return {ok: false, reason: 'no_upload_btn'};
@@ -416,13 +417,21 @@ class CloudProvider:
                 while (performance.now() < end) {
                     const item = Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, li'))
                         .find(el => el.offsetParent !== null && /^\\s*(?:upload files?|upload image|add from computer)\\s*$/i.test((el.textContent || '').trim()));
-                    if (item) { item.click(); return {ok: true, clicked: (item.textContent || '').trim()}; }
-                    await new Promise(r => setTimeout(r, 60));
+                    if (item) return {ok: true, label: (item.textContent || '').trim()};
+                    await new Promise(r => setTimeout(r, 50));
                 }
-                return {ok: false, reason: 'no_upload_menu_item',
-                        items: Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item'))
-                            .filter(el => el.offsetParent !== null).map(el => (el.textContent || '').trim()).filter(Boolean).slice(-10)};
-            })()''', timeout=6.)
+                return {ok: false, reason: 'no_upload_menu_item'};
+            })()''', timeout=6., user_gesture=True)
+            if not menu_ready or not menu_ready.get('ok'):
+                return menu_ready or {'ok': False, 'reason': 'menu_failed'}
+            # Synchronous click under userGesture=True so Chromium treats it as trusted and opens the file chooser.
+            opened = tab.eval('''(() => {
+                const item = Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, li'))
+                    .find(el => el.offsetParent !== null && /^\\s*(?:upload files?|upload image|add from computer)\\s*$/i.test((el.textContent || '').trim()));
+                if (!item) return {ok: false, reason: 'menu_closed'};
+                item.click();
+                return {ok: true, clicked: (item.textContent || '').trim()};
+            })()''', timeout=4., user_gesture=True)
             if not opened or not opened.get('ok'):
                 return opened or {'ok': False, 'reason': 'menu_failed'}
             fc = tab.wait_file_chooser(timeout=4.)
