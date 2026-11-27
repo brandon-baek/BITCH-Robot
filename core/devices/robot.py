@@ -253,16 +253,18 @@ class Robot(Device):
             payload['image'] = image if isinstance(image, str) else base64.b64encode(image).decode('ascii')
         body = json.dumps(payload).encode('utf-8')
         conn = http.client.HTTPConnection(*address(host), timeout=timeout)
+        sock_ref = [None]
         done_ev = threading.Event()
         if stop is not None:
             def _watch_stop():
                 while not done_ev.is_set():
                     if stop.wait(0.05):
-                        try:
-                            if conn.sock:
-                                conn.sock.shutdown(socket.SHUT_RDWR)
-                        except OSError:
-                            pass
+                        s = sock_ref[0] or conn.sock
+                        if s is not None:
+                            try:
+                                s.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
                         try:
                             conn.close()
                         except OSError:
@@ -275,6 +277,7 @@ class Robot(Device):
                 'Content-Type': 'application/json',
                 'Content-Length': str(len(body)),
             })
+            sock_ref[0] = conn.sock
             resp = conn.getresponse()
             if resp.status != 200:
                 raise OSError(f'Pi cloud chat returned HTTP {resp.status}')
@@ -324,4 +327,5 @@ class Robot(Device):
         """Ask the Pi to archive the finished ChatGPT conversation and prepare a clean fresh chat."""
         if not (self.online and self.cloud_chat):
             return False
-        return bool((self.post('/chat_archive', {'provider': provider}, timeout=12.) or {}).get('archived'))
+        res = self.request('chat_archive', json.dumps({'provider': provider}).encode(), timeout=12.)
+        return bool((res or {}).get('archived'))
