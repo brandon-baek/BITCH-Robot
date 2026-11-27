@@ -26,6 +26,7 @@ class Robot(Device):
         self.audio_monitor = False
         self.handoff = False
         self.auto_handoff = False
+        self.cloud_chat = False
         self.gestures = False
         self.rhythm = False
         self.pixar = False
@@ -70,6 +71,7 @@ class Robot(Device):
             self.online = bool(result and result.get('protocol') == 1)
             self.handoff = bool(result and result.get('handoff', 0) >= 2)
             self.auto_handoff = bool(result and result.get('handoff', 0) >= 3)
+            self.cloud_chat = bool(result and result.get('cloud_chat'))
             self.audio_monitor = bool(result and result.get('playback_monitor'))
             self.streams = bool(result and result.get('speak_stream'))
             self.expressive = bool(result and result.get('character'))
@@ -224,3 +226,50 @@ class Robot(Device):
 
     def macro_status(self, request_id):
         return self.request('macro/status?id=' + request_id) if self.handoff else None
+
+    def chat_stream(self, prompt, *, provider='chatgpt', reset=False, speaker=None, on_delta=None, stop=None, timeout=60.):
+        """Stream a real-time reply from the Pi's signed-in ChatGPT Instant or Gemini Hydrogen tab."""
+        host, key = config.get('robot_host'), config.get('robot_key')
+        if not (self.online and self.cloud_chat and host and key):
+            raise OSError('Pi streaming cloud brain is unavailable')
+        body = json.dumps({'provider': provider, 'prompt': prompt, 'reset': bool(reset),
+                           'speaker': speaker or 'Brandon'}).encode('utf-8')
+        conn = http.client.HTTPConnection(*address(host), timeout=timeout)
+        try:
+            conn.request('POST', '/chat_stream', body=body, headers={
+                'Authorization': 'Bearer ' + key,
+                'Content-Type': 'application/json',
+                'Content-Length': str(len(body)),
+            })
+            resp = conn.getresponse()
+            if resp.status != 200:
+                raise OSError(f'Pi cloud chat returned HTTP {resp.status}')
+            full_text = ''
+            timing = {}
+            while True:
+                if stop is not None and stop.is_set():
+                    return ''
+                line = resp.readline()
+                if not line:
+                    break
+                raw = line.strip()
+                if not raw:
+                    continue
+                event = json.loads(raw.decode('utf-8', errors='replace'))
+                if event.get('error'):
+                    raise RuntimeError(event['error'])
+                if event.get('timing'):
+                    timing = event['timing']
+                txt = event.get('text') or ''
+                if txt and txt != full_text:
+                    full_text = txt
+                    if on_delta:
+                        on_delta(full_text)
+                if event.get('done'):
+                    break
+            if timing:
+                print(f'  Cloud({provider}): send={timing.get("send_s")}s ttft={timing.get("ttft_s")}s '
+                      f'1st-sent={timing.get("ttfs_s")}s total={timing.get("total_s")}s', flush=True)
+            return full_text
+        finally:
+            conn.close()

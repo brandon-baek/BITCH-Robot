@@ -11,6 +11,7 @@ APP_DIR = ROOT / 'app'
 DEFAULTS = {
     # Chosen by testing/eval_models.py (Nov 2026): best mix of personality, reasoning and reliable tool use.
     'brain_v2': False,
+    'brain_source': 'local',  # 'local' (Ornith 35B on Mac), 'pi-chatgpt' (ChatGPT Instant on Pi), or 'pi-gemini' (Gemini Hydrogen on Pi)
     'chat_model': 'codecraftersllc/ornith-1.5-35b-a3b-abliterated:latest',
     'voicechat_model': '',
     'voicechat_bin': '',
@@ -42,7 +43,7 @@ DEFAULTS = {
     'home_place': None,   # {'name', 'lat', 'lon', 'imperial'}, set by saying where you live (for weather)
 }
 PUBLIC = {'mic_source', 'camera_source', 'speaker_source', 'camera_calibration', 'idle', 'muted', 'mic_muted', 'keep_audio',
-          'sounds', 'sleep_at_night', 'quiet_start', 'quiet_end',
+          'sounds', 'sleep_at_night', 'quiet_start', 'quiet_end', 'brain_source',
           'check_ins', 'natural_memory', 'voicechat_enabled', 'volume', 'robot_host'}
 path = HOME / 'settings.json'
 lock = threading.Lock()

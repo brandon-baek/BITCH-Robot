@@ -876,6 +876,43 @@ class WakeTests(unittest.TestCase):
             self.assertTrue(brain.resume_continuation('desk'))
             self.assertEqual(brain.requests.get_nowait(), ('Hey how is it going', 'desk'))
 
+    def test_pi_cloud_brain_streams_sentences_and_parses_mood_and_actions(self):
+        brain = Brain()
+        offered = []
+        stream = SimpleNamespace(parts=[], offer=lambda text, delivery, **kw: offered.append((text, delivery, kw)))
+
+        def fake_chat_stream(prompt, *, provider, reset, speaker=None, on_delta=None, stop=None):
+            self.assertEqual(provider, 'chatgpt')
+            self.assertTrue(reset)
+            on_delta('[p] First sentence here.')
+            on_delta('[p] First sentence here. Second one too. [MEM: I love matcha lattes]')
+            return '[p] First sentence here. Second one too. [MEM: I love matcha lattes]'
+
+        robot = SimpleNamespace(online=True, cloud_chat=True, shows=True, motion_enabled=True, show_active=False,
+                                chat_stream=fake_chat_stream)
+        with (patch.dict(config.stored, {'brain_source': 'pi-chatgpt'}),
+              patch.object(hub, 'get', return_value=robot), patch.object(hub, 'sight', None)):
+            reply = brain.reply('Tell me something quick.', 'desk', stream=stream)
+        self.assertEqual(reply, 'First sentence here. Second one too.')
+        self.assertEqual(brain.delivery, 'playful')
+        self.assertEqual([text for text, _, _ in offered], ['First sentence here.', 'Second one too.'])
+        self.assertEqual(brain.cloud_primed, ('chatgpt', ('desk', None)))
+
+    def test_pi_native_sqlite_memory_stores_dedups_and_recalls(self):
+        import pi_memory
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(pi_memory, 'PI_HOME', Path(folder)), patch.object(pi_memory, 'DB_PATH', Path(folder) / 'mem.db'), patch.object(pi_memory, '_db', None):
+                self.assertTrue(pi_memory.remember('Brandon', 'I live in La Crescenta, California'))
+                self.assertTrue(pi_memory.remember('Brandon', 'I live in La Crescenta California'))   # deduped
+                self.assertTrue(pi_memory.remember('Brandon', 'I am building a cardboard desk robot named BITCH'))
+                self.assertFalse(pi_memory.remember('Brandon', 'My password is secret123'))
+                self.assertEqual(len(pi_memory.everything()), 2)
+                ctx = pi_memory.context('Brandon', 'What is the weather where I live?')
+                self.assertIn('La Crescenta', ctx)
+                self.assertEqual(pi_memory.forget('Brandon', 'La Crescenta'), 1)
+                self.assertEqual(len(pi_memory.everything()), 1)
+
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
         brain = Brain()
         brain.busy.set()

@@ -23,8 +23,9 @@ from urllib.parse import urlsplit
 
 import desktop_chatgpt as cdp
 
-CHATGPT_URL = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/')
+CHATGPT_URL = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/?temporary-chat=true')
 GEMINI_URL = os.environ.get('BITCH_GEMINI_URL', 'https://gemini.google.com/app')
+TEMP_CHAT = os.environ.get('BITCH_TEMP_CHAT', '1') != '0'
 MAX_TURNS_PER_CHAT = 24
 IDLE_RESET_SECONDS = 900.
 
@@ -212,6 +213,40 @@ class CloudProvider:
             time.sleep(.25)
         return False
 
+    def _ensure_temp_chat(self, tab):
+        """Enable Temporary Chat mode so BITCH conversations never clutter Brandon's ChatGPT or Gemini history."""
+        if not TEMP_CHAT:
+            return
+        try:
+            if self.name == 'chatgpt':
+                in_temp = tab.eval(
+                    '(() => location.search.includes("temporary-chat=true") '
+                    '|| /temporary chat/i.test(document.body.innerText.slice(0, 600)))()',
+                    timeout=3.,
+                )
+                if not in_temp:
+                    clicked = tab.eval(
+                        '(() => { const b = Array.from(document.querySelectorAll("button, a"))'
+                        '.find(e => e.offsetParent && /temporary chat/i.test((e.getAttribute("aria-label") || "") + " " + (e.innerText || "")));'
+                        'if (b) { b.click(); return true; } return false; })()',
+                        timeout=3.,
+                    )
+                    if not clicked:
+                        tab.call('Page.enable')
+                        tab.call('Page.navigate', {'url': CHATGPT_URL})
+                    time.sleep(.35)
+            else:
+                clicked = tab.eval(
+                    '(() => { const b = Array.from(document.querySelectorAll("button"))'
+                    '.find(e => e.offsetParent && /turn on temporary chat/i.test(e.getAttribute("aria-label") || ""));'
+                    'if (b) { b.click(); return true; } return false; })()',
+                    timeout=3.,
+                )
+                if clicked:
+                    time.sleep(.25)
+        except Exception:
+            pass
+
     def _ensure_fast_mode(self, tab):
         if self.mode_checked:
             return
@@ -338,21 +373,34 @@ class CloudProvider:
                     if not clicked:
                         tab.call('Page.enable')
                         tab.call('Page.navigate', {'url': self.url})
+                    time.sleep(.35)
+                    self._ensure_temp_chat(tab)
                 else:
-                    already_home = tab.eval(f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer(); }})()', timeout=4.)
-                    if not already_home:
-                        clicked = tab.eval(
-                            '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
-                            '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
-                            ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
-                            'if (b) { b.click(); return true; } return false; })()',
-                            timeout=4.,
-                        )
-                        if not clicked:
+                    already_fresh_temp = tab.eval(
+                        f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
+                        '&& (!' + ('true' if TEMP_CHAT else 'false') + ' || location.search.includes("temporary-chat=true") '
+                        '|| /temporary chat/i.test(document.body.innerText.slice(0, 600))); }})()',
+                        timeout=4.,
+                    )
+                    if not already_fresh_temp:
+                        if TEMP_CHAT:
+                            # Direct navigation to ?temporary-chat=true starts a clean Temporary Chat every time
+                            # without saving anything to Brandon's ChatGPT history.
                             tab.call('Page.enable')
-                            tab.call('Page.navigate', {'url': self.url})
+                            tab.call('Page.navigate', {'url': CHATGPT_URL})
+                        else:
+                            clicked = tab.eval(
+                                '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                                '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                                ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                                'if (b) { b.click(); return true; } return false; })()',
+                                timeout=4.,
+                            )
+                            if not clicked:
+                                tab.call('Page.enable')
+                                tab.call('Page.navigate', {'url': self.url})
                         # Wait until the old conversation clears so beforeCount is guaranteed 0.
-                        end_reset = time.monotonic() + 8.
+                        end_reset = time.monotonic() + 12.
                         while time.monotonic() < end_reset:
                             try:
                                 if tab.eval(f'(() => {{ {self.helpers} return replies().length === 0 && !!composer(); }})()', timeout=3.):
@@ -362,14 +410,18 @@ class CloudProvider:
                             time.sleep(.15)
                 self.turns = 0
                 self.primed = False
+            elif self.turns == 0:
+                self._ensure_temp_chat(tab)
             if not self._ensure_ready(tab, wait=15.):
                 raise RuntimeError(f'{self.name} composer not ready')
             self._ensure_fast_mode(tab)
             t_ready = time.monotonic()
 
-            # Zero-thrashing send: focus + clear in 1 eval, insertText + Enter directly, then lightweight 70 ms poll
-            # (NO MutationObserver on document.body, which thrashes the Pi 4 renderer CPU during React/Angular updates).
+            # Zero-thrashing send: focus + clear + atomic paste (on ChatGPT) in 1 eval, then Enter directly.
             tab.drain()
+            one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
+            prompt_js = json.dumps(one_line)
+            use_paste = 'true' if self.name == 'chatgpt' else 'false'
             prep_script = f'''(() => {{
                 {self.helpers}
                 if (window.__bitchObs) {{ try {{ window.__bitchObs.disconnect(); }} catch (e) {{}} window.__bitchObs = null; }}
@@ -381,16 +433,24 @@ class CloudProvider:
                 box.focus();
                 document.execCommand('selectAll', false, null);
                 document.execCommand('delete', false, null);
-                return {{ok: true, beforeCount, prevText}};
+                let pasted = false;
+                if ({use_paste}) {{
+                    try {{
+                        const dt = new DataTransfer();
+                        dt.setData('text/plain', {prompt_js});
+                        box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
+                        pasted = !!(box.value ?? box.innerText ?? '').trim();
+                    }} catch (e) {{ pasted = false; }}
+                }}
+                return {{ok: true, beforeCount, prevText, pasted}};
             }})()'''
             prep_res = tab.eval(prep_script, timeout=6.)
             if not prep_res or not prep_res.get('ok'):
                 raise RuntimeError(f'{self.name} prep failed: {prep_res}')
             before_count = int(prep_res['beforeCount'])
             prev_text = prep_res.get('prevText') or ''
-            # Trusted CDP insertText + Enter: zero polling loops.
-            one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
-            tab.call('Input.insertText', {'text': one_line}, timeout=6.)
+            if not prep_res.get('pasted'):
+                tab.call('Input.insertText', {'text': one_line}, timeout=6.)
             time.sleep(.03)
             for kind in ('keyDown', 'keyUp'):
                 tab.call('Input.dispatchKeyEvent', {

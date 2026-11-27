@@ -383,6 +383,7 @@ class Brain:
         self.pending_text = None   # the request being answered, so a continuation can join it
         self.continuation = None
         self.replacing_user_message = False
+        self.cloud_primed = None   # (provider, conversation_key) once the persistent Pi chat has BITCH's persona
         self.acknowledged = None
         self.active_source = None
         self.interruption = False
@@ -1421,6 +1422,114 @@ class Brain:
                          'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
 
+    def cloud_reply(self, text, source, conversation, history, *, stream=None, identity=None):
+        """Stream a real-time spoken reply directly from the Pi's signed-in ChatGPT Instant or Gemini Hydrogen tab.
+
+        Uses 0 GB of Mac RAM, keeps full conversation history in the persistent browser tab, and streams each
+        sentence straight into voice.ReplyStream the millisecond it finishes."""
+        backend = config.get('brain_source')
+        if backend not in ('pi-chatgpt', 'pi-gemini'):
+            return None
+        robot = hub.get('robot')
+        if not (robot and getattr(robot, 'online', False) and getattr(robot, 'cloud_chat', False)):
+            return None
+        provider = 'gemini' if backend == 'pi-gemini' else 'chatgpt'
+        need_prime = self.cloud_primed != (provider, conversation) or not history
+        notes = []
+        if self.speaker:
+            notes.append(f'Speaker: {self.speaker}')
+        notes.append(f'{datetime.now():%a %-I:%M %p}')
+        if need_prime:
+            remembered = memory.context(identity, text) if identity else None
+            if remembered:
+                notes.append(' '.join(remembered.splitlines()[:4])[:300])
+            primer = (
+                "You are BITCH (your real name, on purpose), Brandon's small cardboard desk robot with googly eyes. "
+                "You are his direct, dry, witty friend — not a servant. Reply in 1 to 2 short spoken sentences "
+                "(no markdown, lists, emojis, or links). Never say you are ChatGPT/Gemini unless asked. "
+                "Start your reply with a mood tag in brackets: [n] neutral, [w] warm, [p] playful, [u] upbeat, "
+                "[g] gentle, [a] annoyed, [s] sad, or [r] surprised. "
+                "If they ask you to perform right now (dance/disco/opera), prefix [DO:dance], [DO:disco], or [DO:opera] "
+                "(if they only ask what performances you can do, just list dance, disco, and opera without starting one). "
+                "If they are clearly saying goodbye, end with [END]. "
+                "If they tell you a new lasting personal preference, project, or fact worth keeping across future chats, "
+                "append [MEM: short fact in their words] at the very end (skip temporary chat details). "
+                "Use your connected tools/search whenever needed for weather, email, calendar, or live info."
+            )
+            prompt = f'{primer}\n[Context: {"; ".join(notes)}]\n{text}'
+        else:
+            prompt = f'[{", ".join(notes)}] {text}'
+
+        spoken_sent = 0
+        delivery_set = False
+        tag_re = re.compile(r'^\s*(?:\[DO:(dance|disco|opera)\]\s*)?(?:\[([nwugepsalr])\]\s*)?', re.I)
+
+        def strip_tags(raw):
+            cleaned = re.sub(r'\[DO:(?:dance|disco|opera)\]\s*', '', raw, flags=re.I)
+            cleaned = re.sub(r'\[MEM:[^\]]*\]\s*', '', cleaned, flags=re.I)
+            cleaned = re.sub(r'\[(?:END|[nwugepsalr])\]\s*', '', cleaned, flags=re.I)
+            cleaned = helper.MARKUP.sub(lambda m: m[1] or '', cleaned)
+            return ' '.join(cleaned.split())
+
+        def on_delta(accumulated):
+            nonlocal spoken_sent, delivery_set
+            if self.hush.is_set() or not stream:
+                return
+            if not delivery_set and len(accumulated) >= 3:
+                m = tag_re.match(accumulated)
+                if m and m[2]:
+                    self.set_delivery({'v': m[2].lower()})
+                    delivery_set = True
+                elif not accumulated.lstrip().startswith('['):
+                    delivery_set = True
+            clean = strip_tags(accumulated)
+            if len(clean) <= spoken_sent:
+                return
+            pending = clean[spoken_sent:]
+            # Offer complete sentences immediately so TTS starts speaking while the rest streams.
+            while True:
+                boundary = re.search(r'[.!?](?:\s|$)', pending)
+                if not boundary:
+                    break
+                end_pos = boundary.end()
+                sentence = pending[:end_pos].strip()
+                if len(sentence) < 6 and len(pending) <= end_pos:
+                    break
+                if sentence:
+                    deliv = PERFORMANCE.get(self.performance, self.delivery)
+                    stream.offer(sentence, deliv, expression=self.performance)
+                spoken_sent += end_pos
+                pending = clean[spoken_sent:]
+
+        try:
+            raw = robot.chat_stream(prompt, provider=provider, reset=need_prime, speaker=self.speaker,
+                                    on_delta=on_delta, stop=self.hush)
+        except Exception as error:
+            hub.note('cloud', f'Pi {provider} failed: {error}')
+            return None
+        if self.hush.is_set():
+            return ''
+        self.cloud_primed = (provider, conversation)
+        hub.note('cloud', None)
+        m = tag_re.match(raw or '')
+        if m:
+            if m[1] and not PERFORM_INFO.search(text) and not self.performance_problem(robot):
+                self.pending_show = (m[1].lower(), None)
+            if m[2]:
+                self.set_delivery({'v': m[2].lower()})
+        if re.search(r'\[END\]\s*$', raw or '', re.I) and '?' not in text and not NEW_REQUEST.search(text):
+            self.close_turn = True
+        if identity and config.get('natural_memory'):
+            for fact in re.findall(r'\[MEM:\s*([^\]]+)\]', raw or '', re.I):
+                memory.remember_in_context(identity, text, fact.strip())
+        reply = streaming.clean(strip_tags(raw or ''))
+        if not reply:
+            return 'I lost my train of thought. Say that again?'
+        if len(reply) > 560:
+            reply = reply[:557].rsplit(' ', 1)[0].rstrip(',.?!:;') + '…'
+        history.extend([{'role': 'user', 'content': text}, {'role': 'assistant', 'content': reply}])
+        return reply
+
     def reply(self, text, source, *, stream=None, use_camera=False):
         self.last_reply_was_lookup_ack = False
         local_request = LOCAL_REQUEST.fullmatch(text)
@@ -1550,6 +1659,12 @@ class Brain:
         follow_image = (self.last_visual and self.last_visual[0] == conversation
                         and time.monotonic() < self.last_visual[1] and VISUAL_FOLLOWUP.search(text))
         visual = bool(VISUAL.search(text) or follow_image or use_camera)
+        # Fast Pi Cloud Brain (ChatGPT Instant / Gemini Hydrogen): 0 GB Mac RAM, native search/email/calendar,
+        # and sentence-by-sentence streaming straight into TTS.
+        if not visual and not can_select_show and not local_request and config.get('brain_source') in ('pi-chatgpt', 'pi-gemini'):
+            cloud = self.cloud_reply(text, source, conversation, history, stream=stream, identity=identity)
+            if cloud is not None:
+                return cloud
         natural_memory = bool(identity and (self.current_voice == identity or self.speaker_evidence in ('face', 'body'))
                               and config.get('natural_memory') and not visual)
         explicit_gpt = helper.mentions_gpt(text)

@@ -81,7 +81,8 @@ def main():
     from .power import power
     power.start()   # deep sleep, and the watchdog that keeps the Mac from running out of memory
     server.start()
-    llm.warm(hub.brain.spoken_system())
+    if config.get('brain_source') == 'local':
+        llm.warm(hub.brain.spoken_system())
     if not args.quiet:
         voice.warm()
 

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import re
 from pathlib import Path
 import secrets
 import struct
@@ -20,7 +21,9 @@ import wave
 from urllib.parse import parse_qs, urlsplit
 
 import character
+import desktop_cloud
 import macros
+import pi_memory
 import stage
 from actor import Actor
 
@@ -934,7 +937,7 @@ def listen(motion_enabled=True):
                     self.respond(200, {'audio': body.sink is not None, 'audio_route': body.audio_label,
                                        'playback_monitor': True, 'speak_stream': bool(shutil.which('pw-cat')), 'character': True, 'performance': 3, 'joint_attention': True, 'audio_keepalive': bool(shutil.which('pw-cat')),
                                        'audio_warm': bool(ambient and ambient.poll() is None),
-                                       'handoff': 3, 'shows': 1, 'show_active': bool(body.show),
+                                       'handoff': 3, 'cloud_chat': True, 'shows': 1, 'show_active': bool(body.show),
                                        'motion': body.motion_enabled, 'gestures': 1, 'rhythm': 1, 'pixar': 1,
                                        'wear': body.wear.today(), 'protocol': 1})
                 elif self.path == '/show':
@@ -944,6 +947,8 @@ def listen(motion_enabled=True):
                     with body.lock:
                         active = bool(body.player and body.player.poll() is None)
                     self.respond(200, {'playing': active})
+                elif self.path == '/memory':
+                    self.respond(200, {'memories': pi_memory.everything()})
                 else:
                     self.respond(404, {'error': 'unknown command'})
 
@@ -978,6 +983,61 @@ def listen(motion_enabled=True):
                     self.respond(400, {'error': str(error)})
                     return
                 self.respond(200 if played else 503, {'ok': played})
+                return
+            if self.path == '/chat_stream':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 24000:
+                        raise ValueError('invalid body length')
+                    item = json.loads(self.rfile.read(length))
+                    if not isinstance(item, dict) or not isinstance(item.get('prompt'), str) or not item['prompt'].strip():
+                        raise ValueError('prompt required')
+                    provider = item.get('provider', 'chatgpt')
+                    if provider not in ('chatgpt', 'gemini'):
+                        raise ValueError('unknown provider')
+                    reset = item.get('reset') is True
+                    speaker = (item.get('speaker') or 'Brandon').strip()[:40]
+                    prompt_text = item['prompt']
+                    if reset:
+                        pi_ctx = pi_memory.context(speaker, prompt_text)
+                        if pi_ctx:
+                            prompt_text = f'[Pi memory: {pi_ctx}]\n' + prompt_text
+                except (ValueError, TypeError, EOFError) as error:
+                    self.respond(400, {'error': str(error)})
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-ndjson')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                stop_ev = threading.Event()
+                last_text = ''
+                try:
+                    with macros.desktop_lock:
+                        for event in desktop_cloud.get_provider(provider).stream(
+                                prompt_text, reset=reset, timeout=90., stop_event=stop_ev):
+                            if event.get('text'):
+                                last_text = event['text']
+                            chunk = (json.dumps(event, ensure_ascii=False) + '\n').encode('utf-8')
+                            self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                            self.wfile.flush()
+                    for mem in re.findall(r'\[MEM:\s*([^\]]+)\]', last_text, re.I):
+                        pi_memory.remember(speaker, mem.strip())
+                except (BrokenPipeError, ConnectionResetError):
+                    stop_ev.set()
+                    return
+                except Exception as error:
+                    err = (json.dumps({'error': str(error), 'done': True}) + '\n').encode('utf-8')
+                    try:
+                        self.wfile.write(b'%x\r\n%s\r\n' % (len(err), err))
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                try:
+                    self.wfile.write(b'0\r\n\r\n')
+                    self.wfile.flush()
+                except OSError:
+                    pass
                 return
             if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive', '/show'):
                 self.respond(404, {'error': 'unknown command'})

@@ -148,6 +148,11 @@
     <section class="group">
       <h3>Behavior</h3>
       <div class="list">
+        <label class="row"><span>Brain</span><select id="brain_source">
+          <option value="local">Local · Ornith 35B</option>
+          <option value="pi-chatgpt">Pi · ChatGPT Instant (Fast, 0 GB RAM)</option>
+          <option value="pi-gemini">Pi · Gemini Hydrogen (0 GB RAM)</option>
+        </select></label>
         <label class="row"><span>Idle motion</span><input class="switch" id="idle" type="checkbox" role="switch"></label>
         <label class="row"><span>Keep Pi audio awake</span><input class="switch" id="keep_audio" type="checkbox" role="switch"></label>
         <label class="row"><span>Check in when it’s quiet</span><input class="switch" id="check_ins" type="checkbox" role="switch"></label>

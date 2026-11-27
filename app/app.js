@@ -358,6 +358,7 @@ async function refresh() {
   const cameraOn = devices.some(device => device.id === settings.camera_source && device.online);
   $('cameraView').hidden = $('attentionRow').hidden = !cameraOn;
   options('speaker_source', [['auto', 'Automatic'], ['off', 'Off'], ...entries('voice')], settings.speaker_source);
+  if (document.activeElement !== $('brain_source')) $('brain_source').value = settings.brain_source || 'local';
   $('speakerTest').textContent = state.output ? 'Test ' + (state.output === 'Raspberry Pi' ? 'Pi speaker' : state.output) : 'Test speaker';
   const robot = devices.find(device => device.id === 'robot');
   $('robotStatus').textContent = robot ? robot.detail : 'Off';
@@ -930,7 +931,7 @@ $('settings').addEventListener('close', () => {
 // Settings
 action('speakerTest', 'click', () => api('test-speaker', {}));
 for (const key of ['idle', 'keep_audio', 'check_ins', 'natural_memory', 'sounds', 'sleep_at_night', 'quiet_start', 'quiet_end',
-  'mic_source', 'camera_source', 'speaker_source']) {
+  'mic_source', 'camera_source', 'speaker_source', 'brain_source']) {
   action(key, 'change', e => {
     const value = e.target.type === 'checkbox' ? e.target.checked : key.startsWith('quiet_') ? Number(e.target.value) : e.target.value;
     settingsVersion++;

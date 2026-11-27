@@ -170,7 +170,9 @@ def state(req: Request):
     data['show_active'] = bool(getattr(hub.get('robot'), 'show_active', False))
     output = hub.selected('voice')
     data['output'] = output.name if output else None
-    data['model'] = config.get('chat_model')
+    data['model'] = {'local': config.get('chat_model'),
+                     'pi-chatgpt': 'Pi · ChatGPT Instant (0 GB Mac RAM)',
+                     'pi-gemini': 'Pi · Gemini Hydrogen (0 GB Mac RAM)'}.get(config.get('brain_source'), config.get('chat_model'))
     data['voicechat_ready'] = voicechat.settings() is not None
     data['ears_ready'] = hub.hearing.ready
     data['finger_ready'] = bool(getattr(getattr(hub.sight, 'pointing', None), 'hand_ready', False))
@@ -214,6 +216,8 @@ async def settings(req: Request):
             if value and not voicechat.settings():
                 raise HTTPException(409, 'Install the VoiceChat runtime and model first.')
             continue
+        if key == 'brain_source' and value in ('local', 'pi-chatgpt', 'pi-gemini'):
+            continue
         if key == 'volume' and type(value) is int and 0 <= value <= 100:
             continue
         if key in ('mic_source', 'camera_source', 'speaker_source') and isinstance(value, str):
@@ -231,6 +235,14 @@ async def settings(req: Request):
         hub.brain.stop()
         threading.Timer(.2, voice.earcon, args=('voice_off',), kwargs={'force': True}).start()
     config.update(data)
+    if 'brain_source' in data:
+        from . import llm
+        hub.brain.cloud_primed = None
+        if data['brain_source'] == 'local':
+            llm.warm(hub.brain.spoken_system())
+        else:
+            # Free the 19 GB local Ornith server on the Mac immediately when using the Pi cloud brain.
+            threading.Thread(target=llm.stop_server, daemon=True).start()
     if data.get('muted') is False and before['muted']:
         voice.earcon('voice_on')
     if 'mic_muted' in data and data['mic_muted'] != before['mic_muted']:
