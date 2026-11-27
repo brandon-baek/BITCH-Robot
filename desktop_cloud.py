@@ -399,10 +399,12 @@ class CloudProvider:
         tmp_path = os.path.join(tempfile.gettempdir(), 'bitch_camera.jpg')
         with open(tmp_path, 'wb') as f:
             f.write(base64.b64decode(image_b64))
-        before = tab.eval('''(() => document.querySelectorAll(
-            'img[src^="blob:"], img[src^="data:image"], uploader-file-preview, file-preview-chip, ' +
-            '.file-preview-container, button[aria-label*="Remove" i]'
-        ).length)()''', timeout=4.) or 0
+        thumb_sel = (
+            'img[src^="blob:"], img[src^="data:image"], img[alt*="bitch_camera" i], [aria-label*="bitch_camera" i], '
+            'uploader-file-preview, file-preview-chip, .file-preview-container, .preview-image, '
+            'button[aria-label*="Remove" i]'
+        )
+        before = tab.eval(f'(() => document.querySelectorAll({json.dumps(thumb_sel)}).length)()', timeout=4.) or 0
         tab.file_chooser = None
         tab.call('Page.enable', timeout=4.)
         tab.call('DOM.enable', timeout=4.)
@@ -444,11 +446,8 @@ class CloudProvider:
             except Exception:
                 pass
         return tab.eval(f'''(async () => {{
-            const thumbs = () => document.querySelectorAll(
-                'img[src^="blob:"], img[src^="data:image"], uploader-file-preview, file-preview-chip, ' +
-                '.file-preview-container, button[aria-label*="Remove" i]'
-            );
-            const deadline = performance.now() + 7000;
+            const thumbs = () => document.querySelectorAll({json.dumps(thumb_sel)});
+            const deadline = performance.now() + 12000;
             let saw = false;
             while (performance.now() < deadline) {{
                 if (thumbs().length > {int(before)}) saw = true;
@@ -460,7 +459,7 @@ class CloudProvider:
                 await new Promise(r => setTimeout(r, 100));
             }}
             return {{ok: saw, thumb: saw, reason: saw ? 'still_uploading' : 'no_thumbnail'}};
-        }})()''', timeout=10.)
+        }})()''', timeout=15.)
 
     def _attach_image(self, tab, image_b64):
         """Attach a base64 JPEG to ChatGPT or Gemini's composer and wait until upload is ready."""
