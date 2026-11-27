@@ -33,12 +33,12 @@ IDLE_RESET_SECONDS = 900.
 CHATGPT_HELPERS = r'''
 const q = (s) => document.querySelector(s);
 const all = (s) => Array.from(document.querySelectorAll(s));
-const vis = (el) => !!el && el.offsetParent !== null;
+const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
 const composer = () => all('#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[name="prompt-textarea"]')
   .find((el) => vis(el) && (el.isContentEditable || el.tagName === 'TEXTAREA')) || null;
 const sendBtn = () => all('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]')
   .find((el) => vis(el) && !el.disabled && !/stop/i.test(el.getAttribute('aria-label') || '')) || null;
-const stopBtn = () => all('[data-testid="stop-button"], button[aria-label^="Stop"]').find(vis) || null;
+const stopBtn = () => all('[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="stop"]').find(vis) || null;
 const first = (sels) => { for (const s of sels) { const f = all(s); if (f.length) return f; } return []; };
 const replies = () => first(['[data-response-body]', '[data-markdown-text-style="assistant-message"]',
                              '[data-message-author-role="assistant"]']);
@@ -56,14 +56,18 @@ const isStreaming = () => {
 const isComplete = () => {
   const r = replies();
   const last = r[r.length - 1];
-  const turn = last && last.closest('[data-talvt-turn-state]');
-  return !!turn && turn.getAttribute('data-talvt-turn-state') === 'complete';
+  if (!last) return false;
+  const turn = last.closest('[data-talvt-turn-state]');
+  if (turn && turn.getAttribute('data-talvt-turn-state') === 'complete') return true;
+  // ChatGPT adds Copy/Feedback action buttons under the last assistant message once streaming finishes.
+  const article = last.closest('article') || last.parentElement;
+  return !!(article && !stopBtn() && article.querySelector('[data-testid="copy-turn-action-button"], button[aria-label="Copy"]'));
 };
 '''
 
 GEMINI_HELPERS = r'''
 const all = (s) => Array.from(document.querySelectorAll(s));
-const vis = (el) => !!el && el.offsetParent !== null;
+const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
 const composer = () => all('.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [aria-label*="prompt for Gemini"]')
   .find(vis) || null;
 const sendBtn = () => all('button.send-button, button[aria-label="Send message"], button[aria-label^="Send"], .send-button-container button')
@@ -331,7 +335,6 @@ class CloudProvider:
             except Exception:
                 pass
             if reset or (self.turns >= MAX_TURNS_PER_CHAT) or (self.last_used and time.monotonic() - self.last_used > IDLE_RESET_SECONDS):
-                # Unlock not needed: inline fast reset
                 if self.name == 'gemini':
                     clicked = tab.eval(
                         '(() => { const b = Array.from(document.querySelectorAll("a, button"))'
@@ -344,17 +347,27 @@ class CloudProvider:
                         tab.call('Page.enable')
                         tab.call('Page.navigate', {'url': self.url})
                 else:
-                    clicked = tab.eval(
-                        '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
-                        '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
-                        ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
-                        'if (b) { b.click(); return true; } return false; })()',
-                        timeout=4.,
-                    )
-                    if not clicked:
-                        tab.call('Page.enable')
-                        tab.call('Page.navigate', {'url': self.url})
-                time.sleep(.35)
+                    already_home = tab.eval(f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer(); }})()', timeout=4.)
+                    if not already_home:
+                        clicked = tab.eval(
+                            '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                            '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                            ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                            'if (b) { b.click(); return true; } return false; })()',
+                            timeout=4.,
+                        )
+                        if not clicked:
+                            tab.call('Page.enable')
+                            tab.call('Page.navigate', {'url': self.url})
+                        # Wait until the old conversation clears so beforeCount is guaranteed 0.
+                        end_reset = time.monotonic() + 8.
+                        while time.monotonic() < end_reset:
+                            try:
+                                if tab.eval(f'(() => {{ {self.helpers} return replies().length === 0 && !!composer(); }})()', timeout=3.):
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(.15)
                 self.turns = 0
                 self.primed = False
             if not self._ensure_ready(tab, wait=15.):
@@ -362,10 +375,9 @@ class CloudProvider:
             self._ensure_fast_mode(tab)
             t_ready = time.monotonic()
 
-            # Single-eval fast insert + send + install push MutationObserver.
+            # Fast zero-wait send: focus + clear + install MutationObserver BEFORE submitting, then Input.insertText + Enter.
             tab.drain()
-            prompt_js = json.dumps(prompt)
-            send_script = f'''(async () => {{
+            prep_script = f'''(() => {{
                 {self.helpers}
                 if (window.__bitchObs) {{ try {{ window.__bitchObs.disconnect(); }} catch (e) {{}} window.__bitchObs = null; }}
                 if (window.__bitchTimer) {{ clearInterval(window.__bitchTimer); window.__bitchTimer = null; }}
@@ -376,26 +388,6 @@ class CloudProvider:
                 box.focus();
                 document.execCommand('selectAll', false, null);
                 document.execCommand('delete', false, null);
-                if (box.tagName === 'TEXTAREA') {{
-                    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-                    set.call(box, {prompt_js});
-                    box.dispatchEvent(new Event('input', {{bubbles: true}}));
-                }} else {{
-                    const ok = document.execCommand('insertText', false, {prompt_js});
-                    if (!ok || !(box.innerText || '').trim()) {{
-                        const dt = new DataTransfer();
-                        dt.setData('text/plain', {prompt_js});
-                        box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
-                    }}
-                }}
-                // Wait up to ~300 ms using setTimeout (never requestAnimationFrame, which Chromium stalls in background tabs).
-                let sent = false;
-                for (let i = 0; i < 18; i++) {{
-                    await new Promise(r => setTimeout(r, 16));
-                    const btn = sendBtn();
-                    if (btn) {{ btn.click(); sent = true; break; }}
-                }}
-                // Install push observer: notifies Python instantly on text changes and completion.
                 let lastSent = '';
                 let stableTicks = 0;
                 let sawStreaming = false;
@@ -418,7 +410,7 @@ class CloudProvider:
                     }} else {{
                         stableTicks = 0;
                     }}
-                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 4) || stableTicks >= 9));
+                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 4) || stableTicks >= 16));
                     if (doneNow) {{
                         finished = true;
                         if (window.__bitchObs) {{ window.__bitchObs.disconnect(); window.__bitchObs = null; }}
@@ -429,18 +421,22 @@ class CloudProvider:
                 window.__bitchObs = new MutationObserver(check);
                 window.__bitchObs.observe(document.body, {{childList: true, subtree: true, characterData: true}});
                 window.__bitchTimer = setInterval(check, 55);
-                return {{ok: true, beforeCount, sent}};
+                return {{ok: true, beforeCount}};
             }})()'''
-            sent_res = tab.eval(send_script, timeout=8.)
-            if not sent_res or not sent_res.get('ok'):
-                raise RuntimeError(f'{self.name} send failed: {sent_res}')
-            if not sent_res.get('sent'):
-                # Fallback: real CDP Enter key event (always trusted by ProseMirror/React).
+            prep_res = tab.eval(prep_script, timeout=6.)
+            if not prep_res or not prep_res.get('ok'):
+                raise RuntimeError(f'{self.name} prep failed: {prep_res}')
+            # Trusted CDP insertText + Enter: instant (~40-80 ms), no 18-tick JS polling loop.
+            one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
+            tab.call('Input.insertText', {'text': one_line}, timeout=6.)
+            time.sleep(.04)
+            clicked_send = tab.eval(f'(() => {{ {self.helpers} const b = sendBtn(); if (b) {{ b.click(); return true; }} return false; }})()', timeout=3.)
+            if not clicked_send:
                 for kind in ('keyDown', 'keyUp'):
                     tab.call('Input.dispatchKeyEvent', {
                         'type': kind, 'key': 'Enter', 'code': 'Enter',
                         'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
-                    })
+                    }, timeout=4.)
             t_sent = time.monotonic()
 
             full_text = ''
