@@ -491,10 +491,13 @@ class CloudProvider:
             const box = composer();
             if (!box) return {{ok: false, reason: 'no composer'}};
             const scope = box.closest('form') || document;
+            // Clear any leftover failed attachment from an earlier turn so we never send stale/duplicate photos.
+            for (const old of Array.from(scope.querySelectorAll('button[aria-label^="Remove " i]'))) {{
+                old.click();
+            }}
+            await new Promise(r => setTimeout(r, 80));
             const thumbs = () => scope.querySelectorAll(
-                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], ' +
-                'button[aria-label*="Remove file" i], button[aria-label*="Remove image" i], ' +
-                'button[aria-label="User attachment"]'
+                '.composer-attachment-surface, button[aria-label^="Remove " i], img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"]'
             );
             const beforeThumbs = thumbs().length;
             const raw = atob({b64_js});
@@ -502,7 +505,7 @@ class CloudProvider:
             for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
             const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
             const makeDT = () => {{ const d = new DataTransfer(); d.items.add(file); return d; }};
-            // Prefer ChatGPT's direct file input (attaches exactly 1 image with zero fallback wait); only fall back to paste if missing.
+            // Attach via ChatGPT's hidden file input directly (always attaches exactly 1 image).
             const hasNewThumb = () => thumbs().length > beforeThumbs;
             const inp = Array.from(document.querySelectorAll('input[type="file"]'))
                 .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
@@ -513,22 +516,20 @@ class CloudProvider:
                 box.focus();
                 box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
             }}
-            // Wait up to 8 s for image upload spinner to finish and Send button to become ready.
+            // Wait up to 8 s for the attachment chip to appear and any upload spinner to finish.
+            // Note: Send stays disabled while the text box is empty, so do NOT block on sendBtn().disabled here.
             const deadline = performance.now() + 8000;
             let sawThumb = false;
             while (performance.now() < deadline) {{
-                const thumb = hasNewThumb();
-                if (thumb) sawThumb = true;
+                if (hasNewThumb()) sawThumb = true;
                 const uploading = !!scope.querySelector(
-                    '[aria-label*="Uploading" i], [aria-label*="uploading" i], circle.animate-spin, [data-testid*="upload-progress"]'
+                    '[aria-label*="Uploading" i], [aria-label*="uploading" i], circle.animate-spin, [data-testid*="upload-progress"], [role="progressbar"]'
                 );
-                const sBtn = sendBtn();
-                const sendDisabled = !!sBtn && (sBtn.disabled || sBtn.getAttribute('aria-disabled') === 'true');
-                if (sawThumb && !uploading && !sendDisabled) {{
-                    await new Promise(r => setTimeout(r, 120));
+                if (sawThumb && !uploading) {{
+                    await new Promise(r => setTimeout(r, 150));
                     return {{ok: true, thumb: true, count: thumbs().length - beforeThumbs}};
                 }}
-                await new Promise(r => setTimeout(r, 100));
+                await new Promise(r => setTimeout(r, 80));
             }}
             return {{ok: sawThumb, thumb: sawThumb, reason: sawThumb ? 'still_uploading' : 'no_thumbnail'}};
         }})()'''
