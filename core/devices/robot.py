@@ -230,6 +230,8 @@ class Robot(Device):
     def chat_stream(self, prompt, *, provider='chatgpt', reset=False, speaker=None, image=None, on_delta=None, stop=None, timeout=60.):
         """Stream a real-time reply (text or multimodal camera frame) from the Pi's signed-in ChatGPT or Gemini tab."""
         import base64
+        import socket
+        import threading
         host, key = config.get('robot_host'), config.get('robot_key')
         if not (self.online and self.cloud_chat and host and key):
             raise OSError('Pi streaming cloud brain is unavailable')
@@ -251,6 +253,22 @@ class Robot(Device):
             payload['image'] = image if isinstance(image, str) else base64.b64encode(image).decode('ascii')
         body = json.dumps(payload).encode('utf-8')
         conn = http.client.HTTPConnection(*address(host), timeout=timeout)
+        done_ev = threading.Event()
+        if stop is not None:
+            def _watch_stop():
+                while not done_ev.is_set():
+                    if stop.wait(0.05):
+                        try:
+                            if conn.sock:
+                                conn.sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        try:
+                            conn.close()
+                        except OSError:
+                            pass
+                        return
+            threading.Thread(target=_watch_stop, daemon=True).start()
         try:
             conn.request('POST', '/chat_stream', body=body, headers={
                 'Authorization': 'Bearer ' + key,
@@ -265,13 +283,20 @@ class Robot(Device):
             while True:
                 if stop is not None and stop.is_set():
                     return ''
-                line = resp.readline()
+                try:
+                    line = resp.readline()
+                except OSError:
+                    if stop is not None and stop.is_set():
+                        return ''
+                    raise
                 if not line:
                     break
                 raw = line.strip()
                 if not raw:
                     continue
                 event = json.loads(raw.decode('utf-8', errors='replace'))
+                if event.get('ping'):
+                    continue
                 if event.get('error'):
                     raise RuntimeError(event['error'])
                 if event.get('timing'):
@@ -287,5 +312,16 @@ class Robot(Device):
                 print(f'  Cloud({provider}): send={timing.get("send_s")}s ttft={timing.get("ttft_s")}s '
                       f'1st-sent={timing.get("ttfs_s")}s total={timing.get("total_s")}s', flush=True)
             return full_text
+        except OSError:
+            if stop is not None and stop.is_set():
+                return ''
+            raise
         finally:
+            done_ev.set()
             conn.close()
+
+    def archive_cloud(self, provider='chatgpt'):
+        """Ask the Pi to archive the finished ChatGPT conversation and prepare a clean fresh chat."""
+        if not (self.online and self.cloud_chat):
+            return False
+        return bool((self.post('/chat_archive', {'provider': provider}, timeout=12.) or {}).get('archived'))

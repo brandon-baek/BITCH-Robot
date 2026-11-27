@@ -25,9 +25,9 @@ from urllib.parse import urlsplit
 
 import desktop_chatgpt as cdp
 
-CHATGPT_URL = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/?temporary-chat=true')
+CHATGPT_URL = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/')
 GEMINI_URL = os.environ.get('BITCH_GEMINI_URL', 'https://gemini.google.com/app')
-TEMP_CHAT = os.environ.get('BITCH_TEMP_CHAT', '1') != '0'
+TEMP_CHAT = os.environ.get('BITCH_TEMP_CHAT', '0') == '1'
 MAX_TURNS_PER_CHAT = 24
 IDLE_RESET_SECONDS = 900.
 
@@ -185,6 +185,7 @@ class CloudProvider:
         self.last_used = 0.
         self.primed = False
         self.mode_checked = False
+        self.conv_path = None   # '/c/<id>' of the active BITCH chat so we archive ONLY BITCH's own chats
 
     def _connect(self, *, close_others=False):
         if self.tab is not None:
@@ -247,20 +248,21 @@ class CloudProvider:
             if self.name == 'chatgpt':
                 in_temp = tab.eval(
                     '(() => location.search.includes("temporary-chat=true") '
-                    '|| /temporary chat/i.test(document.body.innerText.slice(0, 600)))()',
+                    '|| !!document.querySelector("button[aria-label*=\\"Turn off temporary chat\\" i]"))()',
                     timeout=3.,
                 )
                 if not in_temp:
                     clicked = tab.eval(
                         '(() => { const b = Array.from(document.querySelectorAll("button, a"))'
-                        '.find(e => e.offsetParent && /temporary chat/i.test((e.getAttribute("aria-label") || "") + " " + (e.innerText || "")));'
+                        '.find(e => e.offsetParent && /turn on temporary chat|^temporary chat$/i.test((e.getAttribute("aria-label") || "") + " " + (e.innerText || "").trim()));'
                         'if (b) { b.click(); return true; } return false; })()',
                         timeout=3.,
                     )
                     if not clicked:
                         tab.call('Page.enable')
                         tab.call('Page.navigate', {'url': CHATGPT_URL})
-                    time.sleep(.35)
+                    # Wait for Temporary Chat composer and banner to hydrate before sending anything.
+                    self._ensure_ready(tab, wait=15.)
                 # Ensure Personalization stays enabled in Temporary Chat so ChatGPT can use memory/plugins/instructions
                 # while still keeping conversations out of history.
                 tab.eval('''(async () => {
@@ -366,6 +368,95 @@ class CloudProvider:
                 self.mode_checked = True
         except Exception:
             self.mode_checked = True
+
+    def _record_conv(self, tab):
+        """Remember the '/c/<id>' path of the chat BITCH just spoke in so we can archive it when done."""
+        if self.name != 'chatgpt':
+            return
+        try:
+            path = tab.eval('location.pathname', timeout=2.)
+            if isinstance(path, str) and path.startswith('/c/'):
+                self.conv_path = path
+        except Exception:
+            pass
+
+    def _archive_conv(self, tab):
+        """Archive BITCH's finished ChatGPT conversation via the sidebar Chat actions -> Archive menu."""
+        if self.name != 'chatgpt' or TEMP_CHAT or not self.conv_path:
+            return False
+        path = self.conv_path
+        try:
+            res = tab.eval(f'''(async () => {{
+                const href = {json.dumps(path)};
+                const findLink = () => document.querySelector(`a[href="${{href}}"]`);
+                let a = findLink();
+                if (!a) {{
+                    const toggle = document.querySelector('button[aria-label="Toggle sidebar"], button[aria-label="Open sidebar"]');
+                    if (toggle && toggle.offsetParent !== null) {{
+                        toggle.click();
+                        const endOpen = performance.now() + 1500;
+                        while (performance.now() < endOpen && !(a = findLink())) {{
+                            await new Promise(r => setTimeout(r, 80));
+                        }}
+                    }}
+                }}
+                if (!a) return {{ok: false, reason: 'link_not_found'}};
+                let el = a, btn = null, depth = 0;
+                while (el && depth < 10) {{
+                    const bs = el.querySelectorAll('button[aria-label="Chat actions"]');
+                    if (bs.length === 1) {{ btn = bs[0]; break; }}
+                    el = el.parentElement;
+                    depth++;
+                }}
+                if (!btn) return {{ok: false, reason: 'no_actions_btn'}};
+                btn.click();
+                const endMenu = performance.now() + 1800;
+                while (performance.now() < endMenu) {{
+                    const arch = Array.from(document.querySelectorAll('[role=menuitem], [role=menu] button'))
+                        .find(e => e.offsetParent !== null && /\\barchive\\b/i.test((e.innerText || '').trim()));
+                    if (arch) {{
+                        arch.click();
+                        await new Promise(r => setTimeout(r, 200));
+                        return {{ok: true, archived: href}};
+                    }}
+                    await new Promise(r => setTimeout(r, 60));
+                }}
+                document.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Escape', bubbles: true}}));
+                return {{ok: false, reason: 'no_archive_item'}};
+            }})()''', timeout=6.)
+            if res and res.get('ok'):
+                self.conv_path = None
+                return True
+        except Exception:
+            pass
+        return False
+
+    def archive_and_reset(self):
+        """Archive the finished BITCH chat (if any) and leave a fresh empty chat ready for the next conversation."""
+        with self.lock:
+            if not self.conv_path and self.turns == 0:
+                return False
+            try:
+                tab = self._connect()
+                self._record_conv(tab)
+                archived = self._archive_conv(tab)
+                if self.name == 'chatgpt' and not TEMP_CHAT:
+                    clicked = tab.eval(
+                        '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                        '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                        ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                        'if (b) { b.click(); return true; } return false; })()',
+                        timeout=4.,
+                    )
+                    if not clicked:
+                        tab.call('Page.enable')
+                        tab.call('Page.navigate', {'url': self.url})
+                    self._ensure_ready(tab, wait=10.)
+                self.turns = 0
+                self.primed = False
+                return archived
+            except Exception:
+                return False
 
     def reset_chat(self):
         """Start a fresh chat in the persistent tab (in-SPA click when possible so it takes < 0.5 s)."""
@@ -563,27 +654,36 @@ class CloudProvider:
                         tab = self._connect()
                         already_fresh_temp = False
                     if not already_fresh_temp:
-                        # Prefer fast in-SPA "New chat" click + Temporary Chat toggle (~0.6 s) over full reload (~20 s).
-                        in_spa = tab.eval(
-                            '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
-                            '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
-                            ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
-                            'if (b) { b.click(); return true; } return false; })()',
-                            timeout=4.,
-                        )
-                        if not in_spa:
-                            tab.call('Page.enable')
-                            tab.call('Page.navigate', {'url': CHATGPT_URL if TEMP_CHAT else self.url})
-                        end_reset = time.monotonic() + 12.
-                        while time.monotonic() < end_reset:
-                            try:
-                                if tab.eval(f'(() => {{ {self.helpers} return replies().length === 0 && !!composer(); }})()', timeout=3.):
-                                    break
-                            except Exception:
-                                pass
-                            time.sleep(.15)
                         if TEMP_CHAT:
+                            # Navigate directly to ?temporary-chat=true so a fresh chat NEVER leaks into Recents,
+                            # and always wait for full composer hydration before sending.
+                            tab.call('Page.enable')
+                            tab.call('Page.navigate', {'url': CHATGPT_URL})
+                            self._ensure_ready(tab, wait=15.)
                             self._ensure_temp_chat(tab)
+                        else:
+                            # Regular mode (full plugin + memory support): archive the previous BITCH chat first, then open New chat.
+                            self._record_conv(tab)
+                            self._archive_conv(tab)
+                            in_spa = tab.eval(
+                                '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                                '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                                ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                                'if (b) { b.click(); return true; } return false; })()',
+                                timeout=4.,
+                            )
+                            if not in_spa:
+                                tab.call('Page.enable')
+                                tab.call('Page.navigate', {'url': self.url})
+                            end_reset = time.monotonic() + 10.
+                            while time.monotonic() < end_reset:
+                                try:
+                                    if tab.eval(f'(() => {{ {self.helpers} return replies().length === 0 && !!composer(); }})()', timeout=3.):
+                                        break
+                                except Exception:
+                                    pass
+                                time.sleep(.12)
+                            self._ensure_ready(tab, wait=15.)
                     elif TEMP_CHAT:
                         self._ensure_temp_chat(tab)
                 self.turns = 0
@@ -698,6 +798,7 @@ class CloudProvider:
             full_text = ''
             ttft = None
             ttfs = None
+            last_ping = time.monotonic()
             deadline = time.monotonic() + timeout
             try:
                 while time.monotonic() < deadline:
@@ -710,7 +811,11 @@ class CloudProvider:
                         return
                     raw = tab.next_binding('__bitchStream', timeout=.15)
                     if raw is None:
-                        if ttft is None and time.monotonic() - t_sent > min(28., timeout):
+                        now_wait = time.monotonic()
+                        if now_wait - last_ping >= 1.2:
+                            last_ping = now_wait
+                            yield {'ping': True, 'done': False}
+                        if ttft is None and now_wait - t_sent > min(28., timeout):
                             raise TimeoutError(f'{self.name} produced no reply within 28s')
                         continue
                     data = json.loads(raw)
@@ -735,6 +840,7 @@ class CloudProvider:
                     if done:
                         self.turns += 1
                         self.last_used = time.monotonic()
+                        self._record_conv(tab)
                         return
                 raise TimeoutError(f'{self.name} reply timed out')
             finally:

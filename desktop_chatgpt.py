@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-HOME_PAGE = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/?temporary-chat=true')
+HOME_PAGE = os.environ.get('BITCH_CHATGPT_URL', 'https://chatgpt.com/')
 PORT = int(os.environ.get('BITCH_CHROMIUM_PORT', '9223'))
 PI_HOME = Path(os.environ.get('BITCH_PI_HOME', '~/.bitch-pi')).expanduser()
 PROFILE = PI_HOME / 'chromium'

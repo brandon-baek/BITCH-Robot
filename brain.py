@@ -985,6 +985,20 @@ def listen(motion_enabled=True):
                     return
                 self.respond(200 if played else 503, {'ok': played})
                 return
+            if self.path == '/chat_archive':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    item = json.loads(self.rfile.read(length)) if 0 < length <= 4000 else {}
+                    provider = item.get('provider', 'chatgpt') if isinstance(item, dict) else 'chatgpt'
+                    if provider not in ('chatgpt', 'gemini'):
+                        raise ValueError('unknown provider')
+                except (ValueError, TypeError, EOFError) as error:
+                    self.respond(400, {'error': str(error)})
+                    return
+                with macros.desktop_lock:
+                    archived = desktop_cloud.get_provider(provider).archive_and_reset()
+                self.respond(200, {'ok': True, 'archived': bool(archived)})
+                return
             if self.path == '/chat_stream':
                 try:
                     length = int(self.headers.get('Content-Length', '0'))

@@ -250,7 +250,7 @@ VOICE_CHECK = re.compile(r"\b(?:recognize|recognise|remember|identify)\b.{0,38}\
 VISUAL = re.compile(
     r"\b(?:look (?:at|here|around)|what.{0,35}(?:see|wearing|holding|in (?:my|the) (?:hand|room|background))"
     r"|what colou?r (?:is|are) (?:this|that|these|those|it|my|the)\b"
-    r"|(?:can|do) you see|how many (?:people|fingers)|describe (?:this|that|the (?:room|scene|desk))"
+    r"|(?:can|do) you see|how many (?:people|fingers)|describe (?:this|that|(?:the|my) (?:room|scene|desk|face|shirt|outfit))"
     r"|who(?:'s| is) (?:standing|sitting|there|here|with me|in the room)|who do you see"
     r"|what(?:'s| is| are) (?:this|that|these|those)(?:\s+(?:thing|things|here|over here|right here|in my hand|i'm holding))?\s*[?.!]*$"
     r"|what(?:'s| is| are) on (?:my|the) (?:desk|table)|what do I have\b|what does .{0,32} look like|how (?:do|does) .{0,32} look\b|what.{0,28}(?:picture|camera|background)|read (?:this|that)|showing you|behind me|in front of (?:me|you))\b", re.I)
@@ -431,6 +431,14 @@ class Brain:
 
     def reflect(self, now=None, quiet=REFLECT_AFTER):
         now = time.monotonic() if now is None else now
+        # Archive finished Pi cloud chats once the conversation has gone quiet so Recents stays clean.
+        if (self.cloud_primed and not self.busy.is_set()
+                and now - self.last_interaction >= quiet):
+            prov = self.cloud_primed[0]
+            self.cloud_primed = None
+            robot = hub.get('robot')
+            if robot and hasattr(robot, 'archive_cloud'):
+                threading.Thread(target=robot.archive_cloud, args=(prov,), daemon=True).start()
         for key, history in list(self.history.items()):
             owner = self.history_owner.get(key)
             turns = list(history)
@@ -637,7 +645,7 @@ class Brain:
         with self.lock:
             if not self.can_continue(source):
                 return False
-            self.continuation = (source, self.pending_text, time.monotonic() + 8)
+            self.continuation = (source, self.pending_text, time.monotonic() + 15)
             self.interruption = True
             self.followup = (source, time.monotonic() + FOLLOWUP_SECONDS)
             self.hush.set()
@@ -935,6 +943,12 @@ class Brain:
                     if not self.followup:
                         self.clear_conversation(source)
                         self.expression = None
+                        if ending and self.cloud_primed:
+                            prov = self.cloud_primed[0]
+                            self.cloud_primed = None
+                            robot = hub.get('robot')
+                            if robot and hasattr(robot, 'archive_cloud'):
+                                threading.Thread(target=robot.archive_cloud, args=(prov,), daemon=True).start()
                     if not self.interruption:
                         self.revision += 1
                     self.active_source = self.heard_end = self.pending_text = None

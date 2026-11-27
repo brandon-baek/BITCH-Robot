@@ -934,6 +934,20 @@ class WakeTests(unittest.TestCase):
               patch.object(hub, 'get', return_value=robot), patch.object(hub, 'sight', None)):
             self.assertEqual(brain.reply('What am I holding?', 'desk'), 'I can’t see the camera right now.')
 
+    def test_cloud_brain_archives_when_conversation_goes_quiet_and_describes_my_room_visually(self):
+        from core.brain import VISUAL
+        self.assertTrue(VISUAL.search('Um, can you describe my room for me?'))
+        brain = Brain()
+        archived = []
+        robot = SimpleNamespace(archive_cloud=lambda prov: archived.append(prov))
+        brain.cloud_primed = ('chatgpt', ('desk', None))
+        brain.last_interaction = 100.
+        with patch.object(hub, 'get', return_value=robot):
+            brain.reflect(now=1000.)
+            time.sleep(.05)
+        self.assertEqual(archived, ['chatgpt'])
+        self.assertIsNone(brain.cloud_primed)
+
     def test_pi_native_sqlite_memory_stores_dedups_and_recalls(self):
         import pi_memory
 
