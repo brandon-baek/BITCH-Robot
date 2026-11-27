@@ -376,10 +376,11 @@ class CloudProvider:
                     time.sleep(.35)
                     self._ensure_temp_chat(tab)
                 else:
+                    temp_flag = 'true' if TEMP_CHAT else 'false'
                     already_fresh_temp = tab.eval(
                         f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
-                        '&& (!' + ('true' if TEMP_CHAT else 'false') + ' || location.search.includes("temporary-chat=true") '
-                        '|| /temporary chat/i.test(document.body.innerText.slice(0, 600))); }})()',
+                        f'&& (!{temp_flag} || location.search.includes("temporary-chat=true") '
+                        f'|| /temporary chat/i.test(document.body.innerText.slice(0, 600))); }})()',
                         timeout=4.,
                     )
                     if not already_fresh_temp:
