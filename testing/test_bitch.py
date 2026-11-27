@@ -173,6 +173,157 @@ class WakeTests(unittest.TestCase):
         self.assertTrue(announced[1][1])
         self.assertIn('Briefing ready:', announced[1][0])
 
+    def test_promise_only_chatgpt_reply_retries_automatically_for_real_answer(self):
+        from core import helper
+
+        self.assertTrue(helper.is_promise_only(
+            "Oh, La Crescenta! Sorry, I misunderstood your location. I'll check the forecast for La Crescenta instead."
+        ))
+        self.assertFalse(helper.is_promise_only(
+            "Tomorrow in La Crescenta will be mostly sunny with a high of 81 degrees and a low of 55."
+        ))
+        self.assertFalse(helper.is_promise_only("You're free tomorrow! Nothing scheduled on your calendar."))
+        self.assertFalse(helper.is_promise_only("I've drafted the email and it's ready for you to confirm."))
+        self.assertIn('single-turn handoff', helper.instructions("I live in Lockercento.", []))
+        self.assertIn('single reply', macros.format_prompt('Check weather'))
+
+        brain = Brain()
+        macros_sent = []
+        statuses = {
+            0: {'state': 'returned', 'answer': "Oh, La Crescenta! Sorry, I misunderstood your location. I'll check the forecast for La Crescenta instead."},
+            1: {'state': 'returned', 'answer': 'Tomorrow in La Crescenta is mostly sunny, high of 81 degrees and low of 55.'},
+        }
+        seen_ids = []
+
+        def fake_macro(req_id, name, prompt, mode):
+            macros_sent.append((req_id, prompt))
+            seen_ids.append(req_id)
+            return True
+
+        def fake_status(req_id):
+            idx = seen_ids.index(req_id)
+            return statuses[idx]
+
+        robot = SimpleNamespace(macro=fake_macro, handoff=True, auto_handoff=True, macro_status=fake_status)
+        announced = []
+        brain.announce = lambda source, text, heard=None, chime=False, **kw: announced.append((source, text, heard, kw))
+        with (patch.object(hub, 'get', return_value=robot), patch.object(helper.time, 'sleep'),
+              patch.object(helper.threading, 'Thread')):
+            self.assertIsNone(helper.start(brain, 'desk', None, 'Um, I actually live in Lockercento.'))
+            task = helper.tasks[-1]
+            helper.watch(brain, 'desk', task)
+        self.assertEqual(len(macros_sent), 2)
+        self.assertIn('La Crescenta', macros_sent[1][1])
+        self.assertEqual(len(announced), 1)
+        self.assertIn('81 degrees', announced[0][1])
+        self.assertEqual(task['state'], 'done')
+
+    def test_delayed_lookup_strips_realtime_sure_opener_and_uses_natural_transition(self):
+        from core import helper
+
+        self.assertEqual(
+            helper.strip_realtime_opener("Sure, here's tomorrow's forecast for La Crescenta."),
+            "Tomorrow's forecast for La Crescenta.",
+        )
+        # Fallback when LLM rewrite is unavailable still avoids "Sure, ..." and sounds natural.
+        with patch('core.helper.llm.chat', side_effect=OSError('offline')):
+            moved = helper.spoken(
+                "Sure, here's tomorrow's forecast. High of 82 and sunny.",
+                request="What's the weather tomorrow?",
+                moved_on=True,
+                waited=15.0,
+            )
+            waited = helper.spoken(
+                "Sure, here's tomorrow's forecast. High of 82 and sunny.",
+                request="What's the weather tomorrow?",
+                moved_on=False,
+                waited=14.0,
+            )
+        self.assertFalse(moved.lower().startswith('sure'))
+        self.assertIn('info you wanted', moved.lower())
+        self.assertFalse(waited.lower().startswith('sure'))
+        self.assertIn('got that', waited.lower())
+        # When LLM rewrite runs, any leaked "Sure," opener is still stripped.
+        with patch('core.helper.llm.chat', return_value="Sure, tomorrow is 82 and sunny."):
+            cleaned = helper.spoken(
+                "Tomorrow is 82 and sunny.",
+                request="Weather tomorrow?",
+                moved_on=True,
+                waited=16.0,
+            )
+        self.assertFalse(cleaned.lower().startswith('sure'))
+        self.assertIn('82', cleaned)
+
+    def test_mid_conversation_lookup_waits_for_pause_and_weaves_into_next_reply(self):
+        from core import helper
+
+        brain = Brain()
+        brain.followup = ('desk', time.monotonic() + 24)
+        brain.last_reply_end = time.monotonic()
+        brain.last_reply_ended_with_question = True
+        brain.turn_count = 2
+        update = {
+            'id': 'u1',
+            'request': "What's the weather tomorrow?",
+            'answer': 'Warm day in La Crescenta, high of 82 and low of 56, mostly sunny.',
+            'explicit': False,
+            'turn_mark': 1,
+            'moved_on': True,
+            'waited': 16.0,
+        }
+        with patch.object(hub, 'hearing', None):
+            brain.announce('desk', 'Oh, I got that info you wanted — high of 82.', chime=True, polite=True, update=update)
+            time.sleep(.15)
+            # Must NOT barge in right after BITCH just asked a question!
+            self.assertTrue(brain.requests.empty())
+            self.assertEqual(len(brain.ready_updates), 1)
+            # User replies to BITCH's question: brain weaves the ready update into the reply instead of interrupting.
+            captured = []
+
+            def fake_chat(messages, **kwargs):
+                captured.append(messages[-1]['content'])
+                return '{"v":"w","say":"Nice, glad your day is good. Oh, and I got tomorrow\'s weather back — high of 82 and mostly sunny.","end":false}'
+
+            with patch.object(hub, 'sight', None), patch('core.brain.llm.chat', side_effect=fake_chat):
+                reply = brain.reply('Pretty good, just coding.', 'desk')
+            self.assertIn('82', reply)
+            self.assertIn('First respond naturally to what they just said', captured[0])
+            self.assertIn('high of 82', captured[0])
+            self.assertEqual(brain.ready_updates, [])
+            time.sleep(.45)
+            # Because it was woven into the reply, the background announcer must NOT double-speak it.
+            self.assertTrue(brain.requests.empty())
+
+    def test_active_lookups_are_shared_with_brain_and_lookup_turn_preserves_ready_update(self):
+        from core import helper
+
+        brain = Brain()
+        robot = SimpleNamespace(macro=lambda *a: True, handoff=True, auto_handoff=False,
+                                shows=False, motion_enabled=False, show_active=False)
+        entry = {
+            'id': 'cal1', 'source': 'desk', 'request': 'Check my calendar tomorrow',
+            'answer': "You're free tomorrow.", 'explicit': False, 'turn_mark': 0,
+            'moved_on': True, 'waited': 12.0, 'delivered': False, 'in_flight': False, 'created': time.monotonic(),
+        }
+        brain.ready_updates.append(entry)
+        fake_task = {'id': 'w1', 'request': "How's the weather today?", 'state': 'working',
+                     'started': time.time() - 10, 'explicit': False, 'answer': ''}
+        captured = []
+
+        def fake_chat(messages, **kwargs):
+            captured.append(messages[-1]['content'])
+            return '{"do":"lookup","v":"n","say":"Let me check.","end":false,"task":"Check flights to Tokyo"}'
+
+        with (patch.object(helper, 'tasks', [fake_task]), patch.object(hub, 'get', return_value=robot),
+              patch.object(hub, 'sight', None), patch('core.brain.llm.chat', side_effect=fake_chat)):
+            brain.reply('Can you search for flights to Tokyo?', 'desk')
+        # Brain was told about the active weather lookup so it doesn't duplicate it.
+        self.assertIn("How's the weather today?", captured[0])
+        # Because this turn chose do="lookup", the ready calendar update was NOT lost — still waiting to be announced.
+        self.assertEqual(len(brain.ready_updates), 1)
+        self.assertFalse(brain.ready_updates[0]['delivered'])
+        self.assertFalse(brain.ready_updates[0]['in_flight'])
+
     def test_voicechat_gets_addressed_audio_and_qwen_handles_the_local_agent_request(self):
         brain = Brain()
         audio = np.zeros(16000, dtype=np.float32)
@@ -274,6 +425,14 @@ class WakeTests(unittest.TestCase):
         # BITCH's "Let me check." heard back is dropped, and a "Yeah?" lead-in is trimmed.
         from core.brain import sounds_like_own_words, strip_playback
         self.assertTrue(sounds_like_own_words('Let check.', ['Let me check.']))
+        self.assertTrue(sounds_like_own_words(
+            'Tomorrow and the crescent is warm.',
+            ["Alright, got it — tomorrow in La Crescenta's warm and mostly sunny, high around 82."],
+        ))
+        self.assertFalse(sounds_like_own_words(
+            'What about Sunday?',
+            ["Alright, got it — tomorrow in La Crescenta's warm and mostly sunny, high around 82."],
+        ))
         self.assertFalse(sounds_like_own_words('Can you check the weather in Tokyo?', ['Let me check.']))
         self.assertEqual(strip_playback("Yeah. Um, what's the weather like tomorrow?", 'Yeah?'),
                          "Um, what's the weather like tomorrow?")
@@ -586,10 +745,136 @@ class WakeTests(unittest.TestCase):
         for text in ('Hey BITCH.', 'Hey BITCH, I was thinking and.', 'So the thing is,', 'Well...', 'Can you', ''):
             self.assertFalse(sounds_finished(text), text)
         # Parakeet often drops the final full stop: the words decide.
-        for text in ("Hey bitch, I'm back", 'Cool thanks', 'What time is it'):
+        for text in ("Hey bitch, I'm back", 'Cool thanks', 'What time is it',
+                     'Turn the lights on', 'Not really', 'Yes I can', "No I'm not", 'Where are we at'):
             self.assertTrue(sounds_finished(text), text)
-        for text in ('So can you', 'I was thinking about', 'What do you think about'):
+        for text in ('So can you', 'I was thinking about', 'What do you think about', 'Well, I mean', 'You know'):
             self.assertFalse(sounds_finished(text), text)
+
+    def test_hallucination_loops_and_high_compression_whisper_segments_are_dropped(self):
+        from core.hearing import is_hallucination, WAKE_HINT
+
+        self.assertTrue(is_hallucination('BITCH. ' * 50))
+        self.assertTrue(is_hallucination('Hey BITCH. Hey BITCH. Hey BITCH. Hey BITCH.'))
+        self.assertTrue(is_hallucination(WAKE_HINT))
+        self.assertFalse(is_hallucination('Hey BITCH, what is the weather today?'))
+        self.assertFalse(is_hallucination('Hey BITCH.'))
+        fake_whisper = SimpleNamespace(transcribe=lambda *a, **k: {
+            'segments': [
+                {'text': 'BITCH. ' * 40, 'no_speech_prob': 0.1, 'avg_logprob': -0.08, 'compression_ratio': 6.5},
+            ],
+        })
+        self.assertEqual(Hearing.transcribe(fake_whisper, np.zeros(16000, np.float32)), '')
+
+    def test_pending_lookup_questions_report_status_without_restarting_search(self):
+        from core import helper
+
+        brain = Brain()
+        robot = SimpleNamespace(macro=Mock(return_value=True), handoff=True, auto_handoff=False,
+                                shows=False, motion_enabled=False, show_active=False)
+        active = {'id': 'w99', 'request': "What's the weather in La Crescenta tomorrow?", 'state': 'working',
+                  'started': time.time() - 12, 'explicit': False, 'answer': ''}
+        with patch.object(helper, 'tasks', [active]), patch.object(hub, 'get', return_value=robot):
+            self.assertEqual(helper.match_active('Have you found the weather yet?')['id'], 'w99')
+            self.assertEqual(helper.match_active('Are you still searching?')['id'], 'w99')
+            self.assertIsNone(helper.match_active('What is the capital of France?'))
+            # Should NOT offer lookup or weather tool when asking about the active weather lookup.
+            actions, _, _ = brain.available_actions('Have you found the weather yet?', robot, False)
+            self.assertNotIn('lookup', actions)
+            self.assertNotIn('weather', actions)
+            # Duplicate topic in helper.start() refuses to start a second search.
+            dup = helper.start(brain, 'desk', 'Brandon', 'Check the weather in La Crescenta', user_text='Weather in La Crescenta?')
+            self.assertIn('still looking', dup.lower())
+            robot.macro.assert_not_called()
+            # Asking about status passes active lookup info to the brain without offering lookup.
+            captured = []
+            with patch.object(hub, 'sight', None), patch('core.brain.llm.chat', side_effect=lambda msgs, **kw: (
+                    captured.append((msgs[-1]['content'], kw['schema'])),
+                    '{"v":"w","say":"Still checking on the weather, almost done.","end":false}')[1]):
+                reply = brain.reply('Have you found the weather yet?', 'desk')
+            self.assertIn('Still checking', reply)
+            self.assertIn('ALREADY sent out', captured[0][0])
+            self.assertNotIn('do', captured[0][1]['properties'])
+        # If the weather lookup already finished and is sitting in ready_updates, asking "How's the weather search going?"
+        # delivers the finished answer in one turn instead of starting a duplicate lookup.
+        ready_brain = Brain()
+        ready_brain.ready_updates.append({
+            'id': 'w99', 'source': 'desk', 'request': "Um what's the weather looking like tomorrow?",
+            'answer': 'Tomorrow in La Crescenta will be sunny with a high of 83.', 'explicit': False,
+            'turn_mark': 1, 'moved_on': True, 'waited': 15.7, 'delivered': False, 'in_flight': False,
+            'created': time.monotonic(),
+        })
+        captured.clear()
+        with (patch.object(helper, 'tasks', []), patch.object(hub, 'get', return_value=robot),
+              patch.object(hub, 'sight', None),
+              patch('core.brain.llm.chat', side_effect=lambda msgs, **kw: (
+                  captured.append((msgs[-1]['content'], kw['schema'])),
+                  '{"v":"w","say":"Just got it back — sunny tomorrow with a high of 83.","end":false}')[1])):
+            reply = ready_brain.reply("Well, I mean How's the weather search going?", 'desk')
+        self.assertIn('83', reply)
+        self.assertNotIn('do', captured[0][1]['properties'])
+        self.assertEqual(ready_brain.ready_updates, [])
+        # If the model ignores a woven background update while answering small talk, keep it queued (never drop it).
+        ignored_brain = Brain()
+        ignored_brain.ready_updates.append({
+            'id': 'em1', 'source': 'desk', 'request': 'Can you check if I had any emails?',
+            'answer': 'You received five emails in your Gmail inbox.', 'explicit': False,
+            'turn_mark': 1, 'moved_on': True, 'waited': 21.0, 'delivered': False, 'in_flight': False,
+            'created': time.monotonic(),
+        })
+        with (patch.object(helper, 'tasks', []), patch.object(hub, 'get', return_value=robot),
+              patch.object(hub, 'sight', None),
+              patch('core.brain.llm.chat', return_value='{"v":"n","say":"Quiet day so far, just hanging out.","end":false}')):
+            ignored_brain.reply("How's your day been?", 'desk')
+        self.assertEqual(len(ignored_brain.ready_updates), 1)
+        self.assertFalse(ignored_brain.ready_updates[0]['delivered'])
+        # Phonetic mishears ("searchers") and past checks ("didn't I ask about emails earlier?") match status checks.
+        self.assertTrue(helper.is_status_check('How are the searches going?'))
+        self.assertTrue(helper.is_status_check("Uh my day's been alright. I asked you how the searchers were going."))
+        self.assertTrue(helper.is_status_check("Okay. Um, didn't I ask you about emails earlier?"))
+
+    def test_asking_about_performances_answers_without_starting_a_show(self):
+        brain = Brain()
+        robot = SimpleNamespace(shows=True, motion_enabled=True, show_active=False, handoff=False)
+        for question in ('What performances can you do?', 'What shows do you have?', 'Tell me about your routines'):
+            actions, _, lines = brain.available_actions(question, robot, False)
+            self.assertEqual(actions, ['none'], question)
+            self.assertTrue(any('without starting one' in line for line in lines), question)
+            self.assertIsNone(brain.performance_reply(question))
+
+    def test_stopping_a_performance_works_with_natural_phrases(self):
+        from core.brain import is_stop_show
+
+        for phrase in ('Stop', 'Stop performing', 'Stop dancing', 'Hey BITCH, stop performing!',
+                       'Okay stop the show', 'Cut the music', "That's enough"):
+            self.assertTrue(is_stop_show(phrase), phrase)
+        self.assertFalse(is_stop_show('Tell me a story'))
+        brain = Brain()
+        robot = SimpleNamespace(show_active=True, hush=Mock(return_value=True))
+        with patch.object(hub, 'get', return_value=robot), patch.object(hub, 'accepts', return_value=True):
+            self.assertTrue(brain.addressed('Stop performing', 'desk', time.monotonic()))
+            self.assertEqual(brain.performance_reply('Stop performing'), 'Curtain.')
+            robot.hush.assert_called_once()
+            robot.show_active = True
+            self.assertTrue(brain.stop_performance('desk'))
+            self.assertFalse(robot.show_active)
+            self.assertGreater(brain.followup_seconds(), 0)
+
+    def test_hold_for_more_keeps_user_message_visible_and_resumes_if_empty(self):
+        brain = Brain()
+        with patch.object(hub, 'messages', [{'role': 'user', 'text': 'Hey how is it going', 'at': time.time()}]):
+            brain.active_source = 'desk'
+            brain.pending_text = 'Hey how is it going'
+            brain.busy.set()
+            with patch.object(hub, 'status', 'Thinking'):
+                self.assertTrue(brain.hold_for_more('desk'))
+            # User message stays visible instead of popping and fading out.
+            self.assertEqual(len(hub.messages), 1)
+            self.assertEqual(hub.messages[-1]['text'], 'Hey how is it going')
+            # If the continuation clip turns out empty, resume_continuation restores the original turn.
+            brain.busy.clear()
+            self.assertTrue(brain.resume_continuation('desk'))
+            self.assertEqual(brain.requests.get_nowait(), ('Hey how is it going', 'desk'))
 
     def test_interruption_opens_the_same_mic_and_rejects_playback_keyword(self):
         brain = Brain()

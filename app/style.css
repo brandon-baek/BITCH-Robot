@@ -212,6 +212,52 @@ h1 {
 .company .by:empty { display: none; }
 .text-button.small { min-height: 24px; font-size: 15px; font-weight: 600; padding: 0 2px; }
 .faces { display: flex; justify-content: center; gap: 14px; margin-top: 14px; }
+.lookups {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 32em;
+  margin-top: 12px;
+}
+.lookup-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 0 0 .5px var(--hairline), 0 1px 2px rgba(24, 32, 46, .05);
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--ink);
+}
+.lookup-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--kraft-bright);
+  animation: lookup-pulse 1.6s ease-in-out infinite;
+}
+@keyframes lookup-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .4; transform: scale(.82); }
+}
+.lookup-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.lookup-meta {
+  flex: none;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
 .face {
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   border: 0; padding: 0; background: none; color: var(--ink-2); font-size: 12px; cursor: pointer;

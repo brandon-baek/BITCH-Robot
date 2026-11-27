@@ -27,7 +27,9 @@ def format_prompt(prompt):
             'Request from the account holder\n'
             + prompt.strip() + '\n\n'
             'Reply for BITCH\n'
-            'Put the main answer first and keep it easy to read aloud. If a detail is missing, ask a focused question I can relay.')
+            'Give the complete answer right now in this single reply (there is no follow-up turn — never say you will check later). '
+            'Put the main answer first, keep it easy to read aloud, and skip filler like "Sure" or "Here is". '
+            'If a detail is missing, ask a focused question I can relay.')
 
 
 def job_path(request_id):

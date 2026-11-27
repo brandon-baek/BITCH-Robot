@@ -39,9 +39,46 @@ TRAILING = re.compile(
 
 
 UNFINISHED = re.compile(r"\b(?:(?:can|could|would|will|should|do|did|does|have) (?:you|i|we|they|he|she|it)|"
-                        r"can|could|would|should|do|does|have|has|had|in|on|at|about|into|is|was|are|were|not|just|"
-                        r"really|maybe|want|need|going|gonna|wanna|let's|make|get|the|a|an|to|of|with|for|from|and|"
-                        r"but|or|so|because|if|then|um|uh|my|your|our|their)$", re.I)
+                        r"i mean|you know|well|basically|actually|literally|wait|hold on|"
+                        r"about|into|is|was|are|were|want|need|going|gonna|wanna|let's|make|get|the|a|an|to|of|with|"
+                        r"for|from|and|but|or|so|because|if|then|um|uh|my|your|our|their)$", re.I)
+FILLER_LEADIN = re.compile(r"^(?:(?:well|so|um|uh|like|hey|okay|ok|alright|you know|i mean)[,!.\s]+)+$", re.I)
+# Whisper occasionally falls into a greedy repetition loop ("BITCH. BITCH. BITCH...") or echoes WAKE_HINT on noise.
+WAKE_HINT_PHRASES = ('hey bitch', 'yo bitch', 'okay bitch', 'bitch, look at this', 'what do you think, bitch')
+FILLER_ONLY = re.compile(r"^(?:uh+|um+|uhm+|hm+|hmm+|mm+|mhm|ah+|oh+|er+|yeah|yep|okay|ok)[.!?,\s]*$", re.I)
+
+
+def is_hallucination(text):
+    """True when a recognizer output looks like a repetition loop or a verbatim WAKE_HINT prompt echo."""
+    if not text:
+        return False
+    lower = text.casefold()
+    if sum(phrase in lower for phrase in WAKE_HINT_PHRASES) >= 3:
+        return True
+    words = re.findall(r"[a-z0-9']+", lower)
+    if not words:
+        return False
+    # Same single word repeated 4+ times in a row ("bitch bitch bitch bitch...").
+    run = 1
+    for prev, curr in zip(words, words[1:]):
+        run = run + 1 if curr == prev else 1
+        if run >= 4:
+            return True
+    # Any short phrase (2-3 words) repeated 4+ times in a row ("hey bitch hey bitch hey bitch hey bitch").
+    for span in (2, 3):
+        if len(words) >= span * 4:
+            for start in range(len(words) - span * 4 + 1):
+                chunk = words[start:start + span]
+                if all(words[start + k * span:start + (k + 1) * span] == chunk for k in range(1, 4)):
+                    return True
+    # Dominated by one repeated word (e.g. "bitch. hey bitch. bitch. bitch. bitch. bitch.").
+    if len(words) >= 6:
+        top = max(words.count(word) for word in set(words))
+        if top >= max(4, .6 * len(words)):
+            return True
+    if len(words) >= 8 and len(set(words)) <= 2:
+        return True
+    return False
 
 
 def warmup_speech():
@@ -69,7 +106,9 @@ def sounds_finished(text):
     from .brain import wake_request
 
     text = text.strip()
-    if text and text[-1].isalnum():
+    if not text or FILLER_LEADIN.fullmatch(text):
+        return False
+    if text[-1].isalnum():
         # Parakeet often leaves off the final full stop, so judge the thought by its words: without punctuation,
         # a last word that almost always continues ("can you", "what about") means they're still going.
         if UNFINISHED.search(text):
@@ -233,10 +272,12 @@ class Hearing:
         tail = np.empty(0, np.float32)
         pre = deque(maxlen=PRE_ROLL)
         clip = []
-        voiced = quiet = onset = 0
+        voiced = quiet = onset = resume = 0
         last = 0
         talking_over = False
         last_probe = 0
+        last_continue_probe = 0
+        last_show_probe = 0
         last_speech = 0.
         previewed = False
         overlap = 0          # recent frames where someone is louder than BITCH's own echo
@@ -255,12 +296,13 @@ class Hearing:
                 self.capture = None
                 pre.clear()
                 clip, marks = [], []
-                voiced = quiet = onset = 0
+                voiced = quiet = onset = resume = 0
                 detector.reset_states()
             last = received
             revision = hub.brain.revision
             can_interrupt = hub.brain.can_interrupt(source)
             can_continue = hub.brain.can_continue(source)
+            show_active = bool(getattr(hub.get('robot'), 'show_active', False))
             audio = np.concatenate((tail, samples))
             end = len(audio) // FRAME * FRAME
             tail = audio[end:]
@@ -272,14 +314,15 @@ class Hearing:
                 pre.extend(audio[index:index + FRAME] for index in range(0, end, FRAME))
                 if clip and not talking_over:
                     clip, marks = [], []
-                    onset = 0
+                    onset = resume = 0
                     self.capture = None
                 continue
             for index in range(0, end, FRAME):
                 frame = audio[index:index + FRAME]
                 frame_at = received - (len(audio)-index-FRAME) / SR
                 hub.level = min(1.0, float(np.sqrt(np.mean(frame ** 2))) * 8)
-                speech = detector(torch.from_numpy(frame), SR).item() > (0.32 if clip else 0.5)
+                prob = detector(torch.from_numpy(frame), SR).item()
+                speech = prob > (0.38 if clip else 0.5)
                 louder = self.echo.excess(frame, frame_at, speech)
                 if clip and talking_over and not hub.brain.busy.is_set() and not hub.brain.interruption:
                     # BITCH finished while this clip was open. If someone was talking over it,
@@ -290,7 +333,7 @@ class Hearing:
                         pre.clear()
                         pre.extend(clip[-PRE_ROLL:])
                         clip, marks = [], []
-                        onset = 0
+                        onset = resume = 0
                         self.capture = None
                     else:
                         cut = max(0, overlap_start - 8)
@@ -305,7 +348,7 @@ class Hearing:
                     if onset >= 3:
                         talking_over = interrupted = can_interrupt
                         held = False
-                        last_probe = overlap = louder_run = 0
+                        last_probe = last_continue_probe = last_show_probe = overlap = louder_run = 0
                         votes.clear()
                         overlap_start = None
                         last_speech, previewed = frame_at, False
@@ -313,17 +356,32 @@ class Hearing:
                         self.activity_at = received
                         clip = list(pre)
                         marks = [False] * (len(pre) - onset) + [True] * onset
-                        voiced, quiet = onset, 0
+                        voiced, quiet, resume = onset, 0, 0
                     continue
                 self.capture = (source, revision, began, received)
                 clip.append(frame)
                 marks.append(speech)
                 voiced += int(speech)
+                # Once we are already in a pause (quiet >= 3), ignore single-frame 32 ms room blips
+                # (clicks, breaths, creaks) so they don't keep resetting quiet to 0 or invalidating preview.
                 if speech:
-                    self.activity_at = received
-                    last_speech = frame_at
-                    previewed = False
-                quiet = 0 if speech else quiet + 1
+                    if quiet >= 3 and prob < 0.58:
+                        resume += 1
+                        if resume >= 2:
+                            self.activity_at = received
+                            last_speech = frame_at
+                            previewed = False
+                            quiet = resume = 0
+                        else:
+                            quiet += 1
+                    else:
+                        self.activity_at = received
+                        last_speech = frame_at
+                        previewed = False
+                        quiet = resume = 0
+                else:
+                    resume = 0
+                    quiet += 1
                 recent_louder.append(louder or 0.)
                 if talking_over and can_interrupt:
                     # Someone talking over BITCH is clearly louder than its own echo at the mic.
@@ -368,17 +426,28 @@ class Hearing:
                     clip, marks = clip[cut:], marks[cut:]
                     began, voiced = frame_at - len(clip) * FRAME / SR, sum(marks)
                     talking_over = False
-                if can_continue and not talking_over and not held and voiced >= 8:
-                    # Still talking while BITCH is thinking: let them finish, then answer all of it.
-                    held = interrupted = hub.brain.hold_for_more(source)
-                if (not talking_over and not previewed and voiced >= 8 and quiet >= PREVIEW_QUIET
+                if show_active and not talking_over and len(clip) - last_show_probe >= 18 and not self.clips.full():
+                    # While a performance is playing music, VAD may stay continuously open: probe the last ~2 s
+                    # so "stop" / "stop performing" cuts the show right away instead of waiting for silence.
+                    last_show_probe = len(clip)
+                    window = np.concatenate(clip[-64:])
+                    self.clips.put_nowait(Clip('show_stop', source, revision, received, began, frame_at, window))
+                if (can_continue and not talking_over and not held and not self.clips.full()
+                        and voiced >= 12 and voiced - last_continue_probe >= 12):
+                    # Verify real words before canceling an in-progress Thinking turn, so breaths/clicks
+                    # never drop the user's message or make BITCH think they have more to say.
+                    last_continue_probe = voiced
+                    self.clips.put_nowait(Clip('continue', source, revision, received, began, frame_at,
+                                               np.concatenate(clip)))
+                if can_continue and hub.brain.interruption and not held:
+                    held = interrupted = True
+                if (not talking_over and not previewed and voiced >= 5 and quiet >= PREVIEW_QUIET
                         and not hub.brain.busy.is_set() and self.clips.empty()):
                     previewed = True
                     self.clips.put_nowait(Clip('preview', source, revision, time.monotonic(), began, last_speech,
                                                np.concatenate(clip), voiced=voiced * FRAME / SR))
-                # Natural mid-sentence pauses are often longer than half a second.
-                # Give a longer utterance extra room, including on the initial wake.
-                pause = 1.45 if voiced * FRAME / SR < 2.5 else 2.05
+                # Natural mid-sentence pauses are often around 0.5-0.9 s; keep enough room without hanging forever.
+                pause = 1.05 if voiced * FRAME / SR < 2.5 else 1.45
                 # The preview transcript reads as a finished turn and nobody spoke since: answer now.
                 if quiet >= WAKE_ACK_QUIET and self.wake_heard == (source, revision, began, last_speech):
                     # They said the name and then really stopped: answer "Yeah?" and keep listening.
@@ -396,7 +465,7 @@ class Hearing:
                                                    voiced * FRAME / SR, interrupted=interrupted))
                     clip, marks = [], []
                     pre.clear()
-                    onset = 0
+                    onset = resume = 0
                     detector.reset_states()
 
     def _transcribe(self):
@@ -446,6 +515,30 @@ class Hearing:
                     except (ValueError, RuntimeError, OSError):
                         pass
                 continue
+            if clip.kind == 'show_stop':
+                robot = hub.get('robot')
+                if robot and getattr(robot, 'show_active', False) and time.monotonic() - clip.queued < 1.2:
+                    try:
+                        text = self.listen(mlx_whisper, clip.audio, need_name=False)
+                        from .brain import is_stop_show
+                        if text and is_stop_show(text):
+                            hub.brain.stop_performance(source)
+                    except (ValueError, RuntimeError, OSError):
+                        pass
+                continue
+            if clip.kind == 'continue':
+                if revision == hub.brain.revision and time.monotonic() - clip.queued < 1.0 and hub.brain.can_continue(source):
+                    try:
+                        text = self.listen(mlx_whisper, clip.audio, need_name=False)
+                        words = re.findall(r"[a-zA-Z0-9']+", text or '')
+                        if text and not FILLER_ONLY.fullmatch(text.strip()) and len(words) >= 2:
+                            recent = hub.brain.recent_speech()
+                            from .brain import sounds_like_own_words
+                            if not (recent and sounds_like_own_words(text, recent)):
+                                hub.brain.hold_for_more(source)
+                    except (ValueError, RuntimeError, OSError):
+                        pass
+                continue
             valid = lambda: self.valid_clip(clip) and not hub.brain.busy.is_set()
             if clip.interrupted and not self.wait_for_interrupted_reply(clip):
                 continue
@@ -471,6 +564,7 @@ class Hearing:
             self.decoding = (source, revision, began, time.monotonic())
             try:
                 if voice.is_echo(clip.speech, clip.last_speech):
+                    hub.brain.resume_continuation(source)
                     continue
                 enrolled, _ = people.speaker(source, clip.speech, clip.voiced, addressed=False)
                 if enrolled:
@@ -478,7 +572,12 @@ class Hearing:
                 text = (preview[1] if preview and preview[0] == stamp
                         else self.listen(mlx_whisper, clip.audio, need_name=not hub.brain.addressed('', source, began)))
                 preview = None
+                if not text:
+                    # If we paused Thinking for a continuation that turned out empty, restore the original request.
+                    hub.brain.resume_continuation(source)
+                    continue
                 if text and wake_only(text) and clip.voiced < WAKE_ONLY_SPEECH:
+                    hub.brain.resume_continuation(source)
                     continue
                 if hub.brain.interruption and text:
                     from .brain import INTERRUPT, repeats_playback, strip_playback
@@ -543,7 +642,9 @@ class Hearing:
         with voice.Urgent():
             mel = get_logmel(mx.array(self.level(audio)), self.parakeet.preprocessor_config)
             text = self.parakeet.generate(mel)[0].text.strip()
-        return text if re.search(r'[A-Za-z]', text) else ''
+        if not re.search(r'[A-Za-z]', text) or is_hallucination(text):
+            return ''
+        return text
 
     def listen(self, whisper, audio, *, need_name):
         """What was said. Fast first; Whisper's name-hinted listen only when the name matters and was missed."""
@@ -596,14 +697,20 @@ class Hearing:
     @staticmethod
     def transcribe(engine, audio, *, prompt=True):
         Hearing.whisper_used = time.monotonic()
-        # Bring distant, quiet speech up to a steady level (at most 8x, so noise stays noise).
+        # Bring distant, quiet speech up to a steady level (at most 8x, and never boost near-silence into noise).
         frames = audio[:len(audio) // 320 * 320].reshape(-1, 320)
         if len(frames):
             level = float(np.percentile(np.sqrt(np.mean(frames ** 2, axis=1)), 90))
-            audio = np.clip(audio * min(8., .08 / max(level, 1e-5)), -1, 1).astype(np.float32)
+            if level >= .0015:
+                audio = np.clip(audio * min(8., .08 / level), -1, 1).astype(np.float32)
         with voice.Urgent():
             result = engine.transcribe(audio, path_or_hf_repo=WHISPER, language='en',
                                        condition_on_previous_text=False, temperature=0,
                                        initial_prompt=WAKE_HINT if prompt else None)
-        return ' '.join(segment['text'].strip() for segment in result.get('segments', [])
-                        if segment.get('no_speech_prob', 0) < .55 and segment.get('avg_logprob', 0) > -.95)
+        text = ' '.join(
+            segment['text'].strip() for segment in result.get('segments', [])
+            if (segment.get('no_speech_prob', 0) < .55
+                and segment.get('avg_logprob', 0) > -.95
+                and segment.get('compression_ratio', 0) <= 2.2)
+        )
+        return '' if is_hallucination(text) else text

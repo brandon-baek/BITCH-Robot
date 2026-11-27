@@ -43,6 +43,93 @@ THINK = re.compile(
     r"step[- ]by[- ]step|research|analy[sz]e|summari[sz]e|recommend|which (?:one|is better)|should I|"
     r"write|draft|debug|calculate|figure out|strategy|itinerary|budget)\b", re.I)
 
+# Natural ways someone asks about a lookup BITCH already sent out.
+STATUS_CHECK = re.compile(
+    r"\b(?:have you (?:found|gotten|got|checked|heard|finished|looked)|"
+    r"did you (?:find|get|check|finish|hear back)|"
+    r"didn(?:'t|’t) i ask (?:you )?(?:about|to check|for)|"
+    r"did (?:that|it|the .+?)\s+come back|"
+    r"(?:are you )?still (?:searching|looking|checking|working|waiting)|"
+    r"(?:any|got an?) (?:news|update|word|answer|luck)|"
+    r"is (?:that|it|my|the) .{0,28}\b(?:ready|done|back|finished)|"
+    r"how(?:'s|’s| is| are| were)? (?:that|the|my|those)?\s*.{0,24}\b(?:search(?:es|ers)?|lookups?)\b|"
+    r"how(?:'s|’s| is) (?:that|the|my) .{0,28}\b(?:going|coming)|"
+    r"what(?:'s|’s| is) taking (?:so long|forever)|"
+    r"what happened to (?:that|the|my))\b", re.I)
+
+STOP_WORDS = {
+    'the', 'and', 'for', 'you', 'your', 'have', 'has', 'had', 'did', 'does', 'are', 'was', 'were',
+    'what', 'when', 'where', 'how', 'who', 'why', 'can', 'could', 'would', 'will', 'that', 'this',
+    'there', 'here', 'from', 'with', 'about', 'into', 'out', 'yet', 'still', 'just', 'any', 'got',
+    'get', 'gotten', 'find', 'found', 'check', 'checking', 'checked', 'look', 'looking', 'looked',
+    'search', 'searches', 'searchers', 'searching', 'searched', 'back', 'come', 'came', 'ready',
+    'done', 'finished', 'update', 'news', 'word', 'answer', 'luck', 'please', 'hey', 'bitch',
+    'going', 'coming', 'happened', 'tell', 'know', 'anything', 'something', 'thing', 'working',
+    'waiting', 'long', 'taking', 'today', 'tomorrow', 'now', 'heard', 'lookup', 'lookups',
+    'asked', 'ask', 'earlier', 'before', 'those', 'these', 'alright', 'day', 'been',
+}
+
+
+def topic_words(text):
+    """Meaningful topic keywords from a request or follow-up question."""
+    return {word for word in re.findall(r"[a-z0-9']+", (text or '').casefold())
+            if len(word) >= 3 and word not in STOP_WORDS}
+
+
+def is_status_check(text):
+    return bool(text and STATUS_CHECK.search(text))
+
+
+def active_tasks():
+    """Currently in-flight lookups (working, background, or queued), oldest to newest."""
+    now = time.time()
+    with lock:
+        return [dict(task) for task in tasks
+                if task['state'] in ('working', 'background', 'queued') and now - task['started'] < WAIT]
+
+
+def match_active(text):
+    """Return an in-flight lookup that `text` is asking about or duplicating, or None."""
+    active = active_tasks()
+    if not active or not text:
+        return None
+    topics = topic_words(text)
+    checking = is_status_check(text)
+    for task in reversed(active):
+        earlier = topic_words(task['request'])
+        overlap = topics & earlier
+        if overlap:
+            if checking or len(overlap) >= max(1, round(.5 * min(len(topics), len(earlier)))):
+                return task
+    if checking and not topics:
+        return active[-1]
+    return None
+
+
+def match_recent_done(text, within=360.):
+    """Return a recently completed lookup matching a status/follow-up question, so asking about it doesn't restart it."""
+    if not text or not is_status_check(text):
+        return None
+    now = time.time()
+    topics = topic_words(text)
+    with lock:
+        done = [dict(t) for t in tasks if t['state'] == 'done' and t.get('answer') and now - t['started'] < within]
+    for task in reversed(done):
+        earlier = topic_words(task['request']) | topic_words(task['answer'][:200])
+        if topics and (topics & earlier):
+            return task
+    return done[-1] if (done and not topics) else None
+
+
+def recent_done_summary(within=360.):
+    """Short ledger of lookups that already finished recently, so BITCH remembers what it already checked."""
+    now = time.time()
+    with lock:
+        done = [dict(t) for t in tasks if t['state'] == 'done' and t.get('answer') and now - t['started'] < within]
+    if not done:
+        return ''
+    return '; '.join(f'"{t["request"][:80]}" -> "{t["answer"][:180]}"' for t in done[-3:])
+
 
 def effort(text):
     """'fast' (Instant, a few seconds) for quick facts and lookups; 'think' (Medium) when it takes real reasoning."""
@@ -56,9 +143,39 @@ LOST = 25               # seconds without hearing from the Pi before reporting c
 SPOKEN = 420            # answers longer than this get condensed before BITCH speaks them
 MARKUP = re.compile(r'\[([^\]]+)\]\([^)]+\)|https?://\S+|[*_#`>|]+|^\s*[-•\d.]+\s+', re.M)
 GPT_SELF = re.compile(r'\b(?:as chat[ -]?gpt[, ]*|chat[ -]?gpt (?:here|says|found)[: ,]*|in chat[ -]?gpt\b)', re.I)
+REALTIME_OPENER = re.compile(
+    r"^(?:(?:sure|of course|certainly|absolutely|definitely|happy to help|no problem)[,!.\s]+)+"
+    r"(?:(?:here(?:'s|’s| is)|here are)\s+)?", re.I)
+PROMISE_ACTION = re.compile(
+    r"\b(?:i(?:'ll|’ll| will)|let me)\s+(?:go ahead and\s+)?"
+    r"(?:check|look up|look into|find|get|pull up|fetch|search(?:\s+for)?)\b", re.I)
+OFFER_ONLY = re.compile(r"\blet me know if\b|\bwant me to\b|\bready for you to confirm\b", re.I)
+FACT_SIGNAL = re.compile(
+    r"\b\d+(?:\s*(?:°|degrees?|%|am|pm|mph|km/h)\b|:\d{2})|"
+    r"\b(?:free|nothing scheduled|no events|sunny|cloudy|rain|snow|clear|overcast|high of|low of)\b", re.I)
 
 lock = threading.Lock()
 tasks = []              # recent hub requests, newest last, shown in Settings
+
+
+def is_promise_only(answer):
+    """True when ChatGPT only promised to check/look up instead of actually answering."""
+    plain = ' '.join((answer or '').split())
+    if not plain or len(plain) > 260 or OFFER_ONLY.search(plain) or FACT_SIGNAL.search(plain):
+        return False
+    return bool(PROMISE_ACTION.search(plain))
+
+
+def strip_realtime_opener(text):
+    """Drop 'Sure, here's...' style openers that sound robotic after a several-second wait."""
+    if not text:
+        return text
+    cleaned = REALTIME_OPENER.sub('', text.strip()).strip()
+    if not cleaned:
+        return text.strip()
+    if cleaned[0].islower() and (len(cleaned) == 1 or not cleaned[1].isupper()):
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
 
 
 # Things BITCH cannot know by itself: live data, their accounts, and searches. These always go to ChatGPT.
@@ -72,7 +189,8 @@ LIVE = re.compile(
 
 
 def needs_live(text):
-    return bool(text and not LOCAL_TALK.search(text) and (EXPLICIT_GPT.search(text) or LIVE.search(text)))
+    return bool(text and not LOCAL_TALK.search(text) and not is_status_check(text)
+                and (EXPLICIT_GPT.search(text) or LIVE.search(text)))
 
 
 def mentions_gpt(text):
@@ -144,6 +262,14 @@ def instructions(request, conversation, *, speaker=None, remembered=None, explic
             'when the request is about their schedule, plans, or messages. '
             'Answer in 1 to 3 short sentences that sound natural read aloud, with no lists, links, or markdown.'
         )
+    lines.append(
+        'This is a single-turn handoff — you cannot send a follow-up message. '
+        'NEVER say "I\'ll check", "Let me look that up", or promise to fetch something later: '
+        'do any needed search or app check RIGHT NOW and include the complete answer in THIS reply. '
+        'If they are correcting a detail from the recent conversation (like their city, date, or name), '
+        'immediately answer their earlier question with the corrected detail in this same reply. '
+        'Start directly with the answer — do not open with filler like "Sure,", "Of course,", or "Here\'s".'
+    )
     if not explicit:
         lines.append('Write the reply directly so their desk robot can speak it as its own answer; do not refer to yourself as ChatGPT.')
     lines.append(
@@ -161,12 +287,18 @@ def start(brain, source, identity, request, conversation=(), *, user_text='', re
         return ('I can’t reach ChatGPT right now. Make sure the Pi is connected.'
                 if explicit else 'I can’t look that up right now — the Pi isn’t connected.')
     asked = set(re.findall(r'\w+', (user_text or request).casefold()))
+    asked_topics = topic_words(user_text or request)
     with lock:
         for task in tasks:
+            if task['state'] not in ('working', 'background', 'queued') or time.time() - task['started'] >= WAIT:
+                continue
             earlier = set(re.findall(r'\w+', task['request'].casefold()))
-            if (task['state'] in ('working', 'background') and time.time() - task['started'] < 90 and asked
-                    and len(asked & earlier) >= .6 * min(len(asked), len(earlier))):
-                return 'I’m already on that one.'   # the same question again (or BITCH's own echo): don't ask twice
+            earlier_topics = topic_words(task['request'])
+            word_match = bool(asked and earlier and len(asked & earlier) >= .6 * min(len(asked), len(earlier)))
+            topic_match = bool(asked_topics and earlier_topics
+                               and len(asked_topics & earlier_topics) >= max(1, round(.5 * min(len(asked_topics), len(earlier_topics)))))
+            if word_match or topic_match:
+                return 'I’m still looking into that one — I’ll let you know as soon as it comes back.'
     prompt = instructions(request, list(conversation), speaker=identity or getattr(brain, 'speaker', None),
                           remembered=remembered, explicit=explicit)
     request_id = uuid.uuid4().hex
@@ -180,11 +312,14 @@ def start(brain, source, identity, request, conversation=(), *, user_text='', re
     task = {
         'id': request_id,
         'request': display_request,
+        'prompt': prompt[:2400],
+        'identity': identity,
         'state': 'working',
         'started': time.time(),
         'explicit': explicit,
         'turn_mark': getattr(brain, 'turn_count', 0),
         'answer': '',
+        'retried': False,
     }
     with lock:
         tasks.append(task)
@@ -214,15 +349,46 @@ def watch(brain, source, task):
 
         if state == 'returned' and status.get('answer'):
             answer = status['answer'].strip()
+            # If ChatGPT only promised to check ("Oh, La Crescenta! I'll check the forecast instead.")
+            # without actually fetching the answer, immediately retry once with that recognized context.
+            if is_promise_only(answer) and not task.get('retried') and robot:
+                task['retried'] = True
+                retry_id = uuid.uuid4().hex
+                retry_prompt = (
+                    f'In your previous reply you only said "{answer}" without giving the actual answer. '
+                    'This is a single-turn handoff — perform that check right now using web search or connected apps '
+                    'and reply directly with the complete answer in 1 to 3 short spoken sentences. '
+                    'Do not promise to check later.\n\n'
+                    f'Original request:\n{task.get("prompt") or task["request"]}'
+                )[:2400]
+                if robot.macro(retry_id, 'agent', retry_prompt, effort(task['request'])):
+                    print('  Lookup: ChatGPT promised to check without answering; retrying automatically', flush=True)
+                    task['id'] = retry_id
+                    if task.get('identity'):
+                        memory.kv_set('agent:' + task['identity'], retry_id)
+                    brain.last_agent_request = (source, retry_id)
+                    last_heard = now
+                    continue
+            elapsed = now - started
             moved_on = getattr(brain, 'turn_count', 0) > task.get('turn_mark', 0)
-            delayed = backgrounded or moved_on or (now - started >= BACKGROUND_AFTER)
+            delayed = backgrounded or moved_on or (elapsed >= BACKGROUND_AFTER)
             task.update(state='done', answer=answer)
             pi = status.get('timing')
-            print(f'  Lookup: answer back {now - started:.1f} s after asking' + (f' (Pi: {pi})' if pi else ''), flush=True)
-            out_loud = spoken(answer, request=task['request'], explicit=explicit, contextualize=delayed)
+            print(f'  Lookup: answer back {elapsed:.1f} s after asking' + (f' (Pi: {pi})' if pi else ''), flush=True)
+            out_loud = spoken(answer, request=task['request'], explicit=explicit,
+                              contextualize=delayed, moved_on=moved_on, waited=elapsed)
             history_line = f'ChatGPT said: {answer[:600]}' if explicit else strip_gpt_mentions(answer[:600], allow_gpt=False)
             extra = {'polite': True} if moved_on else {}
-            brain.announce(source, out_loud, heard=history_line, chime=True, **extra)
+            update = {
+                'id': task['id'],
+                'request': task['request'],
+                'answer': history_line,
+                'explicit': explicit,
+                'turn_mark': task.get('turn_mark', 0),
+                'moved_on': moved_on,
+                'waited': elapsed,
+            }
+            brain.announce(source, out_loud, heard=history_line, chime=True, update=update, **extra)
             return
 
         if state == 'canceled':
@@ -281,23 +447,48 @@ def pending():
         return sum(task['state'] in ('working', 'background') for task in tasks)
 
 
-def spoken(answer, *, request='', explicit=False, contextualize=False):
+def active_summary():
+    """Compact summary of lookups currently in flight, so the brain knows not to duplicate them."""
+    now = time.time()
+    with lock:
+        active = [t for t in tasks if t['state'] in ('working', 'background', 'queued') and now - t['started'] < WAIT]
+    if not active:
+        return ''
+    return '; '.join(f'"{t["request"][:100]}" ({t["state"]}, started {max(1, round(now - t["started"]))}s ago)' for t in active)
+
+
+def spoken(answer, *, request='', explicit=False, contextualize=False, moved_on=False, waited=0.0):
     """Turn a hub answer into clean, natural spoken prose."""
     plain = ' '.join(MARKUP.sub(lambda match: match[1] or '', answer).split())
     plain = strip_gpt_mentions(plain, allow_gpt=explicit)
     is_briefing = bool(BRIEFING.search(request))
     limit = 540 if is_briefing else SPOKEN
+    after_wait = contextualize or moved_on or waited >= 5.0
 
-    if len(plain) <= limit and not contextualize:
+    if len(plain) <= limit and not after_wait:
         return plain
 
+    if after_wait:
+        plain = strip_realtime_opener(plain)
+
     try:
-        context_rule = (
-            f'This is a delayed callback for their earlier request ("{request[:140]}"). '
-            'Open with a brief natural 2–5 word reminder of the topic so it makes sense out of the blue, '
-            'then give the answer. '
-            if contextualize and request else ''
-        )
+        if moved_on and request:
+            context_rule = (
+                f'You are chiming back in during an ongoing conversation with the answer to their earlier request ("{request[:140]}"). '
+                'Open with a brief, natural conversational transition so it fits smoothly — for example '
+                '"Oh, I got that info you wanted —", "Hey, that weather check just came back —", '
+                'or "By the way, I got your calendar —". '
+                'NEVER open with "Sure,", "Of course,", "Certainly,", "Here\'s", or a stiff label like "Your calendar." '
+            )
+        elif after_wait and request:
+            context_rule = (
+                f'They waited several seconds while you checked their request ("{request[:140]}"). '
+                'Deliver the answer naturally as someone returning with the info (for example "Alright, got it —", '
+                '"Okay, I checked —", or jump straight into the facts). '
+                'NEVER open with realtime filler like "Sure,", "Of course,", "Certainly,", or "Here\'s". '
+            )
+        else:
+            context_rule = ''
         gpt_rule = '' if explicit else 'Never mention ChatGPT or GPT. '
         sentence_limit = 'five' if is_briefing else 'three'
         short = llm.chat([
@@ -310,17 +501,29 @@ def spoken(answer, *, request='', explicit=False, contextualize=False):
             {'role': 'user', 'content': plain[:4500]},
         ], max_tokens=180 if is_briefing else 140, temperature=.2, background=True)
         short = strip_gpt_mentions(streaming.clean(short), allow_gpt=explicit)
+        if after_wait:
+            short = strip_realtime_opener(short)
         if 12 <= len(short) <= 560:
             return short
     except (OSError, ValueError, KeyError):
         pass
 
     trimmed = plain if len(plain) <= limit else plain[:limit].rsplit('. ', 1)[0].rstrip('.') + '.'
-    if contextualize and request and len(trimmed) < 500:
-        return 'Following up on earlier: ' + trimmed[0].lower() + trimmed[1:] if trimmed[:2].isalpha() and not trimmed[:2].isupper() else 'Following up: ' + trimmed
+    if after_wait and request and len(trimmed) < 500:
+        lead = 'Oh, I got that info you wanted — ' if moved_on else 'Alright, got that for you — '
+        body = trimmed[0].lower() + trimmed[1:] if trimmed[:2].isalpha() and not trimmed[:2].isupper() else trimmed
+        return lead + body
     return trimmed
 
 
 def recent():
     with lock:
-        return [{key: task[key] for key in ('id', 'request', 'state', 'answer', 'started')} for task in tasks[-5:]]
+        # Always include active lookups plus recent finished ones (up to 6 total).
+        active = [t for t in tasks if t['state'] in ('working', 'background', 'queued')]
+        active_ids = {t['id'] for t in active}
+        others = [t for t in tasks if t['id'] not in active_ids]
+        keep = (others + active)[-6:]
+        for t in active:
+            if t not in keep:
+                keep.append(t)
+        return [{key: task[key] for key in ('id', 'request', 'state', 'answer', 'started')} for task in keep]

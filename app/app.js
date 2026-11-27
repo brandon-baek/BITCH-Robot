@@ -59,8 +59,8 @@ function mood(state) {
   const settings = state.settings;
   const phase = state.turn_phase;
   const micDevice = state.devices.find(device => device.id === settings.mic_source);
-  const bgCount = state.tasks.filter(task => task.state === 'background').length;
-  const pendingNote = bgCount ? ' · ' + (bgCount === 1 ? '1 lookup pending' : bgCount + ' lookups pending') : '';
+  const pendingCount = state.tasks.filter(task => ['working', 'background', 'queued'].includes(task.state)).length;
+  const pendingNote = pendingCount ? ' · ' + (pendingCount === 1 ? '1 lookup active' : pendingCount + ' lookups active') : '';
   if (state.life?.alarm_ringing) return ['speaking', 'Wake up!'];
   if (state.power?.state === 'waking') return ['idle', 'Waking up' + (state.power.eta ? ` · about ${state.power.eta} s` : '')];
   if (state.power?.state === 'sleeping') return ['asleep', 'Deep sleep · say “Hey BITCH”' + pendingNote];
@@ -104,9 +104,11 @@ function ensureExchangeObserver(exchange) {
 function renderNow(state, feeling) {
   const messages = state.messages;
   const newest = messages.at(-1);
-  const active = ['listening', 'hearing', 'thinking', 'speaking'].includes(feeling);
-  const working = state.tasks.some(task => task.state === 'working');
-  const showing = Boolean(newest) && (active || working || state.now - newest.at < QUIET_AFTER);
+  const recent = Boolean(newest) && (state.now - newest.at < QUIET_AFTER);
+  const busy = ['thinking', 'speaking'].includes(feeling);
+  const listeningFresh = ['listening', 'hearing'].includes(feeling) && Boolean(newest) && (state.now - newest.at < QUIET_AFTER * 2);
+  const working = state.tasks.some(task => ['working', 'background', 'queued'].includes(task.state));
+  const showing = Boolean(newest) && (recent || busy || listeningFresh || working);
   const exchange = $('exchange');
   const wasShowing = $('captions').dataset.showing === 'true';
 
@@ -239,6 +241,40 @@ function renderHistory(messages) {
   $('history').replaceChildren(...nodes);
 }
 
+function renderLookups(state) {
+  const container = $('lookups');
+  const active = (state.tasks || []).filter(task => ['working', 'background', 'queued'].includes(task.state));
+  container.hidden = !active.length;
+  if (!active.length) {
+    container.dataset.signature = '';
+    return;
+  }
+  const labels = active.map(task => {
+    const secs = Math.max(1, Math.round(state.now - (task.started || state.now)));
+    const req = (task.request || '').split('\n')[0].trim();
+    const stateLabel = task.state === 'queued' ? 'Queued' : 'Searching';
+    return {id: task.id, req, stateLabel, secs};
+  });
+  const signature = JSON.stringify(labels);
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+  container.replaceChildren(...labels.map(item => {
+    const pill = document.createElement('div');
+    pill.className = 'lookup-pill';
+    const dot = document.createElement('span');
+    dot.className = 'lookup-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.className = 'lookup-text';
+    text.textContent = item.req;
+    const meta = document.createElement('span');
+    meta.className = 'lookup-meta';
+    meta.textContent = `${item.stateLabel} · ${item.secs}s`;
+    pill.append(dot, text, meta);
+    return pill;
+  }));
+}
+
 function renderTasks(tasks) {
   const signature = JSON.stringify(tasks);
   if ($('tasks').dataset.signature === signature) return;
@@ -302,6 +338,7 @@ async function refresh() {
   setIcon($('micToggle'), settings.mic_muted ? 'i-mic-off' : 'i-mic');
   renderNow(state, feeling);
   renderCompany(state, feeling);
+  renderLookups(state);
   renderFaces(state, feeling).catch(() => {});
   if ($('person').open) updatePerson(state.people);
   if (previewSource !== settings.camera_source) {

@@ -575,7 +575,7 @@ class Life:
                     self.pending_highlights.append(msg)
             elif brain:
                 self.set_pose('notice', 1.8)
-                brain.announce(source, msg, chime=True)
+                brain.announce(source, msg, chime=True, polite=True)
 
     def _tick_notifications(self, now_mono, *, force=False):
         """Watch incoming Mac/phone notifications and react excitedly when one matches your memories (e.g. Amazon package!)."""

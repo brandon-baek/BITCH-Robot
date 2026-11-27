@@ -38,8 +38,20 @@ SHOW = re.compile(
     r"^(?:(?:can|could|would|will) you\s+|(?:please|okay|ok)\s+|(?:let me|let's)\s+see you\s+)*"
     r"(?P<act>sing\b|dance\b|(?:do|play|perform|show me)\s+(?:(?:me|us|a|the|your|some|little)\s+)*"
     r"(?:dance|disco|opera|aria|song|dance party)\b)(?P<rest>.*)$", re.I)
-STOP_SHOW = re.compile(r"^\s*(?:please )?(?:stop(?: (?:the |that )?(?:show|dance|routine|singing|music|performance))?"
-                       r"|that's enough|cut the music)[.!? ]*$", re.I)
+STOP_SHOW = re.compile(
+    r"^\s*(?:(?:hey|okay|ok|alright|please|yo)\b[\s,!.-]*)*"
+    r"(?:stop(?:\s+(?:it|that|this|now|please|performing|dancing|singing|playing|the\s+music|"
+    r"(?:the |that |your )?(?:show|dance|disco|opera|aria|routine|singing|music|performance)))?"
+    r"|cancel(?:\s+(?:the |that )?(?:show|dance|performance|routine))?"
+    r"|that(?:'s|’s) enough|enough|cut the music|quiet|shut up)"
+    r"(?:\s+please)?[.!?\s]*$", re.I)
+STOP_SHOW_TAIL = re.compile(
+    r"\b(?:stop\s+(?:performing|dancing|singing|playing|the\s+show|the\s+music|that\s+show|the\s+dance|the\s+performance|it)|"
+    r"cut\s+the\s+music|that(?:'s|’s)\s+enough|(?:hey\s+)?bitch[,!.\s]+stop)\b", re.I)
+PERFORM_INFO = re.compile(
+    r"\b(?:what|which|tell me(?: about)?|list|name)\b.{0,30}\b(?:performances?|shows?|dances?|routines?|songs?|tricks?)\b"
+    r"|\bwhat can you (?:perform|dance|sing)\b"
+    r"|\bdo you (?:know|have) any (?:other )?(?:performances?|shows?|dances?|routines?)\b", re.I)
 SHOW_INVITATION = re.compile(
     r"^(?:(?:can|could|would|will) you\s+|please\s+)*(?:show off|entertain (?:me|us)|"
     r"give (?:me|us) a (?:show|performance)|do something (?:theatrical|dramatic|musical))\b[^?]*(?:\?|$)", re.I)
@@ -84,6 +96,15 @@ def wake_request(text):
     if match := MID_WAKE.search(text):
         return (text[:match.start()] + ' ' + text[match.end():]).strip()
     return None
+
+
+def is_stop_show(text):
+    """True when the speaker is telling BITCH to stop an active performance."""
+    if not text:
+        return False
+    stripped = wake_request(text)
+    candidate = stripped if stripped is not None else text
+    return bool(STOP_SHOW.fullmatch(text) or STOP_SHOW.fullmatch(candidate) or STOP_SHOW_TAIL.search(text))
 
 
 def repeats_playback(text, spoken):
@@ -132,16 +153,37 @@ def talks_to_someone_else(text, names=()):
                              + r"\s*[.!?]*$", text, re.I))
 
 
+ECHO_FILLER = {'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'been', 'were', 'they', 'them', 'your'}
+
+
 def sounds_like_own_words(text, lines):
     """A transcript that is just BITCH's own recent words coming back through the mic ("Let check." after it said
-    "Let me check."). Loose on purpose: the recognizer drops and changes words in an echo."""
+    "Let me check.", or "Tomorrow and the crescent is warm." after "tomorrow in La Crescenta's warm"). Loose on
+    purpose: the recognizer drops, splits, and phonetically mangles words in an echo."""
     words = [re.sub(r"['’]", '', w) for w in re.findall(r"[\w'’]+", text.casefold())]
     if not words:
         return False
+    norm_text = re.sub(r'[^a-z0-9 ]+', '', text.casefold()).strip()
+    content = [w for w in words if len(w) >= 4 and w not in ECHO_FILLER]
+    fuzzy = lambda a, b: a == b or (len(a) >= 4 and len(b) >= 4 and SequenceMatcher(None, a, b).ratio() >= .78)
     for line in lines:
         said = [re.sub(r"['’]", '', w) for w in re.findall(r"[\w'’]+", line.casefold())]
-        if said and len(words) <= len(said) + 2 and sum(w in set(said) for w in words) >= .75 * len(words):
+        if not said:
+            continue
+        said_set = set(said)
+        if len(words) <= len(said) + 2 and sum(w in said_set for w in words) >= .75 * len(words):
             return True
+        # Catch phonetically mangled echoes where all/nearly-all content words match a nearby span of BITCH's line.
+        if (len(content) >= 2 and len(words) <= len(said) + 2
+                and sum(any(fuzzy(w, s) for s in said_set) for w in content) >= .8 * len(content)):
+            norm_line = re.sub(r'[^a-z0-9 ]+', '', line.casefold()).strip()
+            if len(norm_text) >= 8 and norm_line:
+                win = len(norm_text) + 6
+                step = max(2, len(norm_text) // 6)
+                best = max((SequenceMatcher(None, norm_text, norm_line[i:i + win], autojunk=False).ratio()
+                            for i in range(0, max(1, len(norm_line) - len(norm_text) // 2), step)), default=0.)
+                if best >= .62:
+                    return True
     return repeats_playback(text, ' '.join(lines))
 
 
@@ -251,7 +293,7 @@ For remember, output an empty string unless the latest user utterance clearly st
 SPOKEN_DIRECTION = """Return JSON in order: v, say, end.
 v is n neutral, w warm, u upbeat, g gentle, e emphatic, p playful, s sad, a mock-annoyed, l an actual laugh, or r surprised.
 say is what you say out loud. Begin with a direct answer or a concrete reaction to the latest utterance, and keep that first sentence short. Answer every part and honor requested examples, steps, or length. Don't invent details about the room, the person, previous turns, or actions you took. Ask one short question when a detail matters. Keep jokes on topic. If someone shares a hard experience, acknowledge what they actually said.
-Answer their mood with your voice code: meet excitement with u or p, sadness with g, sarcasm with a dry p or a, and real anger with a steady n or w. If the reply changes mood, put a new voice code in square brackets just before the next sentence, for example "Oh, please. [p] Fine, you win." Keep one voice when the mood stays the same.
+Answer their mood with your voice code: meet excitement with u or p, sadness with g, sarcasm with a dry p or a, and real anger with a steady n or w. If the reply changes mood mid-way, put the new voice code in square brackets right before that sentence (like [p] or [w]). Keep one voice when the mood stays the same.
 end is false unless the speaker is clearly wrapping up and has no further question or request. For a closing turn, use warm delivery and just acknowledge or say goodbye."""
 REMEMBERING = ('You remember people between conversations: what you know about them and your earlier talks are listed in '
                'the turn notes when you know who you are talking to. If something isn’t listed, say you don’t remember it. '
@@ -286,7 +328,7 @@ END = re.compile(r'^(?:stop listening|end (?:the )?(?:chat|conversation)|that.s 
 PERFORM = re.compile(r"\b(?:danc\w*|moves?|groove|boogie|party|sing\w*|song|music|tune|perform\w*|show|"
                      r"entertain\w*|disco|opera|aria|bored|celebrat\w*|jam)\b", re.I)
 # Asking ChatGPT to do something explicitly, or asking about a pending background lookup.
-CHATGPT = re.compile(r"\b(?:ask|get|have|tell|let|use|send|check with|run (?:it|this|that) by)\b[^.?!]{0,30}\bchat ?gpt\b"
+CHATGPT = re.compile(r"\b(?:ask|get|have|use|send|check with|run (?:it|this|that) by)\b[^.?!]{0,30}\bchat ?gpt\b"
                      r"|\bwhat (?:does|would|did|will) chat ?gpt (?:say|think)|\bchat ?gpt,? (?:please|can you|could you)\b", re.I)
 PENDING_UPDATE = re.compile(
     r"^(?:(?:any|got an?) (?:news|update|answer|word)(?: on that| yet)?|did (?:that|it) come back(?: yet)?|"
@@ -340,11 +382,16 @@ class Brain:
         self.heard_end = None
         self.pending_text = None   # the request being answered, so a continuation can join it
         self.continuation = None
+        self.replacing_user_message = False
         self.acknowledged = None
         self.active_source = None
         self.interruption = False
         self.spoken_reply = ''
         self.last_interaction = time.monotonic()
+        self.last_reply_end = 0.0
+        self.last_reply_ended_with_question = False
+        self.last_reply_was_lookup_ack = False
+        self.ready_updates = []   # arrived background results waiting to be woven into chat or announced
         self.lock = threading.Lock()
         self.busy = threading.Event()
         self.hush = threading.Event()
@@ -478,7 +525,8 @@ class Brain:
     def addressed(self, text, source, heard_at):
         with self.lock:
             robot = hub.get('robot')
-            show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
+            performing = hub.status == 'Performing' or bool(robot and getattr(robot, 'show_active', False))
+            show_stop = performing and is_stop_show(text)
             alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
             return bool(wake_request(text) is not None or show_stop or alarm_stop or
                         power.sleeping and WAKE_UP.match(text.strip()) or
@@ -487,13 +535,19 @@ class Brain:
     def submit(self, text, source, heard_at=None, *, name=None, face=None, face_by='face', speech_end=None, audio=None):
         """Admit one addressed utterance. Setup and unrelated speech never reach the model."""
         with self.lock:
+            robot = hub.get('robot')
+            performing = hub.status == 'Performing' or bool(robot and getattr(robot, 'show_active', False))
+            show_stop = performing and is_stop_show(text)
             if self.busy.is_set():
+                if show_stop:
+                    self.hush.set()
+                    if robot:
+                        threading.Thread(target=robot.hush, daemon=True).start()
+                    return True
                 return False
             now = time.monotonic() if heard_at is None else heard_at
             wake = wake_request(text)
             followup = self.followup and self.followup[0] == source and now < self.followup[1]
-            robot = hub.get('robot')
-            show_stop = robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text)
             alarm_stop = life.alarm_ringing and life.is_alarm_reply(text)
             woken = power.sleeping and bool(WAKE_UP.match(text.strip()))
             if woken:
@@ -502,9 +556,12 @@ class Brain:
                 return False
             continuation = self.continuation
             self.continuation = None
+            self.replacing_user_message = False
             if continuation and continuation[0] == source and now < continuation[2]:
-                text = continuation[1] + ' ' + (wake if wake is not None else text.strip())
+                addition = wake if wake is not None else text.strip()
+                text = (continuation[1] + ' ' + addition).strip() if addition else continuation[1]
                 wake = None
+                self.replacing_user_message = True
             elif wake == '' and not show_stop:
                 # Only the name, after a pause: open the floor without making the mic deaf.
                 if name:
@@ -572,6 +629,7 @@ class Brain:
 
     def hold_for_more(self, source):
         # The turn ended too soon: drop the half-made reply and answer the whole thing.
+        # Keep the user's message visible on screen until the combined message replaces it in-place.
         with self.lock:
             if not self.can_continue(source):
                 return False
@@ -580,9 +638,50 @@ class Brain:
             self.followup = (source, time.monotonic() + FOLLOWUP_SECONDS)
             self.hush.set()
             hub.status = 'Listening for your turn'
-            if hub.messages and hub.messages[-1]['role'] == 'user':
-                hub.messages.pop()
         return True
+
+    def resume_continuation(self, source):
+        """If Thinking was paused for a continuation that turned out empty, restore the original request."""
+        with self.lock:
+            cont = self.continuation
+            if not cont or cont[0] != source or self.busy.is_set():
+                return False
+            self.continuation = None
+            if time.monotonic() >= cont[2]:
+                return False
+            original = cont[1]
+            self.replacing_user_message = True
+            self.followup = None
+            self.active_source = source
+            self.interruption = False
+            self.spoken_reply = ''
+            self.last_interaction = time.monotonic()
+            self.hush.clear()
+            self.busy.set()
+            self.pending_text = original
+            self.requests.put_nowait((original, source))
+        return True
+
+    def stop_performance(self, source):
+        """Immediately stop an active show or skill performance on the Pi and open the floor."""
+        robot = hub.get('robot')
+        stopped = False
+        if robot and getattr(robot, 'show_active', False):
+            robot.show_active = False
+            threading.Thread(target=robot.hush, daemon=True).start()
+            stopped = True
+        with self.lock:
+            if hub.status == 'Performing':
+                self.hush.set()
+                stopped = True
+            if stopped:
+                self.followup = (source, time.monotonic() + FOLLOWUP_SECONDS)
+                self.last_interaction = time.monotonic()
+                if not self.busy.is_set():
+                    hub.status = 'Listening for your turn'
+        if stopped:
+            threading.Thread(target=voice.earcon, args=('stop',), daemon=True).start()
+        return stopped
 
     def acknowledge(self, source):
         """Just the name was said: chirp now and keep listening, without taking a turn."""
@@ -607,6 +706,9 @@ class Brain:
                     hub.chat('robot', text)
                     self.spoken_reply = text   # so its own words aren't heard as yours
                 voice.play(*wav, threading.Event(), text=bool(text), delivery='warm', interim=True)
+                self.last_reply_end = time.monotonic()
+                self.last_reply_ended_with_question = bool(text and text.rstrip().endswith('?'))
+                self.last_reply_was_lookup_ack = False
                 if hub.status == 'Speaking' and not self.busy.is_set():
                     hub.status = 'Listening for your turn'
 
@@ -617,7 +719,7 @@ class Brain:
         if not self.can_interrupt(source):
             return False
         marker = INTERRUPT.match(text)
-        if hub.status == 'Performing' and not marker:
+        if hub.status == 'Performing' and not (marker or is_stop_show(text)):
             return False
         if sustained and hub.status == 'Speaking':
             return self.yield_turn(source)
@@ -733,7 +835,15 @@ class Brain:
                         continue
                     self.just_woke = True
                 if text:
-                    hub.chat('user', text)
+                    if self.replacing_user_message:
+                        self.replacing_user_message = False
+                        with hub.lock:
+                            if hub.messages and hub.messages[-1]['role'] == 'user':
+                                hub.messages[-1] = {'role': 'user', 'text': text, 'at': time.time()}
+                            else:
+                                hub.chat('user', text)
+                    else:
+                        hub.chat('user', text)
                 ending = bool(text and END.fullmatch(text)) or close_proactive
                 self.close_turn = False
                 self.pending_show = None
@@ -784,6 +894,13 @@ class Brain:
                         voice.laugh(self.hush)
                     expression = {'expression': self.performance} if self.performance != 'none' else {}
                     voice.say(reply, self.hush, ready_cue=ready_cue, delivery=delivery, **expression)
+                if reply and not self.hush.is_set():
+                    now_done = time.monotonic()
+                    self.last_reply_end = now_done
+                    self.last_interaction = now_done
+                    self.last_reply_ended_with_question = reply.rstrip().endswith('?')
+                    if proactive:
+                        self.last_reply_was_lookup_ack = False
                 if self.pending_show and not self.hush.is_set():
                     self.start_performance()
                     ending = True
@@ -796,7 +913,10 @@ class Brain:
                     with self.lock:
                         if not self.hush.is_set():
                             self.followup = (source, time.monotonic() + FOLLOWUP_SECONDS)
-                    self.prefill_next(source)
+                    # Only prefill when the turn didn't already run on SLOT_TALK (e.g. proactive announcements);
+                    # normal chat turns already leave SLOT_TALK hot with the latest context.
+                    if proactive:
+                        self.prefill_next(source)
             except Exception as error:
                 hub.note('reply', f'Reply failed: {error}')
             finally:
@@ -892,8 +1012,10 @@ class Brain:
 
     def performance_reply(self, text):
         robot = hub.get('robot')
-        if robot and getattr(robot, 'show_active', False) and STOP_SHOW.fullmatch(text):
+        if robot and getattr(robot, 'show_active', False) and is_stop_show(text):
             return 'Curtain.' if robot.hush() else 'I lost the Pi connection.'
+        if PERFORM_INFO.search(text):
+            return None
         teach = skills.TEACH.fullmatch(text)
         make = teach or skills.CREATE.search(text)
         run = skills.RUN.fullmatch(text)
@@ -1012,6 +1134,8 @@ class Brain:
                     return 'I lost that move halfway through.'
             else:
                 robot.hush()
+                if self.hush.is_set():
+                    return None
                 return 'I lost the Pi connection during that move.'
         return None
 
@@ -1125,31 +1249,85 @@ class Brain:
         explicit = helper.mentions_gpt(user_text or prompt)
         remembered = memory.context(identity, prompt) if identity else None
         fallback = 'Let me ask ChatGPT.' if explicit else 'Let me check on that.'
-        return helper.start(self, source, identity, prompt, history,
-                            user_text=user_text or prompt, remembered=remembered) or fallback
+        outcome = helper.start(self, source, identity, prompt, history,
+                               user_text=user_text or prompt, remembered=remembered)
+        if outcome is None:
+            self.last_reply_was_lookup_ack = True
+        return outcome or fallback
 
-    def announce(self, source, text, heard=None, chime=False, *, polite=False, close_turn=False):
-        """Say something BITCH learned in the background once the floor is free."""
+    def announce(self, source, text, heard=None, chime=False, *, polite=False, close_turn=False, update=None):
+        """Say something BITCH learned in the background once the floor is free.
+
+        When `update` is attached and the user is mid-conversation, we wait for a real pause after BITCH
+        finishes speaking — giving the user's next turn a chance to weave the update in naturally instead
+        of interrupting mid-discussion."""
+        entry = None
+        if update is not None:
+            entry = {**update, 'source': source, 'delivered': False, 'in_flight': False, 'created': time.monotonic()}
+            with self.lock:
+                self.ready_updates.append(entry)
+                del self.ready_updates[:-6]
+
         def wait_for_turn():
+            speak_text = text
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
-                talking = hub.hearing and hub.hearing.capture and time.monotonic() - hub.hearing.capture[3] < 1.2
-                decoding = hub.hearing and hub.hearing.decoding and time.monotonic() - hub.hearing.decoding[3] < 8.
+                if entry is not None:
+                    with self.lock:
+                        if entry['delivered']:
+                            return
+                        if entry['in_flight']:
+                            time.sleep(.25)
+                            continue
+                now = time.monotonic()
+                talking = hub.hearing and hub.hearing.capture and now - hub.hearing.capture[3] < 1.2
+                decoding = hub.hearing and hub.hearing.decoding and now - hub.hearing.decoding[3] < 8.
+                recent_voice = hub.hearing and now - hub.hearing.activity_at < 1.4
+                need_reformat = False
                 with self.lock:
-                    recently_spoke = polite and self.followup and (time.monotonic() - self.last_interaction < 3.5)
-                    if not self.busy.is_set() and not talking and not decoding and not recently_spoke:
-                        if heard is not False and not close_turn:
-                            history = self.history.setdefault((source, None), deque(maxlen=HISTORY_MESSAGES))
-                            history.append({'role': 'assistant', 'content': heard or text})
-                            self.history_at[(source, None)] = time.monotonic()
-                        self.active_source = source
-                        self.interruption = False
-                        self.last_interaction = time.monotonic()
-                        self.hush.clear()
-                        self.busy.set()
-                        self.requests.put_nowait((None, (source, text, chime, close_turn)))
-                        return
-                time.sleep(.4)
+                    if entry is not None and (entry['delivered'] or entry['in_flight']):
+                        continue
+                    in_chat = bool(self.followup and self.followup[0] == source and now < self.followup[1])
+                    moved_now = entry is not None and self.turn_count > entry.get('turn_mark', 0)
+                    be_polite = polite or moved_now
+                    if be_polite and in_chat and not self.last_reply_was_lookup_ack:
+                        gap = 6.5 if self.last_reply_ended_with_question else 4.5
+                        recently_spoke = (now - self.last_reply_end < gap)
+                    else:
+                        recently_spoke = (now - self.last_reply_end < 1.5)
+                    if not self.busy.is_set() and not talking and not decoding and not recent_voice and not recently_spoke:
+                        if entry is not None and moved_now and not entry.get('moved_on'):
+                            entry['in_flight'] = True
+                            need_reformat = True
+                        else:
+                            if entry is not None:
+                                entry['delivered'] = True
+                                if entry in self.ready_updates:
+                                    self.ready_updates.remove(entry)
+                            if heard is not False and not close_turn:
+                                history = self.history.setdefault((source, None), deque(maxlen=HISTORY_MESSAGES))
+                                history.append({'role': 'assistant', 'content': heard or speak_text})
+                                self.history_at[(source, None)] = now
+                            self.active_source = source
+                            self.interruption = False
+                            self.last_interaction = now
+                            self.hush.clear()
+                            self.busy.set()
+                            self.requests.put_nowait((None, (source, speak_text, chime, close_turn)))
+                            return
+                if need_reformat:
+                    try:
+                        speak_text = helper.spoken(
+                            entry['answer'], request=entry['request'], explicit=entry['explicit'],
+                            contextualize=True, moved_on=True,
+                            waited=time.monotonic() - entry['created'] + entry.get('waited', 0.0),
+                        )
+                    finally:
+                        with self.lock:
+                            entry['moved_on'] = True
+                            entry['in_flight'] = False
+                    continue
+                time.sleep(.35)
 
         threading.Thread(target=wait_for_turn, daemon=True).start()
 
@@ -1160,28 +1338,51 @@ class Brain:
             hub.sight.solo_recognized() if hub.sight else None, 'face')
         return self.submit('BITCH, ' + text.strip(), ears.id if ears else 'app', face=face, face_by=face_by)
 
-    def available_actions(self, text, robot, camera_ready, *, local_only=False):
+    def matching_ready_update(self, source, text):
+        """Return an undelivered completed lookup in ready_updates that `text` is asking about, or None."""
+        if not text:
+            return None
+        topics = helper.topic_words(text)
+        checking = helper.is_status_check(text)
+        with self.lock:
+            candidates = [item for item in self.ready_updates
+                          if item['source'] == source and not item['delivered'] and not item['in_flight']]
+        for item in reversed(candidates):
+            earlier = helper.topic_words(item['request'])
+            if topics and (topics & earlier):
+                return item
+        return candidates[-1] if (candidates and checking and not topics) else None
+
+    def available_actions(self, text, robot, camera_ready, *, local_only=False, suppress_lookup=False):
         """What the model may choose to do this turn, given what is connected right now."""
         actions, extra, lines = ['none'], {}, []
         explicit_gpt = helper.mentions_gpt(text)
+        active_lookup = suppress_lookup or bool(helper.match_active(text)) or bool(helper.match_recent_done(text))
+        asking_performances = bool(PERFORM_INFO.search(text))
         if camera_ready:
             actions.append('look')
             lines.append('look: only when the answer depends on what your camera sees right now, like what they '
                          'hold, wear or show you, or how they look. Never for facts, math, chat or feelings.')
-        if robot and not self.performance_problem(robot) and PERFORM.search(text):
+        if asking_performances:
+            saved = skills.names()
+            saved_note = (f' You also have saved custom routines: {", ".join(saved)}.' if saved else '')
+            lines.append('They are asking what performances you can do — just tell them in your own words without '
+                         'starting one. Your built-in shows are a short robot dance, a full disco with music, and '
+                         'an original sung opera aria.' + saved_note + ' You can also invent custom routines if asked.')
+        elif robot and not self.performance_problem(robot) and PERFORM.search(text):
             actions += ['dance', 'disco', 'opera']
-            lines.append('dance, disco or opera: they ask you to dance, party, sing or perform in any words. '
-                         'dance is a short robot dance, disco a full disco, opera an original sung aria. '
-                         'Say one short lead-in; the show starts after you speak.')
-        if robot and not self.performance_problem(robot):
+            lines.append('dance, disco or opera: ONLY when they actually ask you to perform right now (not when they '
+                         'just ask what performances you can do). dance is a short robot dance, disco a full disco, '
+                         'opera an original sung aria. Say one short lead-in; the show starts after you speak.')
+        if not asking_performances and robot and not self.performance_problem(robot):
             routines = [name for name in skills.names() if name in text.casefold()][:12]
             if routines:
                 actions.append('routine')
                 extra['routine'] = {'type': 'string', 'enum': routines}
                 lines.append('routine: they ask for one of your saved routines. Put its name in routine.')
-        offered = [] if getattr(self, 'tool_result', None) else tools.offered(text)
+        offered = [] if (getattr(self, 'tool_result', None) or active_lookup) else tools.offered(text)
         # Home weather already fetched for this request: answer in one pass, no weather tool round trip.
-        self.prefetched = None if getattr(self, 'tool_result', None) else tools.home_weather(text)
+        self.prefetched = None if (getattr(self, 'tool_result', None) or active_lookup) else tools.home_weather(text)
         if self.prefetched:
             offered = [tool for tool in offered if tool.name != 'weather']
         if offered:
@@ -1191,7 +1392,7 @@ class Brain:
                          + '\n- '.join(tool.line for tool in offered)
                          + '\nFill the chosen tool’s fields. Leave other tool fields empty ("", 0 or []). '
                          'For an action tool, say is a short confirmation in your own words.')
-        hub_relevant = not local_only and (
+        hub_relevant = not local_only and not active_lookup and not asking_performances and (
             CHATGPT.search(text) or helper.should_lookup(text) or not helper.LOCAL_TALK.search(text)
         )
         if robot and getattr(robot, 'handoff', False) and hub_relevant and not getattr(self, 'tool_result', None):
@@ -1203,9 +1404,9 @@ class Brain:
                 ' Never mention ChatGPT unless they explicitly brought it up.' if not explicit_gpt else ''
             )
             lines.append(
-                'lookup: your background information hub, for what you cannot know yourself: live or personal '
-                'data (weather, news, scores, prices, store hours, their calendar, email, messages, tasks, '
-                'briefings), web searches, and long detailed explanations or plans they ask for. Answer everything '
+                'lookup: your background information hub — you CAN check their Gmail/email, calendar, weather, '
+                'news, scores, prices, store hours, tasks, briefings, and web searches with it (never say you cannot '
+                'check email, calendar, or look things up when lookup is available). Answer everything '
                 'else yourself with do="none": conversation, feelings, jokes, opinions, advice, quick math, and '
                 'everyday knowledge you are sure of. When do="lookup", put the complete '
                 'self-contained request in task (empty string when do is not lookup), and in say give ONLY a '
@@ -1213,13 +1414,15 @@ class Brain:
                 'answer and do NOT mention checking calendar, email, or specific apps unless asked about them.'
                 + gpt_note
             )
-        elif (helper.OUTSIDE.search(text) and not local_only and not any(tool.data for tool in offered)
+        elif (helper.OUTSIDE.search(text) and not local_only and not active_lookup and not asking_performances
+              and not any(tool.data for tool in offered)
               and not getattr(self, 'tool_result', None) and not self.prefetched):
             lines.append('Your live information lookup is offline right now because the Pi is disconnected. '
                          'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
 
     def reply(self, text, source, *, stream=None, use_camera=False):
+        self.last_reply_was_lookup_ack = False
         local_request = LOCAL_REQUEST.fullmatch(text)
         if local_request:
             text = local_request[1].strip()
@@ -1295,6 +1498,13 @@ class Brain:
             return 'I’ve forgotten it.' if count else 'I couldn’t find a matching note.'
         if AGENT_UPDATE.fullmatch(text) or PENDING_UPDATE.fullmatch(text):
             explicit_check = helper.mentions_gpt(text)
+            active_now = helper.active_tasks()
+            if active_now:
+                latest = active_now[-1]
+                waited = max(1, round(time.time() - latest['started']))
+                if explicit_check:
+                    return f'Still waiting on ChatGPT for "{latest["request"][:80]}" — it’s been about {waited} seconds.'
+                return f'Still checking on that — it’s been about {waited} seconds, I’ll tell you as soon as it’s back.'
             request_id = memory.kv_get('agent:' + identity) if identity else (
                 self.last_agent_request[1] if self.last_agent_request and self.last_agent_request[0] == source else None)
             robot = hub.get('robot')
@@ -1321,7 +1531,12 @@ class Brain:
         if re.fullmatch(r"(?:what(?:'s| is) the time|what time is it)\s*[?.!]*", text, re.I):
             return f'It’s {datetime.now():%I:%M %p}.'.replace(' 0', ' ')
         conversation = (source, None)
-        history = self.history.setdefault(conversation, deque(maxlen=HISTORY_MESSAGES))
+        history = self.history.setdefault(conversation, deque())
+        # Trim history in a block instead of sliding by 2 every turn so the KV cache stays hot across turns.
+        while len(history) > HISTORY_MESSAGES + 12:
+            for _ in range(12):
+                history.popleft()
+        prev_bot_before_turn = next((m['content'] for m in reversed(history) if m['role'] == 'assistant'), '')
         self.history.move_to_end(conversation)
         self.history_at[conversation] = time.monotonic()
         if identity:
@@ -1344,12 +1559,18 @@ class Brain:
         # start of this turn's message.
         context = []
         group = False
+        ready_match = self.matching_ready_update(source, text) if not visual else None
+        recent_done_match = None if ready_match or visual else helper.match_recent_done(text)
+        active_match = None if (ready_match or visual) else helper.match_active(text)
         if visual or can_select_show:
             system = self.persona + '\n\n' + TURN_DIRECTION
         else:
             system = self.spoken_system()
             schema = MEMORY_SCHEMA if natural_memory else SPOKEN_SCHEMA
-            actions, extra, lines = self.available_actions(text, robot, image is not None, local_only=bool(local_request))
+            actions, extra, lines = self.available_actions(
+                text, robot, image is not None, local_only=bool(local_request),
+                suppress_lookup=bool(ready_match or recent_done_match or active_match),
+            )
             unnamed = not getattr(self, 'accepted_wake', True)
             # "Mom, ..." is never for BITCH, camera or not.
             if unnamed and talks_to_someone_else(text, people_names()):
@@ -1398,6 +1619,52 @@ class Brain:
         overheard = self.overheard_note()
         if overheard:
             context.append(overheard)
+        active_lookups = helper.active_summary()
+        if active_match and not visual:
+            elapsed = max(1, round(time.time() - active_match['started']))
+            context.append(
+                f'They are asking about a lookup you ALREADY sent out: "{active_match["request"][:120]}" '
+                f'(started {elapsed}s ago, still in progress). Do NOT start another search. '
+                'Answer briefly and naturally that you are still checking on it, apologize lightly for the wait '
+                'if it fits, and say you will tell them as soon as it comes back.'
+            )
+        elif recent_done_match and not ready_match and not visual:
+            context.append(
+                f'They are asking about a lookup that ALREADY finished just now ("{recent_done_match["request"][:120]}"). '
+                f'The result was: {recent_done_match["answer"][:450]}\n'
+                'Share this answer directly in 1 to 2 natural sentences. Do NOT start a new search.'
+            )
+        elif active_lookups and not visual:
+            context.append(
+                'Background lookups currently in progress (still waiting on results — do NOT start another lookup '
+                'for these; if they ask whether you are still checking, just say you are still waiting): ' + active_lookups
+            )
+        recent_done = helper.recent_done_summary() if not visual and not recent_done_match else ''
+        if recent_done:
+            context.append(
+                'Lookups you ALREADY completed recently (use these facts if they ask about them; do not claim you '
+                'cannot check email/calendar/weather): ' + recent_done
+            )
+        claimed_updates = []
+        if not visual and not can_select_show and not getattr(self, 'tool_result', None):
+            with self.lock:
+                for item in self.ready_updates:
+                    if item['source'] == source and not item['delivered'] and not item['in_flight']:
+                        item['in_flight'] = True
+                        claimed_updates.append(item)
+        if claimed_updates:
+            lines_ready = []
+            for item in claimed_updates:
+                who = 'ChatGPT' if item['explicit'] else 'your background lookup'
+                lines_ready.append(f'- Earlier they asked "{item["request"][:140]}". {who} returned: {item["answer"][:450]}')
+            context.append(
+                'Background info they asked for earlier just came back while you were chatting:\n'
+                + '\n'.join(lines_ready) + '\n'
+                'First respond naturally to what they just said so you do not ignore them. '
+                'Then smoothly weave this update into the same reply with a natural transition like '
+                '"Oh, and I got that info you wanted —" or "Also, that just came back —". '
+                'Keep all names, times, places, and numbers exact. Never start with "Sure," or act like it was instant.'
+            )
         if self.speaker:
             context.append('The enrolled speaker is ' + self.speaker + '. Use their name only when it fits naturally.')
         # Start polished, loosen up over the conversation as they talk casually (kept per person).
@@ -1503,89 +1770,125 @@ class Brain:
                                  expression=beat_performance)
 
             stream_options = {'on_delta': speak_as_written, 'stop': self.hush}
+        delivered_updates = False
         try:
-            reply = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
-                             logprobs=group,   # so a "them" can be checked for how sure the model was
-                             max_tokens=480,   # room for a story or a real explanation; most replies are far shorter
-                             temperature=.27 if not (visual or can_select_show) else .45,
-                             **stream_options)
-        except NotForMe:
-            return self.not_for_me(source, text, stream, judged=True)
-        except ToolFirst as first:
-            return self.answer_with_tool(first.turn, text, source, identity, stream)
-        except LookFirst:
-            if use_camera:
-                raise RuntimeError('the model asked to look twice')
-            return self.reply(text, source, stream=stream, use_camera=True)
-        except Exception as error:
-            hub.note('model', f'Local model unavailable: {error}')
-            return 'I couldn’t make out the picture just now.' if visual else 'My local brain is offline. Give me a minute.'
-        if self.hush.is_set():
-            if self.spoken_reply:
-                history.extend([user_turn, {'role': 'assistant', 'content': self.spoken_reply}])
-            return ''
-        self.last_visual = (conversation, time.monotonic()+45) if visual else None
-        hub.note('model', None)
-        if reply.lstrip().startswith('{'):
             try:
-                turn = json.loads(reply)
-                if turn.get('to') == 'them':
-                    return self.not_for_me(source, text, stream, judged=True)
-                speech = turn['say']
-                if not isinstance(speech, str):
-                    raise ValueError('invalid spoken reply')
-                can_close = '?' not in text and not NEW_REQUEST.search(text)
-                ending = turn.get('end') is True or turn.get('turn') == 'end'
-                self.close_turn = bool(can_close and (ending or LEAVING.search(text)))
-                self.set_delivery(turn)
-                show = turn.get('show')
-                if can_select_show and show in ('dance', 'disco', 'opera'):
-                    self.pending_show = (show, None)
-                action = turn.get('do', 'none')
-                if action in tools.BY_NAME:
-                    if tools.BY_NAME[action].data:
-                        return self.answer_with_tool(turn, text, source, identity, stream)
-                    outcome = tools.run(action, turn, {'source': source, 'speaker': identity})
-                    hub.note('tools', f'{action}: {outcome}')
-                    if outcome.startswith('FAILED'):
-                        # It didn't happen: never let the confirmation stand.
-                        speech = self.tool_failure(action, outcome, text, source, identity, stream)
-                if action == 'look' and not visual and not use_camera:
-                    return self.reply(text, source, stream=stream, use_camera=True)
-                if action in ('dance', 'disco', 'opera') and not self.performance_problem(robot):
-                    self.pending_show = (action, None)
-                elif action == 'routine' and turn.get('routine'):
-                    self.performance_reply(turn['routine'])
-                elif action in ('lookup', 'chatgpt'):
-                    speech = (' '.join(stream.parts) if stream and stream.parts
-                              else helper.sanitize_ack(speech, text, allow_gpt=explicit_gpt))
-                    task = (turn.get('task') or '').strip()
-                    request = text if not task or task.casefold() == text.casefold() else f'{text}\n(Context: {task})'
-                    outcome = helper.start(self, source, identity, request, list(history),
-                                           user_text=text, remembered=remembered)
-                    if outcome:
-                        speech = outcome if not (stream and stream.parts) else speech.rstrip() + ' ' + outcome
-                else:
-                    speech = helper.strip_gpt_mentions(speech, allow_gpt=explicit_gpt)
-                note = turn.get('note', turn.get('remember'))
-                if natural_memory:
-                    memory.remember_in_context(identity, text, note)
-                reply = speech
-            except (ValueError, TypeError, KeyError):
-                # A reply cut off mid-JSON: keep what was already said, or the complete sentences written so far.
-                spoken = ' '.join(stream.parts) if stream and stream.parts else ''
-                partial = re.search(r'"say"\s*:\s*"((?:[^"\\]|\\.)*)', reply)
-                written = json.loads('"' + partial[1] + '"') if partial and not spoken else ''
-                written = written[:written.rfind('.') + 1] if '.' in written else ''
-                if not (spoken or written):
-                    hub.note('model', 'The local model returned an incomplete reply.')
-                    return 'I lost my train of thought. Say that again?'
-                reply = spoken or written
-        reply = streaming.clean(reply)
-        echoed_request = len(text.split()) >= 4 and reply.casefold().rstrip('?.!') == text.casefold().rstrip('?.!')
-        if not reply or echoed_request:
-            return 'I lost my train of thought. Say that again?'
-        if len(reply) > 560:
-            reply = reply[:557].rsplit(' ', 1)[0].rstrip(',.?!:;') + '…'
-        history.extend([user_turn, {'role': 'assistant', 'content': reply}])
-        return reply
+                reply = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
+                                 logprobs=group,   # so a "them" can be checked for how sure the model was
+                                 max_tokens=480,   # room for a story or a real explanation; most replies are far shorter
+                                 temperature=.40 if not (visual or can_select_show) else .45,
+                                 **stream_options)
+            except NotForMe:
+                return self.not_for_me(source, text, stream, judged=True)
+            except ToolFirst as first:
+                return self.answer_with_tool(first.turn, text, source, identity, stream)
+            except LookFirst:
+                if use_camera:
+                    raise RuntimeError('the model asked to look twice')
+                return self.reply(text, source, stream=stream, use_camera=True)
+            except Exception as error:
+                hub.note('model', f'Local model unavailable: {error}')
+                return 'I couldn’t make out the picture just now.' if visual else 'My local brain is offline. Give me a minute.'
+            if self.hush.is_set():
+                if self.spoken_reply:
+                    history.extend([user_turn, {'role': 'assistant', 'content': self.spoken_reply}])
+                return ''
+            self.last_visual = (conversation, time.monotonic()+45) if visual else None
+            hub.note('model', None)
+            action = 'none'
+            if reply.lstrip().startswith('{'):
+                try:
+                    turn = json.loads(reply)
+                    if turn.get('to') == 'them':
+                        return self.not_for_me(source, text, stream, judged=True)
+                    speech = turn['say']
+                    if not isinstance(speech, str):
+                        raise ValueError('invalid spoken reply')
+                    can_close = '?' not in text and not NEW_REQUEST.search(text)
+                    ending = turn.get('end') is True or turn.get('turn') == 'end'
+                    self.close_turn = bool(can_close and (ending or LEAVING.search(text)))
+                    self.set_delivery(turn)
+                    show = turn.get('show')
+                    if can_select_show and show in ('dance', 'disco', 'opera'):
+                        self.pending_show = (show, None)
+                    action = turn.get('do', 'none')
+                    if action in tools.BY_NAME:
+                        if tools.BY_NAME[action].data:
+                            return self.answer_with_tool(turn, text, source, identity, stream)
+                        outcome = tools.run(action, turn, {'source': source, 'speaker': identity})
+                        hub.note('tools', f'{action}: {outcome}')
+                        if outcome.startswith('FAILED'):
+                            # It didn't happen: never let the confirmation stand.
+                            speech = self.tool_failure(action, outcome, text, source, identity, stream)
+                    if action == 'look' and not visual and not use_camera:
+                        return self.reply(text, source, stream=stream, use_camera=True)
+                    if action in ('dance', 'disco', 'opera') and not self.performance_problem(robot):
+                        self.pending_show = (action, None)
+                    elif action == 'routine' and turn.get('routine'):
+                        self.performance_reply(turn['routine'])
+                    elif action in ('lookup', 'chatgpt'):
+                        speech = (' '.join(stream.parts) if stream and stream.parts
+                                  else helper.sanitize_ack(speech, text, allow_gpt=explicit_gpt))
+                        task = (turn.get('task') or '').strip()
+                        request = text if not task or task.casefold() == text.casefold() else f'{task}\n(What they said: {text})'
+                        outcome = helper.start(self, source, identity, request, list(history),
+                                               user_text=text, remembered=remembered)
+                        if outcome is None:
+                            self.last_reply_was_lookup_ack = True
+                        else:
+                            speech = outcome if not (stream and stream.parts) else speech.rstrip() + ' ' + outcome
+                    else:
+                        speech = helper.strip_gpt_mentions(speech, allow_gpt=explicit_gpt)
+                    note = turn.get('note', turn.get('remember'))
+                    if natural_memory:
+                        memory.remember_in_context(identity, text, note)
+                    reply = speech
+                except (ValueError, TypeError, KeyError):
+                    # A reply cut off mid-JSON: keep what was already said, or the complete sentences written so far.
+                    spoken = ' '.join(stream.parts) if stream and stream.parts else ''
+                    partial = re.search(r'"say"\s*:\s*"((?:[^"\\]|\\.)*)', reply)
+                    written = json.loads('"' + partial[1] + '"') if partial and not spoken else ''
+                    written = written[:written.rfind('.') + 1] if '.' in written else ''
+                    if not (spoken or written):
+                        hub.note('model', 'The local model returned an incomplete reply.')
+                        return 'I lost my train of thought. Say that again?'
+                    reply = spoken or written
+            reply = streaming.clean(reply)
+            if (prev_bot_before_turn and len(reply) >= 20 and not (stream and stream.parts)
+                    and SequenceMatcher(None, reply.casefold(), prev_bot_before_turn.casefold(), autojunk=False).ratio() >= .85):
+                # Rare cache/repetition glitch: retry once with a fresh prompt (no cache) and higher temperature.
+                try:
+                    fresh = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
+                                     max_tokens=480, temperature=.65, cache_prompt=False)
+                    if fresh and fresh.lstrip().startswith('{'):
+                        fresh_turn = json.loads(fresh)
+                        candidate = streaming.clean(fresh_turn.get('say', ''))
+                        if candidate:
+                            reply = candidate
+                except Exception:
+                    pass
+            echoed_request = len(text.split()) >= 4 and reply.casefold().rstrip('?.!') == text.casefold().rstrip('?.!')
+            if not reply or echoed_request:
+                return 'I lost my train of thought. Say that again?'
+            if len(reply) > 560:
+                reply = reply[:557].rsplit(' ', 1)[0].rstrip(',.?!:;') + '…'
+            # Only mark woven background updates as delivered if the reply actually mentioned them;
+            # otherwise leave them queued so the background announcer still delivers them instead of silently losing them.
+            reply_topics = helper.topic_words(reply)
+            delivered_items = set()
+            if action not in ('lookup', 'chatgpt', 'look'):
+                for item in claimed_updates:
+                    update_topics = helper.topic_words(item['request']) | helper.topic_words(item['answer'][:240])
+                    if not update_topics or (reply_topics & update_topics):
+                        delivered_items.add(item['id'])
+            history.extend([user_turn, {'role': 'assistant', 'content': reply}])
+            return reply
+        finally:
+            if claimed_updates:
+                with self.lock:
+                    for item in claimed_updates:
+                        item['in_flight'] = False
+                        if item['id'] in locals().get('delivered_items', ()):
+                            item['delivered'] = True
+                            if item in self.ready_updates:
+                                self.ready_updates.remove(item)

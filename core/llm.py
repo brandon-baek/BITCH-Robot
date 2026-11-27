@@ -245,13 +245,17 @@ def choice_confidence(field, value):
     return None
 
 
-def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperature, slot, logprobs=False):
+def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperature, slot, logprobs=False,
+                cache_prompt=None):
     global last_stats
     last_tokens.clear()
+    use_cache = (slot == SLOT_TALK) if cache_prompt is None else cache_prompt
     payload = {'messages': openai_messages(messages), 'max_tokens': max_tokens, 'temperature': temperature,
-               'stream': on_delta is not None, 'cache_prompt': True, 'id_slot': slot,
+               'stream': on_delta is not None, 'cache_prompt': use_cache, 'id_slot': slot,
                # No thinking out loud before answering: Qwen-style switch, and gpt-oss's lowest reasoning effort.
                'chat_template_kwargs': {'enable_thinking': False, 'reasoning_effort': 'low'}}
+    if slot == SLOT_TALK and max_tokens > 1:
+        payload['presence_penalty'] = 0.35
     if schema is not None:
         payload['response_format'] = {'type': 'json_schema', 'json_schema': {'name': 'reply', 'schema': schema}}
     if logprobs:
@@ -300,12 +304,13 @@ def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperatu
 # ---------------------------------------------------------------- the one call everything uses
 
 def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_delta=None, stop=None,
-         temperature=0.45, background=False, logprobs=False):
+         temperature=0.45, background=False, logprobs=False, cache_prompt=None):
     """Ask the model. `background` work uses its own slot so it never holds up a reply."""
     if served(model):
         try:
             return server_chat(messages, max_tokens, schema, timeout if timeout is not None else 60, on_delta, stop,
-                               temperature, SLOT_BACKGROUND if background else SLOT_TALK, logprobs)
+                               temperature, SLOT_BACKGROUND if background else SLOT_TALK, logprobs,
+                               cache_prompt=cache_prompt)
         except (OSError, ValueError, KeyError, urllib.error.URLError):
             if stop is not None and stop.is_set():
                 return ''
