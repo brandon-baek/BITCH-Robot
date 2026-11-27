@@ -1,0 +1,20 @@
+ok  them  0.0s  p(them)=  -    'Mom, do you want to come with us?' -> ''
+ok  me    4.6s  p(them)=0.07  'What about tomorrow?' -> 'Rainy all day, high of sixty. Same forecast as today, just wetter.'
+ok  them  0.0s  p(them)=0.07  'Dad, can you check the oven?' -> ''
+ok  me    2.1s  p(them)=0.01  'Actually make it twelve.' -> 'Fine, twelve. Give me a minute.'
+ok  me    3.3s  p(them)=0.13  'Wait, is that true?' -> "Yeah, it's true. Octopuses have three hearts, and their blood is blue because it uses a copper-based molecule instead of iron to carry oxygen."
+  Room: "for someone else" at 0.78
+BAD them  2.8s  p(them)=  -    'Emma, did you know that?' -> "I don't know. I'm a cardboard robot with googly eyes, not an octopus."
+ok  them  0.0s  p(them)=  -    'I think we watched that one last month, right honey?' -> ''
+ok  me    2.8s  p(them)=0.00  "We've seen it. Something else?" -> "The Grand Budapest Hotel. Wes Anderson's best one. You'll pretend to find it pretentious and then quote it back to me."
+  Room: "for someone else" at 0.91
+ok  them  2.0s  p(them)=0.91  'Can you pass me the salt?' -> ''
+ok  me    1.6s  p(them)=0.00  'And soft-boiled?' -> 'Three to four minutes. Just enough that the yolk stays runny.'
+ok  me    2.1s  p(them)=0.03  'Yeah, go ahead.' -> "Which game? I don't know what you were watching last night."
+ok  them  0.0s  p(them)=0.03  'Honey, I told you it was the Warriors.' -> ''
+  Room: "for someone else" at 0.88
+BAD me    1.7s  p(them)=0.88  'Haha, that was terrible.' -> ''
+BAD them  2.2s  p(them)=0.31  "Okay, it's your turn to do the dishes." -> 'Oh, please. You had me tell a skeleton joke, then you turn around and make me do dishes? Real smooth.'
+ok  them  0.0s  p(them)=0.31  "Thanks. Mom, dinner's ready." -> ''
+ok  me    1.5s  p(them)=0.00  'And divided by four?' -> 'Fort-five.'
+13/16 correct; median 2.0s

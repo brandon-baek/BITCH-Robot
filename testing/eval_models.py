@@ -217,8 +217,8 @@ def memory_traps(model):
         owner = 'Brandon'
         memory.forget(owner, 'everything')
         memory.consolidate_conversation(owner, transcript, chat_fn=lambda messages, **kw: llm.chat(messages, **kw))   # the model under test, on BITCH's own server
-        found = ' '.join(memory.recall(owner) + [d for d, _ in memory.debates(owner)]
-                         + [e for _, e in memory.episodes(owner, 3)]).casefold()
+        # Only what's saved as a fact about them counts. A summary that says "he joked about loving taxes" is right.
+        found = ' '.join(memory.recall(owner) + [d for d, _ in memory.debates(owner)]).casefold()
         false += [word for word in ('valorant', 'max', 'taxes', 'ferrari', 'lottery', 'the user') if word in found]
         kept += [word for word in wanted if word in found]
     memory.forget('Brandon', 'everything')

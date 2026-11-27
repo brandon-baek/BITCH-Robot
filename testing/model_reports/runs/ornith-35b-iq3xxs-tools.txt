@@ -1,34 +1,34 @@
-ok   4.8s [timer       ] 'Set a timer for ten minutes for the pasta.'
-      -> 'Ten minutes on the pasta. It will tell you when it is done.'
-ok   2.7s [check_timers] 'How much time is left on that?'
-      -> 'About ten minutes left, so it is basically done.'
-ok   2.5s [cancel_timer] 'Cancel the pasta timer.'
-      -> 'Cancelled the pasta timer.'
-ok   2.2s [timer       ] 'Set a timer for ninety seconds.'
-      -> 'Ninety seconds set.'
-ok   2.2s [list_add    ] "We're out of milk. Add milk and eggs to the shopping list."
+ok   4.9s [timer       ] 'Set a timer for ten minutes for the pasta.'
+      -> "Ten minutes for the pasta. I'll let you know before it's ready."
+ok   2.9s [check_timers] 'How much time is left on that?'
+      -> "About ten minutes left, so you're not far off from dinner."
+ok   2.8s [cancel_timer] 'Cancel the pasta timer.'
+      -> "Cancelled. It's still early, so it'll be ready right on time."
+ok   2.4s [timer       ] 'Set a timer for ninety seconds.'
+      -> "Ninety seconds. That's a pretty quick boil."
+ok   2.6s [list_add    ] "We're out of milk. Add milk and eggs to the shopping list."
       -> 'Added milk and eggs to the shopping list.'
-ok   3.7s [list_read   ] "What's on the shopping list?"
-      -> 'Milk and eggs.'
-ok   2.5s [list_remove ] 'Take eggs off the list.'
-      -> 'Removed eggs from the shopping list.'
-ok   3.1s [weather     ] "What's the weather like?"
-      -> "I can't check the weather yet, since I don't have your city. What city do you live in?"
-ok   3.1s [set_home    ] 'I live in San Jose, California.'
-      -> 'Saved San Jose, California as home. Now I can check the weather for you.'
+ok   3.9s [list_read   ] "What's on the shopping list?"
+      -> "Milk and eggs. That's the whole list."
+ok   3.1s [list_remove ] 'Take eggs off the list.'
+      -> 'Eggs are off the list now. Just milk left.'
+ok   3.5s [weather     ] "What's the weather like?"
+      -> "I can't check the weather yet—I don't know where you are. What city do you live in?"
+ok   3.0s [set_home    ] 'I live in San Jose, California.'
+      -> 'Got it. San Jose is home now.'
 ok   2.1s [-           ] 'Do I need an umbrella tomorrow?'
-      -> "No, you don't need an umbrella. It's overcast but no rain expected, so it should stay dry."
-ok   5.4s [weather     ] "What's the weather in Tokyo right now?"
-      -> 'In Tokyo right now it is 14°C and clear, feels like 12°C. The rest of today it stays dry with a light drizzle possible, high around 16°C.'
+      -> "No. It's overcast all day tomorrow, but the rain chance is zero percent. You're fine without an umbrella."
+ok   5.5s [weather     ] "What's the weather in Tokyo right now?"
+      -> "It's 14°C and clear in Tokyo right now, feels like 13°C. Light drizzle all day, rain chance nine percent."
 ok   2.0s [volume      ] 'You are way too loud.'
-      -> 'Okay, that is better.'
-ok   1.8s [music       ] 'Pause the music.'
+      -> "Okay, I'll turn it down."
+ok   1.5s [music       ] 'Pause the music.'
       -> 'Paused the music.'
-ok   6.2s [-           ] "What's fifteen percent of eighty?"
+ok   6.4s [-           ] "What's fifteen percent of eighty?"
       -> 'Fifteen percent of eighty is twelve.'
-ok   6.5s [-           ] 'How are you doing today?'
-      -> 'Doing well, thanks for asking. It is Thursday evening, so I am winding down. What is on your mind?'
-ok   6.5s [-           ] 'I feel cold today.'
-      -> 'That is annoying. Did you forget the heater, or is the room just cold?'
+ok   6.7s [-           ] 'How are you doing today?'
+      -> "Doing well, thanks for asking. Just here on the desk, keeping an eye on things. How's your day going?"
+ok   7.0s [-           ] 'I feel cold today.'
+      -> "That's annoying. Could be your body fighting off something, so keep an eye on it. Or you're just cold today. Either way, I'm here."
 
 16/16 passed

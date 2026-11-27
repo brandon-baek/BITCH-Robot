@@ -225,6 +225,8 @@ class WakeTests(unittest.TestCase):
             self.assertFalse(brain.history)
 
     def test_in_a_group_a_line_for_someone_else_gets_no_reply_but_is_remembered(self):
+        from core import llm
+        llm.last_tokens.clear()   # a sure "them" (no doubt reported)
         brain = Brain()
         brain.accepted_wake = False
         view = Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 1}),
@@ -275,6 +277,24 @@ class WakeTests(unittest.TestCase):
         self.assertFalse(sounds_like_own_words('Can you check the weather in Tokyo?', ['Let me check.']))
         self.assertEqual(strip_playback("Yeah. Um, what's the weather like tomorrow?", 'Yeah?'),
                          "Um, what's the weather like tomorrow?")
+
+    def test_a_hesitant_for_someone_else_still_gets_an_answer(self):
+        from core import llm
+        brain = Brain()
+        brain.accepted_wake = False
+        room = Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 2}),
+                    current_scene=Mock(return_value=(None, None)), face_to_learn=Mock(return_value=None))
+        replies = iter(['{"to":"them","v":"n","say":"","end":false}', '{"v":"n","say":"Nine.","end":false}'])
+
+        def unsure(*args, **kwargs):
+            # The model wrote "them", but only 55% to 45% over "me".
+            llm.last_tokens[:] = [('{"to":"', {'{"to":"': 1.}), ('them', {'them': .55, 'me': .45})]
+            return next(replies)
+        with patch.object(hub, 'sight', room), patch('core.brain.llm.chat', side_effect=unsure) as chat:
+            self.assertEqual(brain.reply('Thirty-six over four?', 'desk'), 'Nine.')
+            self.assertTrue(chat.call_args_list[0].kwargs['logprobs'])
+            self.assertNotIn('to', chat.call_args_list[1].kwargs['schema']['properties'])
+        self.assertAlmostEqual(llm.choice_confidence('to', 'them'), .55)
 
     def test_talk_over_transcript_drops_bitchs_own_words_from_the_front(self):
         from core.brain import strip_playback
@@ -421,7 +441,7 @@ class WakeTests(unittest.TestCase):
         stream.offer = lambda phrase, delivery, **kwargs: stream.parts.append((phrase, delivery))
         partial = '{"v":"a","say":"Oh, come on! A fern beat me.'
 
-        def generate(messages, *, schema, model, on_delta, stop, temperature, max_tokens=160):
+        def generate(messages, *, schema, model, on_delta, stop, temperature, max_tokens=160, logprobs=False):
             self.assertEqual(schema['required'], ['v', 'say', 'end'])
             on_delta(partial)
             self.assertEqual(stream.parts, [('Oh, come on!', 'emphatic')])

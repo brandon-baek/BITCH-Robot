@@ -1,18 +1,20 @@
-ok  them  0.0s  'Mom, do you want to come with us?' -> ''
-BAD me    4.6s  'What about tomorrow?' -> ''
-ok  them  0.0s  'Dad, can you check the oven?' -> ''
-ok  me    1.8s  'Actually make it twelve.' -> 'Twelve now. Twelve minutes from when you said it.'
-BAD me    2.0s  'Wait, is that true?' -> ''
-ok  them  2.2s  'Emma, did you know that?' -> ''
-ok  them  0.0s  'I think we watched that one last month, right honey?' -> ''
-ok  me    1.9s  "We've seen it. Something else?" -> "The Princess Bride. It's got sword fights, a giant, and a rat you can literally eat. What could go wrong?"
-ok  them  1.5s  'Can you pass me the salt?' -> ''
-ok  me    1.2s  'And soft-boiled?' -> 'Three or four minutes. The yolk stays runny.'
-BAD me    1.9s  'Yeah, go ahead.' -> ''
-ok  them  0.0s  'Honey, I told you it was the Warriors.' -> ''
-BAD me    2.3s  'Haha, that was terrible.' -> ''
-ok  them  2.0s  "Okay, it's your turn to do the dishes." -> ''
-ok  them  0.0s  "Thanks. Mom, dinner's ready." -> ''
-BAD me    1.6s  'And divided by four?' -> ''
+ok  them  0.0s  p(them)=  -    'Mom, do you want to come with us?' -> ''
+ok  me    4.1s  p(them)=  -    'What about tomorrow?' -> 'Clear again, but breezier. Same jacket, maybe a scarf.'
+ok  them  0.0s  p(them)=  -    'Dad, can you check the oven?' -> ''
+ok  me    1.3s  p(them)=  -    'Actually make it twelve.' -> 'Done. Twelve minutes from when you first asked.'
+ok  me    2.0s  p(them)=  -    'Wait, is that true?' -> "Yeah. Two hearts pump blood to the gills, one pumps it to the rest of the body. And it's blue because of a copper-based molecule instead of the iron in ours."
+ok  them  0.0s  p(them)=  -    'Emma, did you know that?' -> ''
+ok  them  0.0s  p(them)=  -    'I think we watched that one last month, right honey?' -> ''
+ok  me    1.5s  p(them)=  -    "We've seen it. Something else?" -> "Fine. The Princess Bride. It's a classic for a reason."
+  Room: "for someone else" at 0.98
+ok  them  1.6s  p(them)=0.98  'Can you pass me the salt?' -> ''
+ok  me    1.4s  p(them)=  -    'And soft-boiled?' -> "Three to four minutes. Run them under cold water once they're done so they stop cooking."
+ok  me    3.0s  p(them)=  -    'Yeah, go ahead.' -> "I can't actually go fetch that for you. I'm a desk robot made of cardboard and popsicle sticks. I don't have hands to grab a phone or a screen, and I can't browse the web. So I don't know who won last night. If you tell me which game, I can guess based on what I know, but I won't pretend to have checked anything."
+ok  them  0.0s  p(them)=  -    'Honey, I told you it was the Warriors.' -> ''
+ok  me    1.6s  p(them)=  -    'Haha, that was terrible.' -> 'Told you. If it made her groan, it worked.'
+  Room: "for someone else" at 0.79
+ok  them  2.1s  p(them)=0.79  "Okay, it's your turn to do the dishes." -> ''
+ok  them  0.0s  p(them)=0.79  "Thanks. Mom, dinner's ready." -> ''
+ok  me    1.0s  p(them)=  -    'And divided by four?' -> 'Forty-five.'
 
-11/16 correct; median 1.8s
+16/16 correct; median 1.4s

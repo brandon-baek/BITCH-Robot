@@ -47,6 +47,14 @@ PERFORMANCE = {'sad': 'gentle', 'annoyed': 'emphatic', 'amused': 'playful', 'sur
 VOICE_CODE = {'n': 'neutral', 'w': 'warm', 'u': 'upbeat', 'g': 'gentle', 'e': 'emphatic', 'p': 'playful'}
 PERFORMANCE_CODE = {'s': 'sad', 'a': 'annoyed', 'l': 'amused', 'r': 'surprised'}
 FOLLOWUP_SECONDS = 24
+REACTION = re.compile(r"^\s*(?:(?:ha){2,}|hah|heh|lol|lmao|omg|oh my god|wow|whoa|good one|nice one|"
+                      r"(?:okay|ok|alright|wow|haha|man|dude|bro)?[, ]*that(?:'s|’s| was| is) (?:so |pretty |really |kinda |actually )?"
+                      r"(?:terrible|awful|funny|hilarious|good|great|bad|dumb|stupid|amazing|cool|wrong|right|true|"
+                      r"wild|crazy|smart|weird|cringe|corny|lame|fair))\b", re.I)
+CARRY_ON = re.compile(r"^\s*(?:yeah|yes|yep|yup|nah|nope|wait|and|but|actually|really|seriously|so what|what about|"
+                      r"how about|what if|why|is that|are you sure|go ahead|do it|sure|true|same|exactly|no way|"
+                      r"we(?:'ve|’ve| have) (?:seen|done|tried|heard))\b", re.I)
+THEM_SURE = .7   # how sure the model must be that a line was for someone else before BITCH stays quiet
 CONVERSATION_SECONDS = 900   # keep the thread of a conversation this long after the last turn
 HISTORY_MESSAGES = 24        # the last 12 exchanges go to the model
 REFLECT_AFTER = 150          # seconds of quiet before a conversation is summarized into memory
@@ -102,10 +110,23 @@ def people_names():
         return set()
 
 
+# Words that start a line with a comma but aren't anyone's name ("Well, ...", "Actually, ...").
+OPENERS = {'well', 'yeah', 'yes', 'yep', 'nope', 'no', 'okay', 'alright', 'actually', 'honestly', 'wait', 'hmm', 'um',
+           'uh', 'oh', 'ah', 'nice', 'cool', 'great', 'thanks', 'sure', 'right', 'anyway', 'also', 'then', 'now', 'see',
+           'look', 'listen', 'dude', 'bro', 'man', 'wow', 'damn', 'ugh', 'haha', 'lol', 'fine', 'please', 'sorry',
+           'seriously', 'basically', 'like', 'and', 'but', 'so', 'first', 'second', 'finally', 'today', 'tomorrow',
+           'tonight', 'yesterday', 'again', 'perfect', 'awesome', 'true', 'exactly', 'totally', 'definitely', 'maybe',
+           'hey', 'hello', 'hi', 'bitch', 'god', 'jesus', 'gosh', 'whoa', 'yikes', 'oops', 'good', 'bad', 'cheers'}
+
+
 def talks_to_someone_else(text, names=()):
     """True when the line calls on another person by name or family word ("Mom, ...", "..., right honey?")."""
     known = [re.escape(name) for name in names if name and name.casefold() != 'bitch']
     who = r"(?:" + FAMILY_WORDS + (r"|" + "|".join(known) if known else "") + r")"
+    # Someone's name, even one BITCH hasn't met, opening the line: "Emma, did you know that?"
+    opener = re.match(r"\s*(?:(?i:hey|okay|ok|so|and|oh)[,!.]?\s+)?([A-Z][a-z]{2,})\s*,\s+\S", text)
+    if opener and opener[1] not in NOT_NAMES and opener[1].casefold() not in OPENERS:
+        return True
     return bool(re.search(r"(?:^|[.!?]\s+)(?:(?:hey|okay|ok|so|thanks|and|oh)[,!.]?\s+)?" + who + r"\s*[,!?]", text, re.I)
                 or re.search(r",\s*(?:(?:right|okay|ok|thanks|thank you|love you|please|yes|no|sure)\s+)?" + who
                              + r"\s*[.!?]*$", text, re.I))
@@ -414,8 +435,20 @@ class Brain:
         finally:
             self.tool_result = None
 
-    def not_for_me(self, source, text):
-        """Stay quiet for a line meant for someone else, but keep it in mind for the next turn."""
+    def not_for_me(self, source, text, stream=None, judged=False):
+        """Stay quiet for a line meant for someone else, but keep it in mind for the next turn.
+
+        Only when the model was sure: ignoring someone who was talking to BITCH feels far worse than answering a line
+        that wasn't for it, so a hesitant "them" gets an answer instead."""
+        sure = llm.choice_confidence('to', 'them') if judged else None
+        if sure is not None:
+            print(f'  Room: "for someone else" at {sure:.2f}', flush=True)
+        if sure is not None and sure < THEM_SURE and not getattr(self, 'answer_anyway', False):
+            self.answer_anyway = True
+            try:
+                return self.reply(text, source, stream=stream)
+            finally:
+                self.answer_anyway = False
         self.overheard.append((time.monotonic(), text))
         hub.note('model', None)
         return ''
@@ -1310,6 +1343,7 @@ class Brain:
         # in its cache and only read what's new. Everything that changes per turn goes in `context`, a note at the
         # start of this turn's message.
         context = []
+        group = False
         if visual or can_select_show:
             system = self.persona + '\n\n' + TURN_DIRECTION
         else:
@@ -1320,7 +1354,10 @@ class Brain:
             # "Mom, ..." is never for BITCH, camera or not.
             if unnamed and talks_to_someone_else(text, people_names()):
                 return self.not_for_me(source, text)
-            group = unnamed and self.room_shared()
+            # A laugh or a verdict right after BITCH spoke ("Haha, that was terrible") is a reaction to BITCH.
+            # Same for picking up where BITCH left off: "Wait, is that true?", "And divided by four?", "Yeah, go ahead."
+            reacting = bool(REACTION.match(text) or CARRY_ON.match(text))
+            group = (unnamed and not reacting and self.room_shared() and not getattr(self, 'answer_anyway', False))
             if group:
                 # Nobody said the name and others are here: decide who it was meant for before saying anything.
                 schema = {**schema, 'properties': {'to': {'type': 'string', 'enum': ['me', 'them']}, **schema['properties']},
@@ -1468,11 +1505,12 @@ class Brain:
             stream_options = {'on_delta': speak_as_written, 'stop': self.hush}
         try:
             reply = llm.chat(messages, schema=schema, model=llm.vision_model() if visual else None,
+                             logprobs=group,   # so a "them" can be checked for how sure the model was
                              max_tokens=480,   # room for a story or a real explanation; most replies are far shorter
                              temperature=.27 if not (visual or can_select_show) else .45,
                              **stream_options)
         except NotForMe:
-            return self.not_for_me(source, text)
+            return self.not_for_me(source, text, stream, judged=True)
         except ToolFirst as first:
             return self.answer_with_tool(first.turn, text, source, identity, stream)
         except LookFirst:
@@ -1492,7 +1530,7 @@ class Brain:
             try:
                 turn = json.loads(reply)
                 if turn.get('to') == 'them':
-                    return self.not_for_me(source, text)
+                    return self.not_for_me(source, text, stream, judged=True)
                 speech = turn['say']
                 if not isinstance(speech, str):
                     raise ValueError('invalid spoken reply')

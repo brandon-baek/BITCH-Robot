@@ -59,10 +59,24 @@ if command -v ollama >/dev/null; then
     if ollama list >/dev/null 2>&1; then break; fi
     sleep 0.5
   done
-  # The conversation brain (about 18 GB, needs 32 GB of RAM) and the small model for quick camera checks.
-  ollama pull codecraftersllc/ornith-1.5-35b-a3b-abliterated || echo "!! When Ollama is running, run: ollama pull codecraftersllc/ornith-1.5-35b-a3b-abliterated"
-  ollama pull qwen3.5:4b-q4_K_M || echo "!! When Ollama is running, run: ollama pull qwen3.5:4b-q4_K_M"
+  # The conversation brain: Ornith 1.5 35B, abliterated (17 GB, needs 32 GB of RAM; chosen by testing/eval_candidate.sh).
+  # A leaner build of the same brain (13.6 GB) is hf.co/mradermacher/Ornith-1.5-35B-A3B-abliterated-i1-GGUF:IQ3_XXS.
+  BRAIN=codecraftersllc/ornith-1.5-35b-a3b-abliterated
+  ollama pull $BRAIN || echo "!! When Ollama is running, run: ollama pull $BRAIN"
 else echo "!! Ollama command not found. Open the Ollama app once, then run this again."; fi
+
+# Its eyes: the vision projector for camera questions (0.9 GB), kept beside the brain.
+MMPROJ=~/.bitch/models/ornith-1.5-35b-a3b-mmproj.gguf
+mkdir -p ~/.bitch/models
+if [ ! -s "$MMPROJ" ]; then
+  if curl -fL -o "$MMPROJ.part" \
+      "https://huggingface.co/cognitivers/Ornith-1.5-35B-A3B-Abliterated-12GB-GGUF/resolve/main/mmproj-Ornith-1.5-35B-A3B-Abliterated-F16.gguf"; then
+    mv "$MMPROJ.part" "$MMPROJ"
+  else
+    echo "!! Vision projector unavailable: camera questions will be skipped"
+  fi
+fi
+
 
 echo "-> making the BITCH app"
 APP=~/Applications/BITCH.app; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" ~/.bitch

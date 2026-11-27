@@ -12,6 +12,8 @@ goes to Ollama as before.
 import atexit
 import base64
 import json
+import math
+import re
 import os
 from pathlib import Path
 import shutil
@@ -55,10 +57,26 @@ def models_dir():
     return None
 
 
+def separate_projector(name):
+    """A vision projector kept beside a model that was downloaded without one (~/.bitch/models/<family>-mmproj.gguf).
+    The Ornith 35B projector works for every quantization of it, abliterated or not."""
+    family = 'ornith-1.5-35b-a3b' if re.search(r'ornith-1\.5-35b-a3b', name, re.I) else None
+    for folder in (config.HOME / 'models', Path('~/.bitch/models').expanduser()):
+        path = folder / f'{family}-mmproj.gguf' if family else None
+        if path and path.exists():
+            return path
+    return None
+
+
 def model_files(name):
     """The GGUF weights (and vision projector) Ollama downloaded for a model name, or (None, None)."""
     if not name:
         return None, None
+    weights, projector = model_store_files(name)
+    return weights, (projector or (separate_projector(name) if weights else None))
+
+
+def model_store_files(name):
     custom = os.environ.get('OLLAMA_MODELS')
     for folder in ([Path(custom)] if custom else []) + [config.HOME / 'ollama', Path('~/.bitch/ollama').expanduser(),
                                                         Path('~/.ollama/models').expanduser()]:
@@ -120,6 +138,7 @@ def start_server(wait=240):
         if not binary or not weights:
             return False
         stop_server_locked()
+        stop_leftover_server()
         # The same weights loaded in Ollama would take the memory twice.
         try:
             request('/api/generate', {'model': model, 'keep_alive': 0}, 5).read()
@@ -147,6 +166,27 @@ def start_server(wait=240):
             return True
         time.sleep(.5)
     return False
+
+
+def stop_leftover_server():
+    """A server left running by a BITCH that crashed still holds a whole brain in memory. Starting another beside it
+    is how the Mac runs out, so stop whatever llama-server is still on BITCH's port first."""
+    try:
+        pids = subprocess.run(['lsof', '-ti', f'tcp:{SERVER_PORT}', '-sTCP:LISTEN'], capture_output=True, text=True,
+                              timeout=3).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return
+    for pid in pids:
+        try:
+            command = subprocess.run(['ps', '-o', 'command=', '-p', pid], capture_output=True, text=True,
+                                     timeout=2).stdout
+            if 'llama-server' in command:
+                os.kill(int(pid), 15)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    deadline = time.monotonic() + 10
+    while pids and server_up() and time.monotonic() < deadline:
+        time.sleep(.2)
 
 
 def stop_server_locked():
@@ -188,17 +228,45 @@ def openai_messages(messages):
     return out
 
 
-def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperature, slot):
+last_tokens = []   # (token, {alternative: probability}) of the last reply, when asked for (logprobs=True)
+
+
+def choice_confidence(field, value):
+    """How sure the model was, 0-1, when it wrote `value` for JSON `field` in the last reply (None if unknown).
+
+    Compares the chosen first token against the other enum options it considered, so a 51/49 call shows as 0.51."""
+    text = ''
+    for token, options in last_tokens:
+        if re.search(r'"' + re.escape(field) + r'"\s*:\s*"$', text):
+            mine = sum(p for t, p in options.items() if t and value.startswith(t.strip()))
+            total = sum(options.values()) or 1.
+            return mine / total
+        text += token
+    return None
+
+
+def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperature, slot, logprobs=False):
     global last_stats
+    last_tokens.clear()
     payload = {'messages': openai_messages(messages), 'max_tokens': max_tokens, 'temperature': temperature,
                'stream': on_delta is not None, 'cache_prompt': True, 'id_slot': slot,
                # No thinking out loud before answering: Qwen-style switch, and gpt-oss's lowest reasoning effort.
                'chat_template_kwargs': {'enable_thinking': False, 'reasoning_effort': 'low'}}
     if schema is not None:
         payload['response_format'] = {'type': 'json_schema', 'json_schema': {'name': 'reply', 'schema': schema}}
+    if logprobs:
+        payload.update(logprobs=True, top_logprobs=5)
+
+    def keep(choice):
+        for item in ((choice.get('logprobs') or {}).get('content') or ()):
+            options = {alt['token']: math.exp(alt['logprob']) for alt in item.get('top_logprobs') or ()}
+            options.setdefault(item['token'], math.exp(item['logprob']))
+            last_tokens.append((item['token'], options))
+
     with request('/v1/chat/completions', payload, timeout, base=SERVER_URL) as response:
         if on_delta is None:
             data = json.load(response)
+            keep(data['choices'][0])
             return data['choices'][0]['message']['content']
         content = ''
         for line in response:
@@ -214,6 +282,7 @@ def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperatu
             if chunk.get('error'):
                 raise ValueError(chunk['error'])
             choice = (chunk.get('choices') or [{}])[0]
+            keep(choice)
             delta = (choice.get('delta') or {}).get('content') or ''
             if delta:
                 content += delta
@@ -231,12 +300,12 @@ def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperatu
 # ---------------------------------------------------------------- the one call everything uses
 
 def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_delta=None, stop=None,
-         temperature=0.45, background=False):
+         temperature=0.45, background=False, logprobs=False):
     """Ask the model. `background` work uses its own slot so it never holds up a reply."""
     if served(model):
         try:
             return server_chat(messages, max_tokens, schema, timeout if timeout is not None else 60, on_delta, stop,
-                               temperature, SLOT_BACKGROUND if background else SLOT_TALK)
+                               temperature, SLOT_BACKGROUND if background else SLOT_TALK, logprobs)
         except (OSError, ValueError, KeyError, urllib.error.URLError):
             if stop is not None and stop.is_set():
                 return ''

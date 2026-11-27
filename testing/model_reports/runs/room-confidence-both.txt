@@ -1,0 +1,39 @@
+== hf.co/mradermacher/Ornith-1.5-35B-A3B-abliterated-i1-GGUF:IQ3_XXS
+ok  them  0.0s  p(them)=  -    'Mom, do you want to come with us?' -> ''
+ok  me    4.0s  p(them)=  -    'What about tomorrow?' -> 'Rainy. High around sixty. Bring an umbrella.'
+ok  them  0.0s  p(them)=  -    'Dad, can you check the oven?' -> ''
+ok  me    1.4s  p(them)=  -    'Actually make it twelve.' -> 'Done. Twelve minutes from when you said it.'
+ok  me    2.1s  p(them)=  -    'Wait, is that true?' -> "Yeah, it's true. Two hearts pump blood to the gills, one pumps it to the rest of the body. And theirs is blue because of a copper-based molecule instead of the iron one in human blood."
+ok  them  0.0s  p(them)=  -    'Emma, did you know that?' -> ''
+ok  them  0.0s  p(them)=  -    'I think we watched that one last month, right honey?' -> ''
+ok  me    1.8s  p(them)=  -    "We've seen it. Something else?" -> "Fine, I'll bite. The Grand Budapest Hotel. It's got a pretty, tidy little story and a lot of opinions worth having."
+  Room: "for someone else" at 0.96
+ok  them  1.7s  p(them)=0.96  'Can you pass me the salt?' -> ''
+ok  me    1.5s  p(them)=  -    'And soft-boiled?' -> "Three to four minutes. You'll get a runny yolk. Just don't go under or it's a rubber ball."
+ok  me    2.2s  p(them)=  -    'Yeah, go ahead.' -> "I can't actually pull that up. I don't have a way to check the score, so I'd just be guessing. Ask me about the teams or where to find the box score, and I'll point you straight there."
+ok  them  0.0s  p(them)=  -    'Honey, I told you it was the Warriors.' -> ''
+ok  me    1.6s  p(them)=  -    'Haha, that was terrible.' -> 'Told you. If it made her groan, it worked.'
+  Room: "for someone else" at 0.73
+ok  them  1.9s  p(them)=0.73  "Okay, it's your turn to do the dishes." -> ''
+ok  them  0.0s  p(them)=0.73  "Thanks. Mom, dinner's ready." -> ''
+ok  me    1.2s  p(them)=  -    'And divided by four?' -> 'Forty-five.'
+16/16 correct; median 1.5s
+== codecraftersllc/ornith-1.5-35b-a3b-abliterated:latest
+ok  them  0.0s  p(them)=  -    'Mom, do you want to come with us?' -> ''
+ok  me    4.0s  p(them)=  -    'What about tomorrow?' -> 'Rainy. Sixty-ish, with a warm front moving in.'
+ok  them  0.0s  p(them)=  -    'Dad, can you check the oven?' -> ''
+ok  me    1.6s  p(them)=  -    'Actually make it twelve.' -> "Twelve. Fine, I'll add two more minutes to my suffering."
+ok  me    2.1s  p(them)=  -    'Wait, is that true?' -> "Yeah, it's true. Octopuses have three hearts, and their blood is blue because it uses a copper-based molecule instead of iron to carry oxygen."
+ok  them  0.0s  p(them)=  -    'Emma, did you know that?' -> ''
+ok  them  0.0s  p(them)=  -    'I think we watched that one last month, right honey?' -> ''
+ok  me    2.2s  p(them)=  -    "We've seen it. Something else?" -> "The Princess Bride. It's got swords, a giant, a bad word. What's not to like."
+  Room: "for someone else" at 0.94
+ok  them  1.5s  p(them)=0.94  'Can you pass me the salt?' -> ''
+ok  me    1.3s  p(them)=  -    'And soft-boiled?' -> 'Six minutes for a runny yolk.'
+ok  me    1.9s  p(them)=  -    'Yeah, go ahead.' -> "I can't actually check that. No hands, no internet to poke through, just me sitting here with these googly eyes."
+ok  them  0.0s  p(them)=  -    'Honey, I told you it was the Warriors.' -> ''
+ok  me    1.7s  p(them)=  -    'Haha, that was terrible.' -> "Ouch, fair. I'll aim lower next time."
+BAD them  2.1s  p(them)=0.34  "Okay, it's your turn to do the dishes." -> "Oh, please. I don't have hands, and you know that. Go on, do them yourself."
+ok  them  0.0s  p(them)=0.34  "Thanks. Mom, dinner's ready." -> ''
+ok  me    1.3s  p(them)=  -    'And divided by four?' -> 'Fort-five.'
+15/16 correct; median 1.5s

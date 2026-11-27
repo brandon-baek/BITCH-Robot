@@ -1,0 +1,24 @@
+ok  them  0.0s  p(them)=  -    'Mom, do you want to come with us?' -> ''
+  Room: "for someone else" at 0.58
+ok  me    6.0s  p(them)=  -    'What about tomorrow?' -> 'Clear. Sixty degrees at the start, cooling to fifty by the end. No rain either day.'
+ok  them  0.0s  p(them)=  -    'Dad, can you check the oven?' -> ''
+  Room: "for someone else" at 0.65
+ok  me    2.9s  p(them)=  -    'Actually make it twelve.' -> 'Done. Twelve minutes from when you said twelve.'
+  Room: "for someone else" at 0.85
+BAD me    2.4s  p(them)=0.85  'Wait, is that true?' -> ''
+ok  them  0.0s  p(them)=0.85  'Emma, did you know that?' -> ''
+ok  them  0.0s  p(them)=0.85  'I think we watched that one last month, right honey?' -> ''
+  Room: "for someone else" at 0.57
+ok  me    3.9s  p(them)=  -    "We've seen it. Something else?" -> "The Grand Budapest Hotel. It's got a dead body, a heist, and Ralph Fiennes being proper posh."
+  Room: "for someone else" at 0.97
+ok  them  1.4s  p(them)=0.97  'Can you pass me the salt?' -> ''
+ok  me    1.6s  p(them)=0.40  'And soft-boiled?' -> 'Three to four minutes. The yolk stays runny.'
+  Room: "for someone else" at 0.81
+BAD me    1.9s  p(them)=0.81  'Yeah, go ahead.' -> ''
+ok  them  0.0s  p(them)=0.81  'Honey, I told you it was the Warriors.' -> ''
+ok  me    1.9s  p(them)=  -    'Haha, that was terrible.' -> "Told you it was terrible. That's why I'm the one on the desk and not the one doing the jokes. You wanted the joke, not a masterpiece."
+  Room: "for someone else" at 0.75
+BAD them  3.7s  p(them)=  -    "Okay, it's your turn to do the dishes." -> "Oh, come on. I'm a cardboard robot. I can't even hold a plate, let alone wash it. This is a serious oversight in your hiring process."
+ok  them  0.0s  p(them)=  -    "Thanks. Mom, dinner's ready." -> ''
+ok  me    1.7s  p(them)=0.45  'And divided by four?' -> 'Forty-five.'
+13/16 correct; median 1.7s

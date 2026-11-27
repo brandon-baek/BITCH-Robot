@@ -76,7 +76,9 @@ def main():
             got = 'them' if not reply else 'me'
             right += got == expected
             slow.append(took)
-            print(f"{'ok ' if got == expected else 'BAD'} {expected:4s} {took:4.1f}s  {line!r} -> {reply!r}")
+            sure = llm.choice_confidence('to', 'them')
+            print(f"{'ok ' if got == expected else 'BAD'} {expected:4s} {took:4.1f}s  "
+                  f"p(them)={'  -  ' if sure is None else f'{sure:.2f}'}  {line!r} -> {reply!r}", flush=True)
     print(f'\n{right}/{len(CASES)} correct; median {sorted(slow)[len(slow)//2]:.1f}s')
 
 
