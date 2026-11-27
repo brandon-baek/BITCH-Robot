@@ -10,6 +10,7 @@ import random
 import re
 from pathlib import Path
 import secrets
+import socket
 import struct
 import signal
 import shutil
@@ -1008,9 +1009,13 @@ def listen(motion_enabled=True):
                     return
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/x-ndjson')
-                self.send_header('Transfer-Encoding', 'chunked')
                 self.send_header('Cache-Control', 'no-store')
+                self.send_header('Connection', 'close')
                 self.end_headers()
+                try:
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
                 stop_ev = threading.Event()
                 last_text = ''
                 try:
@@ -1020,7 +1025,7 @@ def listen(motion_enabled=True):
                             if event.get('text'):
                                 last_text = event['text']
                             chunk = (json.dumps(event, ensure_ascii=False) + '\n').encode('utf-8')
-                            self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                            self.wfile.write(chunk)
                             self.wfile.flush()
                     for mem in re.findall(r'\[MEM:\s*([^\]]+)\]', last_text, re.I):
                         pi_memory.remember(speaker, mem.strip())
@@ -1030,15 +1035,10 @@ def listen(motion_enabled=True):
                 except Exception as error:
                     err = (json.dumps({'error': str(error), 'done': True}) + '\n').encode('utf-8')
                     try:
-                        self.wfile.write(b'%x\r\n%s\r\n' % (len(err), err))
+                        self.wfile.write(err)
                         self.wfile.flush()
                     except OSError:
                         return
-                try:
-                    self.wfile.write(b'0\r\n\r\n')
-                    self.wfile.flush()
-                except OSError:
-                    pass
                 return
             if self.path not in ('/look', '/speak', '/stop', '/macro', '/keepalive', '/show'):
                 self.respond(404, {'error': 'unknown command'})

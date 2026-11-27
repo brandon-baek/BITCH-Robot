@@ -377,30 +377,40 @@ class CloudProvider:
             {self.helpers}
             const box = composer();
             if (!box) return {{ok: false, reason: 'no composer'}};
-            const scope = box.closest('form') || document;
+            const scope = box.closest('form, input-area-v2, .input-area-container, .text-input-field') || document;
             const thumbs = () => scope.querySelectorAll(
-                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], .image-preview, uploader-file-preview'
+                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], [data-test-id*="preview"], ' +
+                '[data-test-id*="image"], .image-preview, uploader-file-preview, file-preview-chip, .file-preview-container, ' +
+                'button[aria-label*="Remove file" i], button[aria-label*="Remove image" i]'
             );
             const beforeThumbs = thumbs().length;
             const raw = atob({b64_js});
             const bytes = new Uint8Array(raw.length);
             for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
             const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
-            const dt = new DataTransfer();
-            dt.items.add(file);
+            const makeDT = () => {{ const d = new DataTransfer(); d.items.add(file); return d; }};
             box.focus();
-            // Try clipboard paste on composer first (native in both ChatGPT ProseMirror & Gemini Quill).
-            box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
-            await new Promise(r => setTimeout(r, 150));
-            // Fallback: if no new thumbnail preview appeared, populate the page's file input directly.
+            // 1) Try clipboard paste on composer (native in ChatGPT ProseMirror & Gemini Quill).
+            box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
+            await new Promise(r => setTimeout(r, 220));
             const hasNewThumb = () => thumbs().length > beforeThumbs;
+            // 2) Fallback: drag-and-drop onto composer/container (Gemini Angular dropzone).
+            if (!hasNewThumb()) {{
+                for (const target of [box, scope]) {{
+                    if (!target) continue;
+                    const dtDrop = makeDT();
+                    target.dispatchEvent(new DragEvent('dragenter', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
+                    target.dispatchEvent(new DragEvent('dragover', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
+                    target.dispatchEvent(new DragEvent('drop', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
+                }}
+                await new Promise(r => setTimeout(r, 220));
+            }}
+            // 3) Fallback: populate any file input on the page directly.
             if (!hasNewThumb()) {{
                 const inp = Array.from(document.querySelectorAll('input[type="file"]'))
                     .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
                 if (inp) {{
-                    const dt2 = new DataTransfer();
-                    dt2.items.add(file);
-                    inp.files = dt2.files;
+                    inp.files = makeDT().files;
                     inp.dispatchEvent(new Event('change', {{bubbles: true}}));
                 }}
             }}
