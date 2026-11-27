@@ -392,12 +392,11 @@ class CloudProvider:
                 let a = findLink();
                 if (!a) {{
                     const toggle = document.querySelector('button[aria-label="Toggle sidebar"], button[aria-label="Open sidebar"]');
-                    if (toggle && toggle.offsetParent !== null) {{
-                        toggle.click();
-                        const endOpen = performance.now() + 1500;
-                        while (performance.now() < endOpen && !(a = findLink())) {{
-                            await new Promise(r => setTimeout(r, 80));
-                        }}
+                    const navVisible = !!document.querySelector('nav a[href^="/c/"]');
+                    if (!navVisible && toggle && toggle.offsetParent !== null) toggle.click();
+                    const endFind = performance.now() + 3000;
+                    while (performance.now() < endFind && !(a = findLink())) {{
+                        await new Promise(r => setTimeout(r, 120));
                     }}
                 }}
                 if (!a) return {{ok: false, reason: 'link_not_found'}};
@@ -641,19 +640,26 @@ class CloudProvider:
                     time.sleep(.35)
                     self._ensure_temp_chat(tab)
                 else:
-                    temp_flag = 'true' if TEMP_CHAT else 'false'
                     try:
-                        already_fresh_temp = tab.eval(
-                            f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
-                            f'&& (!{temp_flag} || location.search.includes("temporary-chat=true") '
-                            f'|| /temporary chat/i.test((document.body.textContent || "").slice(0, 800))); }})()',
-                            timeout=4.,
-                        )
+                        if TEMP_CHAT:
+                            already_fresh = tab.eval(
+                                f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
+                                '&& (location.search.includes("temporary-chat=true") '
+                                '|| !!document.querySelector("button[aria-label*=\\"Turn off temporary chat\\" i]")); }})()',
+                                timeout=4.,
+                            )
+                        else:
+                            already_fresh = tab.eval(
+                                f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
+                                '&& !location.search.includes("temporary-chat=true") '
+                                '&& !document.querySelector("button[aria-label*=\\"Turn off temporary chat\\" i]"); }})()',
+                                timeout=4.,
+                            )
                     except Exception:
                         self._close()
                         tab = self._connect()
-                        already_fresh_temp = False
-                    if not already_fresh_temp:
+                        already_fresh = False
+                    if not already_fresh:
                         if TEMP_CHAT:
                             # Navigate directly to ?temporary-chat=true so a fresh chat NEVER leaks into Recents,
                             # and always wait for full composer hydration before sending.
@@ -662,23 +668,34 @@ class CloudProvider:
                             self._ensure_ready(tab, wait=15.)
                             self._ensure_temp_chat(tab)
                         else:
-                            # Regular mode (full plugin + memory support): archive the previous BITCH chat first, then open New chat.
+                            # Regular mode (full plugin + memory support): archive the previous BITCH chat first,
+                            # then open a clean non-temporary New chat.
                             self._record_conv(tab)
                             self._archive_conv(tab)
-                            in_spa = tab.eval(
-                                '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
-                                '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
-                                ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
-                                'if (b) { b.click(); return true; } return false; })()',
-                                timeout=4.,
+                            in_temp = tab.eval(
+                                '(() => location.search.includes("temporary-chat=true") '
+                                '|| !!document.querySelector("button[aria-label*=\\"Turn off temporary chat\\" i]"))()',
+                                timeout=3.,
                             )
+                            in_spa = False
+                            if not in_temp:
+                                in_spa = tab.eval(
+                                    '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                                    '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                                    ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                                    'if (b) { b.click(); return true; } return false; })()',
+                                    timeout=4.,
+                                )
                             if not in_spa:
                                 tab.call('Page.enable')
                                 tab.call('Page.navigate', {'url': self.url})
-                            end_reset = time.monotonic() + 10.
+                            end_reset = time.monotonic() + 12.
                             while time.monotonic() < end_reset:
                                 try:
-                                    if tab.eval(f'(() => {{ {self.helpers} return replies().length === 0 && !!composer(); }})()', timeout=3.):
+                                    if tab.eval(
+                                        f'(() => {{ {self.helpers} return replies().length === 0 && !!composer() '
+                                        '&& !location.search.includes("temporary-chat=true"); }})()', timeout=3.
+                                    ):
                                         break
                                 except Exception:
                                     pass
