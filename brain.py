@@ -1021,7 +1021,7 @@ def listen(motion_enabled=True):
                 try:
                     with macros.desktop_lock:
                         for event in desktop_cloud.get_provider(provider).stream(
-                                prompt_text, reset=reset, image_b64=image_b64, timeout=90., stop_event=stop_ev):
+                                prompt_text, reset=reset, image_b64=image_b64, timeout=45., stop_event=stop_ev):
                             if event.get('text'):
                                 last_text = event['text']
                             chunk = (json.dumps(event, ensure_ascii=False) + '\n').encode('utf-8')

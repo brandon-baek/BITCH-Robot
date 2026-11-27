@@ -236,6 +236,18 @@ class Robot(Device):
         payload = {'provider': provider, 'prompt': prompt, 'reset': bool(reset),
                    'speaker': speaker or 'Brandon'}
         if image is not None:
+            if isinstance(image, (bytes, bytearray)) and len(image) > 35_000:
+                try:
+                    import cv2, numpy as np
+                    frame = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None and frame.shape[1] > 640:
+                        scale = 640 / frame.shape[1]
+                        frame = cv2.resize(frame, (640, max(1, int(frame.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+                        ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+                        if ok:
+                            image = buf.tobytes()
+                except Exception:
+                    pass
             payload['image'] = image if isinstance(image, str) else base64.b64encode(image).decode('ascii')
         body = json.dumps(payload).encode('utf-8')
         conn = http.client.HTTPConnection(*address(host), timeout=timeout)

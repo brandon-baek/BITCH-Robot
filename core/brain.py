@@ -254,7 +254,10 @@ VISUAL = re.compile(
     r"|who(?:'s| is) (?:standing|sitting|there|here|with me|in the room)|who do you see"
     r"|what(?:'s| is| are) (?:this|that|these|those)(?:\s+(?:thing|things|here|over here|right here|in my hand|i'm holding))?\s*[?.!]*$"
     r"|what(?:'s| is| are) on (?:my|the) (?:desk|table)|what do I have\b|what does .{0,32} look like|how (?:do|does) .{0,32} look\b|what.{0,28}(?:picture|camera|background)|read (?:this|that)|showing you|behind me|in front of (?:me|you))\b", re.I)
-VISUAL_FOLLOWUP = re.compile(r"\b(?:this|that|it|now|other|color|colour|holding|wearing)\b", re.I)
+VISUAL_FOLLOWUP = re.compile(
+    r"(?:^(?:and |what about |how about )?now\s*[?.!]*$"
+    r"|\b(?:color|colour|holding|wearing|look(?:s|ing)?\s+like|closer|zoom|which\s+(?:one|hand|side)"
+    r"|what\s+about\s+(?:this|that|the\s+other)|is\s+(?:this|that)\s+(?:a|an|my)|can\s+you\s+(?:see|read))\b)", re.I)
 EMOTIONS = [('proud', r'\b(?:good (?:job|robot)|proud of you|nailed it)\b'),
             ('happy', r"\b(?:we did it|high five|i (?:did it|won)|that.s awesome)\b"),
             ('sad', r"\b(?:feel sad|bad day|miss (?:him|her|them)|i.m sad)\b"),
@@ -1536,7 +1539,7 @@ class Brain:
             return self.cloud_reply(text, source, conversation, history, stream=stream, identity=identity,
                                     image=fresh_img, camera_ready=camera_ready, use_camera=True)
         if image is not None:
-            self.last_visual = (conversation, time.monotonic() + 45)
+            self.last_visual = (conversation, time.monotonic() + 25)
         if m:
             if m[1] and m[1].lower() in ('dance', 'disco', 'opera') and not PERFORM_INFO.search(text) and not self.performance_problem(robot):
                 self.pending_show = (m[1].lower(), None)

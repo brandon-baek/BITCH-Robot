@@ -38,7 +38,7 @@ const all = (s) => Array.from(document.querySelectorAll(s));
 const vis = (el) => !!el && el.offsetParent !== null;
 const composer = () => all('#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[name="prompt-textarea"]')
   .find((el) => vis(el) && (el.isContentEditable || el.tagName === 'TEXTAREA')) || null;
-const sendBtn = () => document.querySelector('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]');
+const sendBtn = () => document.querySelector('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send"], button[aria-label="Send prompt"], button[aria-label="Send message"]');
 const stopBtn = () => document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label^="Stop"]');
 const first = (sels) => { for (const s of sels) { const f = all(s); if (f.length) return f; } return []; };
 const replies = () => first(['[data-response-body]', '[data-markdown-text-style="assistant-message"]',
@@ -261,6 +261,26 @@ class CloudProvider:
                         tab.call('Page.enable')
                         tab.call('Page.navigate', {'url': CHATGPT_URL})
                     time.sleep(.35)
+                # Ensure Personalization stays enabled in Temporary Chat so ChatGPT can use memory/plugins/instructions
+                # while still keeping conversations out of history.
+                tab.eval('''(async () => {
+                    const deadline = performance.now() + 2500;
+                    while (performance.now() < deadline) {
+                        const txt = document.body.innerText || '';
+                        if (/can reference memory/i.test(txt)) return {ok: true, personalized: true};
+                        const pBtn = Array.from(document.querySelectorAll('button'))
+                            .find(e => e.offsetParent !== null && /^personalization$/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
+                        if (pBtn && /won['’]t (?:use|reference)|without personalization|not personalized|temporary chat/i.test(txt)) {
+                            if (/won['’]t (?:use|reference)|without personalization|not personalized/i.test(txt)) {
+                                pBtn.click();
+                                await new Promise(r => setTimeout(r, 250));
+                                continue;
+                            }
+                        }
+                        await new Promise(r => setTimeout(r, 120));
+                    }
+                    return {ok: true, personalized: /can reference memory/i.test(document.body.innerText || '')};
+                })()''', timeout=4.)
             else:
                 clicked = tab.eval(
                     '(() => { const b = Array.from(document.querySelectorAll("button"))'
@@ -470,11 +490,11 @@ class CloudProvider:
             {self.helpers}
             const box = composer();
             if (!box) return {{ok: false, reason: 'no composer'}};
-            const scope = box.closest('form, input-area-v2, .input-area-container, .text-input-field') || document;
+            const scope = box.closest('form') || document;
             const thumbs = () => scope.querySelectorAll(
-                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], [data-test-id*="preview"], ' +
-                '[data-test-id*="image"], .image-preview, uploader-file-preview, file-preview-chip, .file-preview-container, ' +
-                'button[aria-label*="Remove file" i], button[aria-label*="Remove image" i]'
+                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], ' +
+                'button[aria-label*="Remove file" i], button[aria-label*="Remove image" i], ' +
+                'button[aria-label="User attachment"]'
             );
             const beforeThumbs = thumbs().length;
             const raw = atob({b64_js});
@@ -483,22 +503,14 @@ class CloudProvider:
             const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
             const makeDT = () => {{ const d = new DataTransfer(); d.items.add(file); return d; }};
             box.focus();
-            // 1) Try clipboard paste on composer (native in ChatGPT ProseMirror & Gemini Quill).
+            // 1) Paste once into ChatGPT's composer and wait up to 1.2 s for the preview thumbnail (never double-paste).
             box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
-            await new Promise(r => setTimeout(r, 220));
             const hasNewThumb = () => thumbs().length > beforeThumbs;
-            // 2) Fallback: drag-and-drop onto composer/container (Gemini Angular dropzone).
-            if (!hasNewThumb()) {{
-                for (const target of [box, scope]) {{
-                    if (!target) continue;
-                    const dtDrop = makeDT();
-                    target.dispatchEvent(new DragEvent('dragenter', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
-                    target.dispatchEvent(new DragEvent('dragover', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
-                    target.dispatchEvent(new DragEvent('drop', {{dataTransfer: dtDrop, bubbles: true, cancelable: true}}));
-                }}
-                await new Promise(r => setTimeout(r, 220));
+            const pasteWait = performance.now() + 1200;
+            while (performance.now() < pasteWait && !hasNewThumb()) {{
+                await new Promise(r => setTimeout(r, 80));
             }}
-            // 3) Fallback: populate any file input on the page directly.
+            // 2) Fallback ONLY if paste produced no thumbnail: populate the hidden file input once.
             if (!hasNewThumb()) {{
                 const inp = Array.from(document.querySelectorAll('input[type="file"]'))
                     .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
@@ -507,18 +519,20 @@ class CloudProvider:
                     inp.dispatchEvent(new Event('change', {{bubbles: true}}));
                 }}
             }}
-            // Wait up to 6 s for image upload spinner to finish and Send button / preview to settle.
-            const deadline = performance.now() + 6000;
+            // Wait up to 8 s for image upload spinner to finish and Send button to become ready.
+            const deadline = performance.now() + 8000;
             let sawThumb = false;
             while (performance.now() < deadline) {{
                 const thumb = hasNewThumb();
                 if (thumb) sawThumb = true;
                 const uploading = !!scope.querySelector(
-                    '[aria-label*="Uploading" i], [aria-label*="uploading" i], circle.animate-spin, mat-progress-spinner, [data-testid*="upload-progress"]'
+                    '[aria-label*="Uploading" i], [aria-label*="uploading" i], circle.animate-spin, [data-testid*="upload-progress"]'
                 );
-                if (sawThumb && !uploading) {{
+                const sBtn = sendBtn();
+                const sendDisabled = !!sBtn && (sBtn.disabled || sBtn.getAttribute('aria-disabled') === 'true');
+                if (sawThumb && !uploading && !sendDisabled) {{
                     await new Promise(r => setTimeout(r, 120));
-                    return {{ok: true, thumb: true}};
+                    return {{ok: true, thumb: true, count: thumbs().length - beforeThumbs}};
                 }}
                 await new Promise(r => setTimeout(r, 100));
             }}
@@ -580,8 +594,10 @@ class CloudProvider:
                             except Exception:
                                 pass
                             time.sleep(.15)
-                        if in_spa and TEMP_CHAT:
+                        if TEMP_CHAT:
                             self._ensure_temp_chat(tab)
+                    elif TEMP_CHAT:
+                        self._ensure_temp_chat(tab)
                 self.turns = 0
                 self.primed = False
             elif self.turns == 0:
@@ -632,16 +648,17 @@ class CloudProvider:
                 let stableTicks = 0;
                 let sawStreaming = false;
                 let finished = false;
-                let nudged = false;
+                let nudgeCount = 0;
+                const nudgeAt = [350, 1000, 2200];
                 const started = performance.now();
                 const tick = () => {{
                     if (finished) return;
                     const rs = replies();
                     if (rs.length <= beforeCount) {{
-                        if (!nudged && performance.now() - started > 300) {{
-                            nudged = true;
+                        if (nudgeCount < nudgeAt.length && performance.now() - started > nudgeAt[nudgeCount]) {{
+                            nudgeCount++;
                             const b = sendBtn();
-                            if (b && !b.disabled) b.click();
+                            if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') b.click();
                         }}
                         return;
                     }}
@@ -705,6 +722,8 @@ class CloudProvider:
                         return
                     raw = tab.next_binding('__bitchStream', timeout=.15)
                     if raw is None:
+                        if ttft is None and time.monotonic() - t_sent > min(28., timeout):
+                            raise TimeoutError(f'{self.name} produced no reply within 28s')
                         continue
                     data = json.loads(raw)
                     txt = data.get('text') or ''
