@@ -31,14 +31,12 @@ IDLE_RESET_SECONDS = 900.
 # ---------------------------------------------------------------- Page-side helpers (single-eval fast send + push stream)
 
 CHATGPT_HELPERS = r'''
-const q = (s) => document.querySelector(s);
 const all = (s) => Array.from(document.querySelectorAll(s));
-const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+const vis = (el) => !!el && el.offsetParent !== null;
 const composer = () => all('#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[name="prompt-textarea"]')
   .find((el) => vis(el) && (el.isContentEditable || el.tagName === 'TEXTAREA')) || null;
-const sendBtn = () => all('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]')
-  .find((el) => vis(el) && !el.disabled && !/stop/i.test(el.getAttribute('aria-label') || '')) || null;
-const stopBtn = () => all('[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="stop"]').find(vis) || null;
+const sendBtn = () => document.querySelector('[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send message"]');
+const stopBtn = () => document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label^="Stop"]');
 const first = (sels) => { for (const s of sels) { const f = all(s); if (f.length) return f; } return []; };
 const replies = () => first(['[data-response-body]', '[data-markdown-text-style="assistant-message"]',
                              '[data-message-author-role="assistant"]']);
@@ -56,23 +54,18 @@ const isStreaming = () => {
 const isComplete = () => {
   const r = replies();
   const last = r[r.length - 1];
-  if (!last) return false;
-  const turn = last.closest('[data-talvt-turn-state]');
-  if (turn && turn.getAttribute('data-talvt-turn-state') === 'complete') return true;
-  // ChatGPT adds Copy/Feedback action buttons under the last assistant message once streaming finishes.
-  const article = last.closest('article') || last.parentElement;
-  return !!(article && !stopBtn() && article.querySelector('[data-testid="copy-turn-action-button"], button[aria-label="Copy"]'));
+  const turn = last && last.closest('[data-talvt-turn-state]');
+  return !!turn && turn.getAttribute('data-talvt-turn-state') === 'complete';
 };
 '''
 
 GEMINI_HELPERS = r'''
 const all = (s) => Array.from(document.querySelectorAll(s));
-const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+const vis = (el) => !!el && el.offsetParent !== null;
 const composer = () => all('.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [aria-label*="prompt for Gemini"]')
   .find(vis) || null;
-const sendBtn = () => all('button.send-button, button[aria-label="Send message"], button[aria-label^="Send"], .send-button-container button')
-  .find((el) => vis(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' && !/stop/i.test(el.getAttribute('aria-label') || '')) || null;
-const stopBtn = () => all('button[aria-label*="Stop"], button.stop, .stop-icon').find(vis) || null;
+const sendBtn = () => document.querySelector('button.send-button:not([disabled]), button[aria-label="Send message"]:not([disabled])');
+const stopBtn = () => document.querySelector('button[aria-label*="Stop"], button.stop, .stop-icon');
 const replies = () => {
   for (const s of ['model-response message-content .markdown', 'model-response .markdown', 'message-content .markdown', 'model-response']) {
     const f = all(s);
@@ -83,8 +76,7 @@ const replies = () => {
 const textOf = (el) => (el ? (el.innerText || '').trim() : '');
 const isStreaming = () => {
   if (stopBtn()) return true;
-  const busy = all('model-response[aria-busy="true"], .loading-indicator, mat-progress-bar').find(vis);
-  return !!busy;
+  return !!document.querySelector('model-response[aria-busy="true"], .loading-indicator, mat-progress-bar');
 };
 const isComplete = () => false;
 '''
@@ -375,7 +367,8 @@ class CloudProvider:
             self._ensure_fast_mode(tab)
             t_ready = time.monotonic()
 
-            # Fast zero-wait send: focus + clear + install MutationObserver BEFORE submitting, then Input.insertText + Enter.
+            # Zero-thrashing send: focus + clear in 1 eval, insertText + Enter directly, then lightweight 70 ms poll
+            # (NO MutationObserver on document.body, which thrashes the Pi 4 renderer CPU during React/Angular updates).
             tab.drain()
             prep_script = f'''(() => {{
                 {self.helpers}
@@ -388,14 +381,47 @@ class CloudProvider:
                 box.focus();
                 document.execCommand('selectAll', false, null);
                 document.execCommand('delete', false, null);
+                return {{ok: true, beforeCount, prevText}};
+            }})()'''
+            prep_res = tab.eval(prep_script, timeout=6.)
+            if not prep_res or not prep_res.get('ok'):
+                raise RuntimeError(f'{self.name} prep failed: {prep_res}')
+            before_count = int(prep_res['beforeCount'])
+            prev_text = prep_res.get('prevText') or ''
+            # Trusted CDP insertText + Enter: zero polling loops.
+            one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
+            tab.call('Input.insertText', {'text': one_line}, timeout=6.)
+            time.sleep(.03)
+            for kind in ('keyDown', 'keyUp'):
+                tab.call('Input.dispatchKeyEvent', {
+                    'type': kind, 'key': 'Enter', 'code': 'Enter',
+                    'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
+                }, timeout=4.)
+            t_sent = time.monotonic()
+
+            # Lightweight 70 ms in-page timer pushes ONLY when the last reply text changes or completes.
+            watch_script = f'''(() => {{
+                {self.helpers}
+                const beforeCount = {before_count};
+                const prevText = {json.dumps(prev_text)};
                 let lastSent = '';
                 let stableTicks = 0;
                 let sawStreaming = false;
                 let finished = false;
-                const check = () => {{
+                let nudged = false;
+                const started = performance.now();
+                const tick = () => {{
                     if (finished) return;
                     const rs = replies();
-                    if (rs.length <= beforeCount) return;
+                    if (rs.length <= beforeCount) {{
+                        // If Enter didn't submit after 450 ms, click Send button once as backup.
+                        if (!nudged && performance.now() - started > 450) {{
+                            nudged = true;
+                            const b = sendBtn();
+                            if (b && !b.disabled) b.click();
+                        }}
+                        return;
+                    }}
                     const el = rs[rs.length - 1];
                     const txt = textOf(el);
                     const busy = isStreaming();
@@ -410,34 +436,18 @@ class CloudProvider:
                     }} else {{
                         stableTicks = 0;
                     }}
-                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 4) || stableTicks >= 16));
+                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 5) || stableTicks >= 16));
                     if (doneNow) {{
                         finished = true;
-                        if (window.__bitchObs) {{ window.__bitchObs.disconnect(); window.__bitchObs = null; }}
-                        if (window.__bitchTimer) {{ clearInterval(window.__bitchTimer); window.__bitchTimer = null; }}
+                        clearInterval(window.__bitchTimer);
+                        window.__bitchTimer = null;
                         window.__bitchStream(JSON.stringify({{text: txt, done: true}}));
                     }}
                 }};
-                window.__bitchObs = new MutationObserver(check);
-                window.__bitchObs.observe(document.body, {{childList: true, subtree: true, characterData: true}});
-                window.__bitchTimer = setInterval(check, 55);
-                return {{ok: true, beforeCount}};
+                window.__bitchTimer = setInterval(tick, 70);
+                return true;
             }})()'''
-            prep_res = tab.eval(prep_script, timeout=6.)
-            if not prep_res or not prep_res.get('ok'):
-                raise RuntimeError(f'{self.name} prep failed: {prep_res}')
-            # Trusted CDP insertText + Enter: instant (~40-80 ms), no 18-tick JS polling loop.
-            one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
-            tab.call('Input.insertText', {'text': one_line}, timeout=6.)
-            time.sleep(.04)
-            clicked_send = tab.eval(f'(() => {{ {self.helpers} const b = sendBtn(); if (b) {{ b.click(); return true; }} return false; }})()', timeout=3.)
-            if not clicked_send:
-                for kind in ('keyDown', 'keyUp'):
-                    tab.call('Input.dispatchKeyEvent', {
-                        'type': kind, 'key': 'Enter', 'code': 'Enter',
-                        'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
-                    }, timeout=4.)
-            t_sent = time.monotonic()
+            tab.eval(watch_script, timeout=4.)
 
             full_text = ''
             ttft = None
