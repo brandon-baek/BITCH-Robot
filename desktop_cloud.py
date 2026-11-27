@@ -11,10 +11,12 @@ Ask a streaming question:
     python3 desktop_cloud.py ask gemini "Say hi in one short sentence."
     python3 desktop_cloud.py ask chatgpt "Say hi in one short sentence."
 """
+import base64
 import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -90,6 +92,7 @@ class StreamTab:
         self.ws = cdp.Socket(ws_url)
         self.next_id = 0
         self.events = []
+        self.file_chooser = None
 
     def call(self, method, params=None, timeout=15.):
         self.next_id += 1
@@ -105,6 +108,26 @@ class StreamTab:
                 if 'error' in msg:
                     raise RuntimeError(f"{method}: {msg['error'].get('message')}")
                 return msg.get('result', {})
+            if msg.get('method') == 'Runtime.bindingCalled':
+                self.events.append(msg.get('params', {}))
+            elif msg.get('method') == 'Page.fileChooserOpened':
+                self.file_chooser = msg.get('params', {})
+
+    def wait_file_chooser(self, timeout=4.):
+        if self.file_chooser is not None:
+            fc, self.file_chooser = self.file_chooser, None
+            return fc
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                msg = json.loads(self.ws.recv(left))
+            except (TimeoutError, socket.timeout):
+                return None
+            if msg.get('method') == 'Page.fileChooserOpened':
+                return msg.get('params', {})
             if msg.get('method') == 'Runtime.bindingCalled':
                 self.events.append(msg.get('params', {}))
 
@@ -370,8 +393,70 @@ class CloudProvider:
                 self._close()
                 return False
 
+    def _attach_image_gemini(self, tab, image_b64):
+        """Attach a JPEG on Gemini via CDP file chooser interception (no OS dialog, trusted upload)."""
+        tmp_path = os.path.join(tempfile.gettempdir(), 'bitch_camera.jpg')
+        with open(tmp_path, 'wb') as f:
+            f.write(base64.b64decode(image_b64))
+        before = tab.eval('''(() => document.querySelectorAll(
+            'img[src^="blob:"], img[src^="data:image"], uploader-file-preview, file-preview-chip, ' +
+            '.file-preview-container, button[aria-label*="Remove" i]'
+        ).length)()''', timeout=4.) or 0
+        tab.file_chooser = None
+        tab.call('Page.enable', timeout=4.)
+        tab.call('DOM.enable', timeout=4.)
+        tab.call('Page.setInterceptFileChooserDialog', {'enabled': True}, timeout=4.)
+        try:
+            opened = tab.eval('''(async () => {
+                const btn = Array.from(document.querySelectorAll('button'))
+                    .find(b => b.offsetParent !== null && /upload|add files/i.test(b.ariaLabel || b.textContent || ''));
+                if (!btn) return {ok: false, reason: 'no_upload_btn'};
+                btn.click();
+                const end = performance.now() + 2000;
+                while (performance.now() < end) {
+                    const item = Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, li'))
+                        .find(el => el.offsetParent !== null && /^\\s*(?:upload files?|upload image|add from computer)\\s*$/i.test((el.textContent || '').trim()));
+                    if (item) { item.click(); return {ok: true, clicked: (item.textContent || '').trim()}; }
+                    await new Promise(r => setTimeout(r, 60));
+                }
+                return {ok: false, reason: 'no_upload_menu_item',
+                        items: Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item'))
+                            .filter(el => el.offsetParent !== null).map(el => (el.textContent || '').trim()).filter(Boolean).slice(-10)};
+            })()''', timeout=6.)
+            if not opened or not opened.get('ok'):
+                return opened or {'ok': False, 'reason': 'menu_failed'}
+            fc = tab.wait_file_chooser(timeout=4.)
+            if not fc or 'backendNodeId' not in fc:
+                return {'ok': False, 'reason': 'no_file_chooser', 'opened': opened}
+            tab.call('DOM.setFileInputFiles', {'backendNodeId': fc['backendNodeId'], 'files': [tmp_path]}, timeout=6.)
+        finally:
+            try:
+                tab.call('Page.setInterceptFileChooserDialog', {'enabled': False}, timeout=4.)
+            except Exception:
+                pass
+        return tab.eval(f'''(async () => {{
+            const thumbs = () => document.querySelectorAll(
+                'img[src^="blob:"], img[src^="data:image"], uploader-file-preview, file-preview-chip, ' +
+                '.file-preview-container, button[aria-label*="Remove" i]'
+            );
+            const deadline = performance.now() + 7000;
+            let saw = false;
+            while (performance.now() < deadline) {{
+                if (thumbs().length > {int(before)}) saw = true;
+                const uploading = !!document.querySelector('mat-progress-spinner, [aria-label*="Uploading" i], .loading-spinner');
+                if (saw && !uploading) {{
+                    await new Promise(r => setTimeout(r, 180));
+                    return {{ok: true, thumb: true}};
+                }}
+                await new Promise(r => setTimeout(r, 100));
+            }}
+            return {{ok: saw, thumb: saw, reason: saw ? 'still_uploading' : 'no_thumbnail'}};
+        }})()''', timeout=10.)
+
     def _attach_image(self, tab, image_b64):
-        """Paste a base64 JPEG directly into ChatGPT/Gemini's composer via DataTransfer and wait for upload ready."""
+        """Attach a base64 JPEG to ChatGPT or Gemini's composer and wait until upload is ready."""
+        if self.name == 'gemini':
+            return self._attach_image_gemini(tab, image_b64)
         b64_js = json.dumps(image_b64)
         attach_script = f'''(async () => {{
             {self.helpers}
