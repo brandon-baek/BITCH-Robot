@@ -370,8 +370,61 @@ class CloudProvider:
                 self._close()
                 return False
 
-    def stream(self, prompt, *, reset=False, timeout=90., stop_event=None):
-        """Send `prompt` and yield incremental dicts: {'text': full_so_far, 'delta': new_chars, 'done': bool, 'timing': ...}."""
+    def _attach_image(self, tab, image_b64):
+        """Paste a base64 JPEG directly into ChatGPT/Gemini's composer via DataTransfer and wait for upload ready."""
+        b64_js = json.dumps(image_b64)
+        attach_script = f'''(async () => {{
+            {self.helpers}
+            const box = composer();
+            if (!box) return {{ok: false, reason: 'no composer'}};
+            const scope = box.closest('form') || document;
+            const thumbs = () => scope.querySelectorAll(
+                'img[src^="blob:"], img[src^="data:image"], [data-testid*="attachment"], .image-preview, uploader-file-preview'
+            );
+            const beforeThumbs = thumbs().length;
+            const raw = atob({b64_js});
+            const bytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+            const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            box.focus();
+            // Try clipboard paste on composer first (native in both ChatGPT ProseMirror & Gemini Quill).
+            box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
+            await new Promise(r => setTimeout(r, 150));
+            // Fallback: if no new thumbnail preview appeared, populate the page's file input directly.
+            const hasNewThumb = () => thumbs().length > beforeThumbs;
+            if (!hasNewThumb()) {{
+                const inp = Array.from(document.querySelectorAll('input[type="file"]'))
+                    .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
+                if (inp) {{
+                    const dt2 = new DataTransfer();
+                    dt2.items.add(file);
+                    inp.files = dt2.files;
+                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }}
+            }}
+            // Wait up to 6 s for image upload spinner to finish and Send button / preview to settle.
+            const deadline = performance.now() + 6000;
+            let sawThumb = false;
+            while (performance.now() < deadline) {{
+                const thumb = hasNewThumb();
+                if (thumb) sawThumb = true;
+                const uploading = !!scope.querySelector(
+                    '[aria-label*="Uploading" i], [aria-label*="uploading" i], circle.animate-spin, mat-progress-spinner, [data-testid*="upload-progress"]'
+                );
+                if (sawThumb && !uploading) {{
+                    await new Promise(r => setTimeout(r, 120));
+                    return {{ok: true, thumb: true}};
+                }}
+                await new Promise(r => setTimeout(r, 100));
+            }}
+            return {{ok: sawThumb, thumb: sawThumb, reason: sawThumb ? 'still_uploading' : 'no_thumbnail'}};
+        }})()'''
+        return tab.eval(attach_script, timeout=10.)
+
+    def stream(self, prompt, *, reset=False, image_b64=None, timeout=90., stop_event=None):
+        """Send `prompt` (with optional base64 JPEG `image_b64`) and yield incremental stream dicts."""
         with self.lock:
             t0 = time.monotonic()
             tab = self._connect()
@@ -434,6 +487,10 @@ class CloudProvider:
                 if not self._ensure_ready(tab, wait=15.):
                     raise RuntimeError(f'{self.name} composer not ready')
                 self._ensure_fast_mode(tab)
+            if image_b64:
+                att = self._attach_image(tab, image_b64)
+                if not att or not att.get('ok'):
+                    raise RuntimeError(f'{self.name} image attach failed: {att}')
             t_ready = time.monotonic()
 
             # Single-roundtrip send + observer setup: paste prompt, click Send (or fallback to Enter), and install 45 ms textContent ticker.

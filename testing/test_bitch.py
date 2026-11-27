@@ -881,9 +881,10 @@ class WakeTests(unittest.TestCase):
         offered = []
         stream = SimpleNamespace(parts=[], offer=lambda text, delivery, **kw: offered.append((text, delivery, kw)))
 
-        def fake_chat_stream(prompt, *, provider, reset, speaker=None, on_delta=None, stop=None):
+        def fake_chat_stream(prompt, *, provider, reset, speaker=None, image=None, on_delta=None, stop=None):
             self.assertEqual(provider, 'chatgpt')
             self.assertTrue(reset)
+            self.assertIsNone(image)
             on_delta('[p] First sentence here.')
             on_delta('[p] First sentence here. Second one too. [MEM: I love matcha lattes]')
             return '[p] First sentence here. Second one too. [MEM: I love matcha lattes]'
@@ -897,6 +898,41 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(brain.delivery, 'playful')
         self.assertEqual([text for text, _, _ in offered], ['First sentence here.', 'Second one too.'])
         self.assertEqual(brain.cloud_primed, ('chatgpt', ('desk', None)))
+
+    def test_pi_cloud_brain_handles_visual_queries_and_do_look(self):
+        brain = Brain()
+        calls = []
+        fake_jpg = b'\xff\xd8\xff\xe0FAKEJPEG\xff\xd9'
+
+        def fake_chat_stream(prompt, *, provider, reset, speaker=None, image=None, on_delta=None, stop=None):
+            calls.append((prompt, image))
+            if image is None:
+                return '[DO:look]'
+            return '[p] That is a bright red mug.'
+
+        robot = SimpleNamespace(online=True, cloud_chat=True, shows=True, motion_enabled=True, show_active=False,
+                                chat_stream=fake_chat_stream)
+        sight = SimpleNamespace(current_scene=lambda: (fake_jpg, 1), has_frame=lambda: True)
+        with (patch.dict(config.stored, {'brain_source': 'pi-chatgpt'}),
+              patch.object(hub, 'get', return_value=robot), patch.object(hub, 'sight', sight)):
+            # Direct visual question sends camera photo immediately on first call.
+            reply = brain.reply('What am I holding?', 'desk')
+            self.assertEqual(reply, 'That is a bright red mug.')
+            self.assertEqual(calls[-1][1], fake_jpg)
+            self.assertIn('Camera photo attached', calls[-1][0])
+            self.assertIsNotNone(brain.last_visual)
+            # Non-obviously visual prompt triggers [DO:look] -> grabs camera -> re-runs with photo attached.
+            brain.last_visual = None
+            calls.clear()
+            reply2 = brain.reply('Guess what this thing is.', 'desk')
+            self.assertEqual(reply2, 'That is a bright red mug.')
+            self.assertEqual(len(calls), 2)
+            self.assertIsNone(calls[0][1])
+            self.assertEqual(calls[1][1], fake_jpg)
+        # Missing camera returns friendly message without calling cloud.
+        with (patch.dict(config.stored, {'brain_source': 'pi-chatgpt'}),
+              patch.object(hub, 'get', return_value=robot), patch.object(hub, 'sight', None)):
+            self.assertEqual(brain.reply('What am I holding?', 'desk'), 'I can’t see the camera right now.')
 
     def test_pi_native_sqlite_memory_stores_dedups_and_recalls(self):
         import pi_memory

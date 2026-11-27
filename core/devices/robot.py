@@ -227,13 +227,17 @@ class Robot(Device):
     def macro_status(self, request_id):
         return self.request('macro/status?id=' + request_id) if self.handoff else None
 
-    def chat_stream(self, prompt, *, provider='chatgpt', reset=False, speaker=None, on_delta=None, stop=None, timeout=60.):
-        """Stream a real-time reply from the Pi's signed-in ChatGPT Instant or Gemini Hydrogen tab."""
+    def chat_stream(self, prompt, *, provider='chatgpt', reset=False, speaker=None, image=None, on_delta=None, stop=None, timeout=60.):
+        """Stream a real-time reply (text or multimodal camera frame) from the Pi's signed-in ChatGPT or Gemini tab."""
+        import base64
         host, key = config.get('robot_host'), config.get('robot_key')
         if not (self.online and self.cloud_chat and host and key):
             raise OSError('Pi streaming cloud brain is unavailable')
-        body = json.dumps({'provider': provider, 'prompt': prompt, 'reset': bool(reset),
-                           'speaker': speaker or 'Brandon'}).encode('utf-8')
+        payload = {'provider': provider, 'prompt': prompt, 'reset': bool(reset),
+                   'speaker': speaker or 'Brandon'}
+        if image is not None:
+            payload['image'] = image if isinstance(image, str) else base64.b64encode(image).decode('ascii')
+        body = json.dumps(payload).encode('utf-8')
         conn = http.client.HTTPConnection(*address(host), timeout=timeout)
         try:
             conn.request('POST', '/chat_stream', body=body, headers={

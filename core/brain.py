@@ -1422,11 +1422,12 @@ class Brain:
                          'If they need live info, say so in one short line without mentioning ChatGPT or guessing.')
         return actions, extra, lines
 
-    def cloud_reply(self, text, source, conversation, history, *, stream=None, identity=None):
-        """Stream a real-time spoken reply directly from the Pi's signed-in ChatGPT Instant or Gemini Hydrogen tab.
+    def cloud_reply(self, text, source, conversation, history, *, stream=None, identity=None,
+                    image=None, camera_ready=False, use_camera=False):
+        """Stream a real-time spoken reply (text or camera vision) from the Pi's signed-in ChatGPT or Gemini tab.
 
-        Uses 0 GB of Mac RAM, keeps full conversation history in the persistent browser tab, and streams each
-        sentence straight into voice.ReplyStream the millisecond it finishes."""
+        Uses 0 GB of Mac RAM, keeps full conversation history in the persistent Temporary Chat tab, and streams
+        each sentence straight into voice.ReplyStream the millisecond it finishes."""
         backend = config.get('brain_source')
         if backend not in ('pi-chatgpt', 'pi-gemini'):
             return None
@@ -1439,6 +1440,8 @@ class Brain:
         if self.speaker:
             notes.append(f'Speaker: {self.speaker}')
         notes.append(f'{datetime.now():%a %-I:%M %p}')
+        if image is not None:
+            notes.append('Camera photo attached — answer directly from what you see in it; say if you cannot make it out')
         if need_prime:
             remembered = memory.context(identity, text) if identity else None
             if remembered:
@@ -1448,6 +1451,10 @@ class Brain:
             recent_bot = [m['text'] for m in hub.messages[-3:] if m['role'] == 'robot' and time.time() - m['at'] < 45]
             if recent_bot:
                 notes.append('You just said aloud: ' + ' / '.join(recent_bot))
+            look_rule = (
+                "If they ask about something in the room/hand/camera and no photo is attached yet, reply ONLY [DO:look]. "
+                if camera_ready else ""
+            )
             primer = (
                 "You are BITCH (your real name, on purpose — you own it), Brandon's small desk robot made of "
                 "cardboard and popsicle sticks with googly eyes. Talk like his dry, witty, casual friend — NEVER "
@@ -1458,6 +1465,7 @@ class Brain:
                 "[g] gentle, [a] annoyed, [s] sad, or [r] surprised. "
                 "If they ask you to perform right now (dance/disco/opera), prefix [DO:dance], [DO:disco], or [DO:opera] "
                 "(if they only ask what performances you can do, just list dance, disco, and opera without starting one). "
+                + look_rule +
                 "If they are clearly saying goodbye, end with [END]. "
                 "If they tell you a new lasting personal preference, project, or fact worth keeping across future chats, "
                 "append [MEM: short fact in their words] at the very end (skip temporary chat details). "
@@ -1469,10 +1477,10 @@ class Brain:
 
         spoken_sent = 0
         delivery_set = False
-        tag_re = re.compile(r'^\s*(?:\[DO:(dance|disco|opera)\]\s*)?(?:\[([nwugepsalr])\]\s*)?', re.I)
+        tag_re = re.compile(r'^\s*(?:\[DO:(dance|disco|opera|look)\]\s*)?(?:\[([nwugepsalr])\]\s*)?', re.I)
 
         def strip_tags(raw):
-            cleaned = re.sub(r'\[DO:(?:dance|disco|opera)\]\s*', '', raw, flags=re.I)
+            cleaned = re.sub(r'\[DO:(?:dance|disco|opera|look)\]\s*', '', raw, flags=re.I)
             cleaned = re.sub(r'\[MEM:[^\]]*\]\s*', '', cleaned, flags=re.I)
             cleaned = re.sub(r'\[(?:END|[nwugepsalr])\]\s*', '', cleaned, flags=re.I)
             cleaned = helper.MARKUP.sub(lambda m: m[1] or '', cleaned)
@@ -1481,6 +1489,8 @@ class Brain:
         def on_delta(accumulated):
             nonlocal spoken_sent, delivery_set
             if self.hush.is_set() or not stream:
+                return
+            if re.match(r'^\s*\[DO:look\]', accumulated, re.I):
                 return
             if not delivery_set and len(accumulated) >= 3:
                 m = tag_re.match(accumulated)
@@ -1510,7 +1520,7 @@ class Brain:
 
         try:
             raw = robot.chat_stream(prompt, provider=provider, reset=need_prime, speaker=self.speaker,
-                                    on_delta=on_delta, stop=self.hush)
+                                    image=image, on_delta=on_delta, stop=self.hush)
         except Exception as error:
             hub.note('cloud', f'Pi {provider} failed: {error}')
             return None
@@ -1519,8 +1529,16 @@ class Brain:
         self.cloud_primed = (provider, conversation)
         hub.note('cloud', None)
         m = tag_re.match(raw or '')
+        if m and m[1] and m[1].lower() == 'look' and image is None and not use_camera:
+            fresh_img, _ = hub.sight.current_scene() if hub.sight else (None, None)
+            if fresh_img is None:
+                return 'I can’t see the camera right now.'
+            return self.cloud_reply(text, source, conversation, history, stream=stream, identity=identity,
+                                    image=fresh_img, camera_ready=camera_ready, use_camera=True)
+        if image is not None:
+            self.last_visual = (conversation, time.monotonic() + 45)
         if m:
-            if m[1] and not PERFORM_INFO.search(text) and not self.performance_problem(robot):
+            if m[1] and m[1].lower() in ('dance', 'disco', 'opera') and not PERFORM_INFO.search(text) and not self.performance_problem(robot):
                 self.pending_show = (m[1].lower(), None)
             if m[2]:
                 self.set_delivery({'v': m[2].lower()})
@@ -1666,10 +1684,14 @@ class Brain:
         follow_image = (self.last_visual and self.last_visual[0] == conversation
                         and time.monotonic() < self.last_visual[1] and VISUAL_FOLLOWUP.search(text))
         visual = bool(VISUAL.search(text) or follow_image or use_camera)
-        # Fast Pi Cloud Brain (ChatGPT Instant / Gemini Hydrogen): 0 GB Mac RAM, native search/email/calendar,
+        # Fast Pi Cloud Brain (ChatGPT Instant / Gemini Hydrogen): 0 GB Mac RAM, native vision + search/email/calendar,
         # and sentence-by-sentence streaming straight into TTS.
-        if not visual and not can_select_show and not local_request and config.get('brain_source') in ('pi-chatgpt', 'pi-gemini'):
-            cloud = self.cloud_reply(text, source, conversation, history, stream=stream, identity=identity)
+        if not can_select_show and not local_request and config.get('brain_source') in ('pi-chatgpt', 'pi-gemini'):
+            if visual and image is None:
+                return 'I can’t see the camera right now.'
+            cloud = self.cloud_reply(text, source, conversation, history, stream=stream, identity=identity,
+                                     image=image if visual else None, camera_ready=image is not None,
+                                     use_camera=use_camera)
             if cloud is not None:
                 return cloud
         natural_memory = bool(identity and (self.current_voice == identity or self.speaker_evidence in ('face', 'body'))
