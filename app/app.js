@@ -912,7 +912,7 @@ action('volume', 'change', () => {
 });
 action('pairForm', 'submit', async () => {
   await api('pair', {code: $('code').value});
-  location.reload();
+  location.replace(location.pathname);   // drop ?pair= from a scanned QR code
 });
 action('robotForm', 'submit', async () => {
   const settings = {robot_host: $('robot_host').value.trim()};
@@ -923,6 +923,8 @@ action('robotForm', 'submit', async () => {
 });
 action('showCode', 'click', async () => {
   $('pairCode').value = (await (await api('pair-code')).json()).code;
+  $('pairQr').src = '/api/pair-qr?t=' + Date.now();   // same code, scannable
+  $('pairQrRow').hidden = false;
 });
 action('addPerson', 'click', () => openPerson());
 action('addFromStage', 'click', () => openPerson());
@@ -989,7 +991,12 @@ async function start() {
     const secure = location.protocol === 'https:';
     $('secureSetup').hidden = secure;
     $('pairForm').hidden = !secure;
-    $('secureLink').href = 'https://' + location.hostname + ':' + hello.https;
+    const scanned = new URLSearchParams(location.search).get('pair');   // from the Mac's QR code
+    $('secureLink').href = 'https://' + location.hostname + ':' + hello.https + (scanned ? '/?pair=' + scanned : '');
+    if (secure && /^\d{6}$/.test(scanned || '')) {
+      $('code').value = scanned;
+      $('pairForm').requestSubmit();
+    }
     $('statusText').textContent = 'Not connected yet';
     return;
   }

@@ -576,3 +576,7 @@ input[type="range"] { width: 100%; accent-color: var(--kraft-bright); }
   font: inherit; font-size: 15px;
 }
 .row.choices .action:disabled { opacity: .4; }
+
+/* Pairing QR code */
+.row.qr { justify-content: flex-start; gap: 16px; }
+.row.qr img { flex: none; border-radius: 10px; background: #fff; }

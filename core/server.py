@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import io
 import threading
 import time
 
@@ -116,6 +117,17 @@ def pair_code(req: Request):
             pairing = f'{secrets.randbelow(10 ** 6):06d}', time.monotonic() + 300
             attempts = 0
         return {'code': pairing[0]}
+
+
+@app.get('/api/pair-qr')
+def pair_qr(req: Request):
+    """The pairing code as a QR code: the phone's camera opens BITCH with the code already filled in."""
+    import segno
+    code = pair_code(req)['code']
+    link = f'http://{tls.host()}:{HTTP}/?pair={code}'
+    buffer = io.BytesIO()
+    segno.make(link, error='m').save(buffer, kind='svg', scale=6, border=2, dark='#1B2433', light='#FFFFFF')
+    return Response(buffer.getvalue(), media_type='image/svg+xml', headers={'Cache-Control': 'no-store'})
 
 
 @app.post('/api/pair')
