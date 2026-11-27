@@ -183,6 +183,10 @@ class CloudProvider:
             # Wait for initial load if newly created.
             time.sleep(2.)
         self.tab_id = page['id']
+        try:
+            cdp.devtools('/json/activate/' + self.tab_id, timeout=2.)
+        except Exception:
+            pass
         tab = StreamTab(page['webSocketDebuggerUrl'])
         tab.call('Runtime.enable')
         tab.call('Runtime.addBinding', {'name': '__bitchStream'})
@@ -217,29 +221,51 @@ class CloudProvider:
             return
         try:
             if self.name == 'gemini':
-                # Switch Gemini to "Everyday help 4 Hydrogen" (or "Fast" / "Flash") if not already on it.
+                # Switch Gemini to "Everyday help 4 Hydrogen" AND "Thinking level -> Low (Fast and efficient)".
                 cur = tab.eval(
                     '(() => { const b = Array.from(document.querySelectorAll("button"))'
                     '.find(e => e.offsetParent && /mode picker/i.test(e.getAttribute("aria-label") || ""));'
                     'return b ? (b.innerText || b.getAttribute("aria-label") || "").trim() : null; })()',
                     timeout=3.,
                 )
-                if cur and re.search(r'hydrogen|fast|flash', cur, re.I):
-                    self.mode_checked = True
-                    return
                 if cur is not None:
+                    if not re.search(r'hydrogen|fast|flash', cur, re.I):
+                        tab.eval(
+                            '(() => { const b = Array.from(document.querySelectorAll("button"))'
+                            '.find(e => e.offsetParent && /mode picker/i.test(e.getAttribute("aria-label") || ""));'
+                            'if (b) b.click(); return true; })()',
+                            timeout=3.,
+                        )
+                        time.sleep(.35)
+                        tab.eval(
+                            '(() => { const items = Array.from(document.querySelectorAll('
+                            '"[role=menuitem],[role=menuitemradio],[role=option],button.mat-mdc-menu-item"))'
+                            '.filter(e => e.offsetParent);'
+                            'const hit = items.find(e => /hydrogen|everyday|fast|flash/i.test(e.innerText || ""));'
+                            'if (hit) { hit.click(); return true; } return false; })()',
+                            timeout=3.,
+                        )
+                        time.sleep(.25)
+                    # Now set Thinking level -> Low (Fast and efficient).
                     tab.eval(
                         '(() => { const b = Array.from(document.querySelectorAll("button"))'
                         '.find(e => e.offsetParent && /mode picker/i.test(e.getAttribute("aria-label") || ""));'
                         'if (b) b.click(); return true; })()',
                         timeout=3.,
                     )
-                    time.sleep(.35)
+                    time.sleep(.3)
+                    tab.eval(
+                        '(() => { const x = Array.from(document.querySelectorAll("[role=menuitem],button"))'
+                        '.find(e => e.offsetParent && /thinking level/i.test(e.innerText || ""));'
+                        'if (x) x.click(); return !!x; })()',
+                        timeout=3.,
+                    )
+                    time.sleep(.3)
                     picked = tab.eval(
                         '(() => { const items = Array.from(document.querySelectorAll('
                         '"[role=menuitem],[role=menuitemradio],[role=option],button.mat-mdc-menu-item"))'
                         '.filter(e => e.offsetParent);'
-                        'const hit = items.find(e => /hydrogen|everyday|fast|flash/i.test(e.innerText || ""));'
+                        'const hit = items.find(e => /^low\\b|fast and efficient/i.test((e.innerText || "").trim()));'
                         'if (hit) { hit.click(); return (hit.innerText || "").trim(); } return null; })()',
                         timeout=3.,
                     )
@@ -300,6 +326,10 @@ class CloudProvider:
         with self.lock:
             t0 = time.monotonic()
             tab = self._connect()
+            try:
+                cdp.devtools('/json/activate/' + self.tab_id, timeout=1.5)
+            except Exception:
+                pass
             if reset or (self.turns >= MAX_TURNS_PER_CHAT) or (self.last_used and time.monotonic() - self.last_used > IDLE_RESET_SECONDS):
                 # Unlock not needed: inline fast reset
                 if self.name == 'gemini':
@@ -358,16 +388,12 @@ class CloudProvider:
                         box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
                     }}
                 }}
-                // Wait up to 8 animation frames (~120 ms max) for Send button to enable, then click immediately.
+                // Wait up to ~300 ms using setTimeout (never requestAnimationFrame, which Chromium stalls in background tabs).
                 let sent = false;
-                for (let i = 0; i < 10; i++) {{
-                    await new Promise(r => requestAnimationFrame(r));
+                for (let i = 0; i < 18; i++) {{
+                    await new Promise(r => setTimeout(r, 16));
                     const btn = sendBtn();
                     if (btn) {{ btn.click(); sent = true; break; }}
-                }}
-                if (!sent) {{
-                    box.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}}));
-                    sent = true;
                 }}
                 // Install push observer: notifies Python instantly on text changes and completion.
                 let lastSent = '';
@@ -403,11 +429,18 @@ class CloudProvider:
                 window.__bitchObs = new MutationObserver(check);
                 window.__bitchObs.observe(document.body, {{childList: true, subtree: true, characterData: true}});
                 window.__bitchTimer = setInterval(check, 55);
-                return {{ok: true, beforeCount}};
+                return {{ok: true, beforeCount, sent}};
             }})()'''
             sent_res = tab.eval(send_script, timeout=8.)
             if not sent_res or not sent_res.get('ok'):
                 raise RuntimeError(f'{self.name} send failed: {sent_res}')
+            if not sent_res.get('sent'):
+                # Fallback: real CDP Enter key event (always trusted by ProseMirror/React).
+                for kind in ('keyDown', 'keyUp'):
+                    tab.call('Input.dispatchKeyEvent', {
+                        'type': kind, 'key': 'Enter', 'code': 'Enter',
+                        'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
+                    })
             t_sent = time.monotonic()
 
             full_text = ''
