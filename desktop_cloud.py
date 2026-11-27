@@ -502,22 +502,16 @@ class CloudProvider:
             for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
             const file = new File([bytes], 'camera.jpg', {{type: 'image/jpeg'}});
             const makeDT = () => {{ const d = new DataTransfer(); d.items.add(file); return d; }};
-            box.focus();
-            // 1) Paste once into ChatGPT's composer and wait up to 1.2 s for the preview thumbnail (never double-paste).
-            box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
+            // Prefer ChatGPT's direct file input (attaches exactly 1 image with zero fallback wait); only fall back to paste if missing.
             const hasNewThumb = () => thumbs().length > beforeThumbs;
-            const pasteWait = performance.now() + 1200;
-            while (performance.now() < pasteWait && !hasNewThumb()) {{
-                await new Promise(r => setTimeout(r, 80));
-            }}
-            // 2) Fallback ONLY if paste produced no thumbnail: populate the hidden file input once.
-            if (!hasNewThumb()) {{
-                const inp = Array.from(document.querySelectorAll('input[type="file"]'))
-                    .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
-                if (inp) {{
-                    inp.files = makeDT().files;
-                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                }}
+            const inp = Array.from(document.querySelectorAll('input[type="file"]'))
+                .find(e => !e.accept || /image|\\*/i.test(e.accept)) || document.querySelector('input[type="file"]');
+            if (inp) {{
+                inp.files = makeDT().files;
+                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+            }} else {{
+                box.focus();
+                box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: makeDT(), bubbles: true, cancelable: true}}));
             }}
             // Wait up to 8 s for image upload spinner to finish and Send button to become ready.
             const deadline = performance.now() + 8000;
@@ -617,7 +611,7 @@ class CloudProvider:
             one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
             prompt_js = json.dumps(one_line)
             use_paste = 'true' if self.name == 'chatgpt' else 'false'
-            go_script = f'''(() => {{
+            go_script = f'''(async () => {{
                 {self.helpers}
                 if (window.__bitchObs) {{ try {{ window.__bitchObs.disconnect(); }} catch (e) {{}} window.__bitchObs = null; }}
                 if (window.__bitchTimer) {{ clearInterval(window.__bitchTimer); window.__bitchTimer = null; }}
@@ -641,8 +635,11 @@ class CloudProvider:
                 }}
                 let clicked = false;
                 if (pasted) {{
-                    const b = sendBtn();
-                    if (b && !b.disabled) {{ b.click(); clicked = true; }}
+                    for (let i = 0; i < 6; i++) {{
+                        const b = sendBtn();
+                        if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') {{ b.click(); clicked = true; break; }}
+                        await new Promise(r => setTimeout(r, 25));
+                    }}
                 }}
                 let lastSent = '';
                 let stableTicks = 0;
