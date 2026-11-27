@@ -37,6 +37,8 @@ config.update({'mic_source': 'lab-mic', 'speaker_source': 'lab-speaker', 'camera
                'muted': False, 'mic_muted': False, 'idle': False, 'check_ins': False, 'greet': False,
                'natural_memory': True, 'owner': 'Brandon',
                'home_place': {'name': 'San Jose, California', 'lat': 37.339, 'lon': -121.895, 'imperial': True}})
+if os.environ.get('BITCH_MODEL'):
+    config.update({'chat_model': os.environ['BITCH_MODEL']})   # try another brain in the same room
 
 from core.devices.base import Device  # noqa: E402
 from core.hub import hub  # noqa: E402
@@ -231,6 +233,7 @@ class Lab:
         while not hub.hearing.ready and time.monotonic() < deadline:
             time.sleep(.2)
         from core import llm, voice
+        llm.start_server(wait=600)
         llm.chat([{'role': 'user', 'content': 'Hi.'}], max_tokens=2, timeout=300)
         llm.warm_context(hub.brain.spoken_system())
         voice.render('Warming up.')

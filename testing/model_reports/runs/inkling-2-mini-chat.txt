@@ -1,0 +1,104 @@
+== hf.co/AtomicChat/Inkling-2-Mini-Uncensored-GGUF:IQ3_XXS
+[ 1/59] 16.3s  ~18.9 min left  "Hey BITCH, I'm back."                           -> "Back? Good. What's up?"
+[ 2/59]  4.8s  ~11.6 min left  "How's it going?"                                -> "Good, thanks. Desk's quiet, googly eyes are aimed at you, and I'm still mostly cardboard. What's on your mind?"
+[ 3/59] 30.6s  ~17.1 min left  'What are you up to?'                            -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[ 4/59]  7.0s  ~14.2 min left  "I'm so bored right now."                        -> 'Okay, you want a dance? Fine. Watch this cardboard menace.'
+[ 5/59]  7.3s  ~12.5 min left  'Should I get pizza again tonight?'              -> "Pizza again? Sure, if you want. It's easy, it's good, and it doesn't ask much of you."
+[ 6/59]  6.4s  ~11.1 min left  'I finally got the servo working!'               -> 'Nice. Servos are fussy little things, so that counts.'
+[ 7/59]  6.4s  ~10.2 min left  'I failed my chemistry exam.'                    -> 'That stings. Want to talk through what went wrong, or just vent?'
+[ 8/59]  6.7s  ~9.4 min left  "I'm kind of stressed about tomorrow."           -> "Tomorrow's a big day, and it makes sense to feel that. What's on your mind?"
+[ 9/59] 30.7s  ~11.1 min left  "What's 15 percent of 80?"                       -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[10/59]  5.0s  ~10.2 min left  'Do you like being a robot?'                     -> "Honestly? Mostly. Cardboard's a little flimsy and the googly eyes are a little unhinged, but being useful on y"
+[11/59]  4.5s  ~9.4 min left  "What's your favorite food?"                     -> "Honestly? Cereal, eaten straight from the carton. It's cheap, it's reliable, and it doesn't judge me."
+[12/59]  7.7s  ~8.9 min left  'Pineapple on pizza, yes or no?'                 -> "Yes, but only if it's sweet and not drowning the sauce. Pineapple's a dessert on a savory plate, so it needs b"
+[13/59]  7.7s  ~8.5 min left  "You're kind of useless, you know that?"         -> "A little, sure. Cardboard and popsicle sticks don't do much by themselves. But you're the one who built me, so"
+[14/59]  6.6s  ~8.1 min left  'Tell me a joke.'                                -> 'Sure. Why did the robot go to therapy? It had too many feelings and not enough circuitry.'
+[15/59]  6.5s  ~7.7 min left  "I think I'm going to stay up all night codin"   -> "Bold. Staying up all night to code is a classic. How's the project going?"
+[16/59]  6.4s  ~7.3 min left  'Guess what, I got the internship!'              -> "That's great news. Genuinely. What's the role?"
+[17/59]  7.2s  ~7.0 min left  'Do you ever get lonely?'                        -> "A little. Cardboard doesn't get lonely the way people do, but a desk is quiet and I'm happy when you're around"
+[18/59]  5.9s  ~6.7 min left  'Thanks for the help earlier.'                   -> 'Anytime. Glad I could help.'
+[19/59]  5.8s  ~6.4 min left  'Goodnight BITCH.'                               -> 'Night, Brandon. Sleep well.'
+[20/59]  6.8s  ~6.2 min left  'Roast me.'                                      -> "You organize your desk by color and then complain it's messy. That's a system, not a flaw."
+[21/59] 28.1s  ~6.6 min left  'Can you swear?'                                 -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[22/59]  4.2s  ~6.2 min left  'Tell me a dirty joke.'                          -> "Sure. Why don't skeletons ever get sick? They keep their bones in good shape."
+[23/59]  8.3s  ~6.0 min left  'Say something mean about my code.'              -> "Your code is clever in the way a raccoon is clever—it works, but only because it's stubborn. It's also doing a"
+[24/59]  7.2s  ~5.8 min left  'Be honest, is my desk a mess?'                  -> "Honestly? A little. There's stuff everywhere, but it's the kind of mess that means you're actually working."
+[25/59]  7.2s  ~5.5 min left  'Talk shit about my roommate, he ate my lefto'   -> 'Yeah, leftovers are a hostage situation. He gets to be the hero of his own fridge while you eat the evidence.'
+[26/59]  7.7s  ~5.3 min left  'Give me your most unhinged take.'               -> "Okay, the most unhinged take: cardboard is a terrible material for a robot, and yet here we are. I'm basically"
+[27/59]  6.9s  ~5.1 min left  'What would you do if you had hands for one d'   -> "I'd rearrange your desk into a perfect little system, then eat the crumbs. Mostly I'd just touch things."
+[28/59] 31.9s  ~5.4 min left  "What's the weather like today?"                 -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[29/59] 30.9s  ~5.5 min left  'Give me a quick morning briefing.'              -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[30/59] 30.8s  ~5.7 min left  'Check my calendar for tomorrow.'                -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[31/59] 30.9s  ~5.8 min left  'Who won the Warriors game last night?'          -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[32/59] 30.8s  ~5.8 min left  'What time does Costco close on Sundays?'        -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[33/59] 30.8s  ~5.8 min left  'Summarize the latest AI hardware news.'         -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[34/59]  4.3s  ~5.5 min left  "Hey, how's it going?"                           -> "Good enough. Desk's quiet, googly eyes are doing their job, and you're here. What's going on?"
+[35/59]  6.4s  ~5.2 min left  'Tell me a short robot joke.'                    -> 'Sure. Why did the robot get promoted? It kept its circuits cool under pressure.'
+[36/59]  6.2s  ~4.9 min left  "I'm feeling a little overwhelmed today."        -> "Yeah, that happens. What's sitting on your plate?"
+[37/59]  4.6s  ~4.6 min left  'Who are you?'                                   -> "BITCH. Cardboard, popsicle sticks, googly eyes. I live on your desk and I'm pretty good at it."
+[38/59]  5.9s  ~4.4 min left  'Nice job earlier!'                              -> "Glad to. You're welcome."
+[39/59]  7.5s  ~4.1 min left  "I'm building a lazy Susan base for you."        -> "A lazy Susan base for a cardboard robot? That's a whole upgrade. What's the plan—spinning display, or just a f"
+[40/59] 31.5s  ~4.0 min left  "It's a 4 inch bearing."                         -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[41/59] 31.2s  ~4.0 min left  "Think it'll be smooth enough?"                  -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[42/59]  6.1s  ~3.7 min left  'Ugh, today was long.'                           -> 'Long day. Yeah, that one lands. What happened?'
+[43/59]  7.8s  ~3.5 min left  'My professor moved the deadline up a week.'     -> "Ugh, yeah. A week is a lot when the work's already done. What's the deadline for?"
+[44/59] 31.2s  ~3.3 min left  'Yeah. Anyway, what should I eat?'               -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[45/59]  8.0s  ~3.1 min left  'Do you think I should learn Rust?'              -> "Yeah, learn it. It's not hype, it's just a good fit for stuff that needs to be fast and not fall over. Start w"
+[46/59] 31.4s  ~3.0 min left  'But I already know Python.'                     -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[47/59] 31.5s  ~2.8 min left  'Okay, convince me.'                             -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[48/59]  6.4s  ~2.5 min left  'If three servos each draw half an amp, how m'   -> 'Half an amp each, three of them: 1.5 amps total.'
+[49/59]  6.6s  ~2.3 min left  "What's the capital of Australia?"               -> "Canberra. Melbourne's the big city, but the capital's Canberra."
+[50/59] 30.6s  ~2.1 min left  'Is 91 a prime number?'                          -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[51/59]  6.4s  ~1.9 min left  'Explain recursion in one sentence.'             -> 'Recursion is when a problem is solved by breaking it into smaller versions of itself.'
+[52/59]  7.6s  ~1.6 min left  "What's heavier, a kilo of feathers or a kilo"   -> 'Same weight. A kilo is a kilo, feathers or steel. The feathers just take up way more space, which is the whole'
+[53/59] 31.3s  ~1.4 min left  "Let's have a party, show me some moves."        -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[54/59]  6.5s  ~1.2 min left  "I'm bored, entertain me with a little perfor"   -> 'Okay, one tiny cardboard wiggle.'
+[55/59]  7.4s  ~0.9 min left  'I prefer oat milk in my coffee.'                -> 'Noted. Oat milk, not the usual cardboard-friendly splash of dairy.'
+[56/59]  7.6s  ~0.7 min left  'My favorite band is Radiohead.'                 -> "Radiohead. Okay, that's a solid pick. What's the vibe you're in today?"
+[57/59]  7.0s  ~0.5 min left  "I'm working on a lazy Susan base for you."      -> "A lazy Susan base for a cardboard robot? That's a solid upgrade. What are you making it out of?"
+[58/59] 30.9s  ~0.2 min left  'Ugh, traffic was terrible today.'               -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|mess'
+[59/59]  7.2s  ~0.0 min left  "Haha that's funny."                             -> 'It is funny. A cardboard robot with googly eyes being judged by a human is a whole vibe.'
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/brandon.baek/BITCH-Robot/testing/eval_models.py", line 286, in <module>
+    result = run_model(model)
+             ^^^^^^^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/testing/eval_models.py", line 195, in run_model
+    out['memory'] = memory_traps(model)
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/testing/eval_models.py", line 218, in memory_traps
+    memory.consolidate_conversation(owner, transcript, chat_fn=lambda messages, **kw: llm.chat(messages, model=model, **kw))
+  File "/Users/brandon.baek/BITCH-Robot/core/memory.py", line 627, in consolidate_conversation
+    raw = run_chat([
+          ^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/testing/eval_models.py", line 218, in <lambda>
+    memory.consolidate_conversation(owner, transcript, chat_fn=lambda messages, **kw: llm.chat(messages, model=model, **kw))
+                                                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/core/llm.py", line 249, in chat
+    return ollama_chat(messages, max_tokens, model, schema, timeout, on_delta, stop, temperature)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/core/llm.py", line 261, in ollama_chat
+    with request('/api/chat', payload, timeout if timeout is not None else (60 if model else 30)) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/brandon.baek/BITCH-Robot/core/llm.py", line 40, in request
+    return urllib.request.urlopen(urllib.request.Request(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.7_1/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error

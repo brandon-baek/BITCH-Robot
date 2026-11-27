@@ -1,0 +1,583 @@
+W1126 17:26:37.619000 10609 torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+  super().__init__("LSTM", *args, **kwargs)
+  WeightNorm.apply(module, name, dim)
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 1862.48it/s]
+[transformers] You are using a model of type `qwen3_tts` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+  Initialized encoder codebooks
+Loaded speech tokenizer from /Users/brandon.baek/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-8bit/snapshots/50f45ef0047cde7e84c2ef04326acb8ada2436a7/speech_tokenizer
+  Turn: first words 2.2 s after you stopped
+  Turn: first words 1.8 s after you stopped
+  Turn: first words 1.8 s after you stopped
+  Turn: first words 2.8 s after you stopped
+  Turn: first words 2.1 s after you stopped
+  Turn: first words 3.0 s after you stopped
+  Turn: first words 2.0 s after you stopped
+  Turn: first words 2.4 s after you stopped
+  Turn: first words 4.6 s after you stopped
+  Turn: first words 2.6 s after you stopped
+  Turn: first words 2.0 s after you stopped
+  Turn: first words 2.0 s after you stopped
+  Turn: first words 3.2 s after you stopped
+  timer: Timer set: 5 minutes for tea.
+  Turn: first words 3.6 s after you stopped
+  Turn: first words 4.4 s after you stopped
+  Turn: first words 1.9 s after you stopped
+[
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, what's fifteen percent of eighty?",
+    "heard": "what's fifteen per cent of eighty?",
+    "wer": 0.4,
+    "reply": "Twelve.",
+    "first_words": 2.18,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.24,
+     "listen 0.51s (waited 0.00s for the GPU)": 0.75,
+     "clip-final": 0.78,
+     "transcribed": 0.78,
+     "model-start": 0.79,
+     "model-first-token": 1.2,
+     "first-phrase": 1.64,
+     "model-done": 2.07,
+     "voice-first-chunk": 2.16,
+     "speak": 2.18,
+     "prompt": {
+      "tokens": 44,
+      "prefill_s": 0.4,
+      "out_tokens": 27,
+      "tok_per_s": 29.9
+     }
+    }
+   },
+   {
+    "say": "Nice. And what's that times three?",
+    "heard": "Nice, and what's that times 3?",
+    "wer": 0.17,
+    "reply": "Thirty-six.",
+    "first_words": 1.77,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.25,
+     "listen 0.14s (waited 0.00s for the GPU)": 0.4,
+     "clip-final": 0.41,
+     "transcribed": 0.41,
+     "model-start": 0.41,
+     "model-first-token": 0.79,
+     "first-phrase": 1.23,
+     "model-done": 1.66,
+     "voice-first-chunk": 1.77,
+     "speak": 1.77,
+     "prompt": {
+      "tokens": 46,
+      "prefill_s": 0.37,
+      "out_tokens": 27,
+      "tok_per_s": 29.8
+     }
+    }
+   },
+   {
+    "say": "Cool, thanks.",
+    "heard": "Cool, thanks.",
+    "wer": 0.0,
+    "reply": "Anytime. Ask if you need more math magic.",
+    "first_words": 1.73,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.26,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.37,
+     "clip-final": 0.38,
+     "transcribed": 0.38,
+     "model-start": 0.38,
+     "model-first-token": 0.73,
+     "first-phrase": 1.2,
+     "phrase": 1.57,
+     "voice-first-chunk": 1.71,
+     "speak": 1.73,
+     "model-done": 1.94,
+     "prompt": {
+      "tokens": 40,
+      "prefill_s": 0.34,
+      "out_tokens": 35,
+      "tok_per_s": 28.1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, I'm back.",
+    "heard": "I'm back.",
+    "wer": 0.0,
+    "reply": "Welcome back. Want me to keep crunching numbers or something else?",
+    "first_words": 2.56,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.12,
+     "listen 0.13s (waited 0.00s for the GPU)": 0.25,
+     "clip-final": 0.27,
+     "transcribed": 0.28,
+     "model-start": 0.28,
+     "model-first-token": 1.43,
+     "first-phrase": 1.91,
+     "phrase": 2.41,
+     "voice-first-chunk": 2.54,
+     "speak": 2.56,
+     "model-done": 2.93,
+     "prompt": {
+      "tokens": 91,
+      "prefill_s": 0.47,
+      "out_tokens": 57,
+      "tok_per_s": 25.7
+     }
+    }
+   },
+   {
+    "say": "I failed my chemistry exam today.",
+    "heard": "I failed my chemistry exam to day.",
+    "wer": 0.33,
+    "reply": "That's rough. Chemistry's a brutal subject to fail. What happened?",
+    "first_words": 2.08,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.26,
+     "listen 0.13s (waited 0.00s for the GPU)": 0.38,
+     "clip-final": 0.41,
+     "transcribed": 0.41,
+     "model-start": 0.42,
+     "model-first-token": 1.03,
+     "first-phrase": 1.54,
+     "phrase": 1.94,
+     "voice-first-chunk": 2.07,
+     "speak": 2.08,
+     "model-done": 2.41,
+     "prompt": {
+      "tokens": 105,
+      "prefill_s": 0.52,
+      "out_tokens": 42,
+      "tok_per_s": 28.0
+     }
+    }
+   },
+   {
+    "say": "Yeah, it was the stoichiometry part. I just blanked.",
+    "heard": "Yeah, it was the stoichiometry part. I just blanked.",
+    "wer": 0.0,
+    "reply": "Ugh, blanking right when you needed to think is the worst. Stoichiometry's a pain when you're nervous though. You got any idea where it went sideways?",
+    "first_words": 2.92,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -1.02,
+     "listen 0.13s (waited 0.00s for the GPU)": -0.89,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.31,
+     "clip-final": 0.32,
+     "transcribed": 0.32,
+     "model-start": 0.32,
+     "model-first-token": 1.42,
+     "first-phrase": 2.26,
+     "phrase": 2.87,
+     "voice-first-chunk": 2.91,
+     "speak": 2.92,
+     "model-done": 3.86,
+     "prompt": {
+      "tokens": 51,
+      "prefill_s": 0.37,
+      "out_tokens": 84,
+      "tok_per_s": 26.3
+     }
+    }
+   },
+   {
+    "say": "What should I do to study better next time?",
+    "heard": "What should I do to study better next time?",
+    "wer": 0.0,
+    "reply": "Practice the actual problem types, not just reading notes. Do a bunch of stoichiometry questions until the steps are automatic. Then run through a mock exam under real conditions so it feels familiar, not scary.",
+    "first_words": 1.92,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.22,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.34,
+     "clip-final": 0.34,
+     "transcribed": 0.35,
+     "model-start": 0.35,
+     "model-first-token": 0.83,
+     "first-phrase": 1.37,
+     "phrase": 1.63,
+     "voice-first-chunk": 1.9,
+     "speak": 1.92,
+     "model-done": 3.15,
+     "prompt": {
+      "tokens": 97,
+      "prefill_s": 0.47,
+      "out_tokens": 66,
+      "tok_per_s": 27.9
+     }
+    }
+   }
+  ]
+ },
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, tell me a story about a robot who learns to cook. Make it at least six sentences.",
+    "note": "reply left running for the next turn to talk over"
+   },
+   {
+    "say": "Wait, actually, make it about a robot who learns to paint.",
+    "heard": "Make it about a robot who learns to paint.",
+    "wer": 0.18,
+    "reply": "Okay, fine. A robot named Cog lived in a kitchen full of recipes he could never cook. One day he tried a cake and set the oven on fire. Instead of giving up, he wrote down every mistake in a little notebook. Week by week his cookies stopped exploding. By the end he could bake a whole pie. Turns out practice beats a factory setting every time. A robot named Ink lived in a studio full of paints he could never hold a brush. One day he tried a landscape and painted the whole wall instead of the canvas. He cleaned it up, tried again, and learned that mistakes were just data. Now he paints every morning, and his first painting hangs right over his charging dock.",
+    "first_words": 4.5,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "barge_stop": 1.04,
+    "stages": {
+     "model-done": -3.28,
+     "clip-barge": -2.59,
+     "listen 0.10s (waited 0.01s for the GPU)": -2.48,
+     "interrupt('Wait, actually.', strong=True, sustained=None) -> True": -2.48,
+     "clip-final": 2.02,
+     "listen 0.20s (waited 0.00s for the GPU)": 2.22,
+     "transcribed": 2.22,
+     "model-start": 2.23,
+     "model-first-token": 3.11,
+     "first-phrase": 3.97,
+     "voice-first-chunk": 4.49,
+     "speak": 4.5,
+     "phrase": 4.69,
+     "prompt": {
+      "tokens": 189,
+      "prefill_s": 0.88,
+      "out_tokens": 91,
+      "tok_per_s": 28.2
+     }
+    }
+   }
+  ]
+ },
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, explain how a servo motor works, in a few sentences.",
+    "heard": "explain how a servo motor works in a few sentences.",
+    "wer": 0.0,
+    "reply": "A servo motor uses a standard electric motor paired with a gear train to reduce speed and increase torque. A control signal sends pulses that tell the motor how far to rotate. An internal potentiometer feeds back the shaft's position so the motor can correct itself and stop at the exact angle requested.",
+    "first_words": 2.48,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -1.19,
+     "listen 0.13s (waited 0.00s for the GPU)": -1.06,
+     "listen 0.15s (waited 0.00s for the GPU)": 0.3,
+     "clip-final": 0.31,
+     "transcribed": 0.31,
+     "model-start": 0.34,
+     "model-first-token": 0.93,
+     "first-phrase": 1.84,
+     "voice-first-chunk": 2.47,
+     "speak": 2.48,
+     "phrase": 2.55,
+     "model-done": 4.08,
+     "prompt": {
+      "tokens": 133,
+      "prefill_s": 0.59,
+      "out_tokens": 82,
+      "tok_per_s": 25.7
+     }
+    }
+   }
+  ]
+ },
+ {
+  "scenario": "model-done",
+  "turns": [
+   {
+    "say": "Hey BITCH, this is my family. Say hi to everyone.",
+    "heard": "this is my family. Say hi to everyone.",
+    "wer": 0.0,
+    "reply": "Hi everyone! I'm a little cardboard robot with googly eyes, and I'm honored to meet your family.",
+    "first_words": 1.9,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -1.27,
+     "listen 0.12s (waited 0.00s for the GPU)": -1.15,
+     "clip-final": 0.36,
+     "transcribed": 0.36,
+     "model-start": 0.37,
+     "model-first-token": 0.9,
+     "first-phrase": 1.37,
+     "voice-first-chunk": 1.89,
+     "speak": 1.9,
+     "phrase": 1.99,
+     "model-done": 2.57,
+     "prompt": {
+      "tokens": 116,
+      "prefill_s": 0.53,
+      "out_tokens": 47,
+      "tok_per_s": 27.6
+     }
+    }
+   },
+   {
+    "say": "Hi BITCH! It's nice to meet you.",
+    "heard": "it's nice to meet you.",
+    "wer": 0.17,
+    "reply": "Hi! I'm a bit shy meeting new people, but it's really nice to meet you all.",
+    "first_words": 1.95,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.23,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.35,
+     "clip-final": 0.35,
+     "transcribed": 0.35,
+     "model-start": 0.36,
+     "model-first-token": 0.88,
+     "first-phrase": 1.33,
+     "voice-first-chunk": 1.94,
+     "speak": 1.95,
+     "phrase": 2.2,
+     "model-done": 2.7,
+     "prompt": {
+      "tokens": 107,
+      "prefill_s": 0.52,
+      "out_tokens": 45,
+      "tok_per_s": 24.2
+     }
+    }
+   },
+   {
+    "say": "Mom, do you want some tea?",
+    "heard": "Mom, do you want some tea?",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.25,
+     "listen 0.11s (waited 0.00s for the GPU)": 0.37,
+     "clip-final": 0.38,
+     "transcribed": 0.38,
+     "speak": 0.38,
+     "prompt": {
+      "tokens": 107,
+      "prefill_s": 0.52,
+      "out_tokens": 45,
+      "tok_per_s": 24.2
+     }
+    }
+   },
+   {
+    "say": "Sure, thanks honey.",
+    "heard": "Sure, thanks honey.",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.24,
+     "listen 0.10s (waited 0.00s for the GPU)": 0.34,
+     "clip-final": 0.37,
+     "transcribed": 0.37,
+     "speak": 0.37,
+     "prompt": {
+      "tokens": 107,
+      "prefill_s": 0.52,
+      "out_tokens": 45,
+      "tok_per_s": 24.2
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, set a timer for five minutes for the tea.",
+    "heard": "set a timer for five minutes for the tea.",
+    "wer": 0.0,
+    "reply": "Five minutes on for the tea. I'll buzz you when it's ready.",
+    "first_words": 3.09,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": -2.01,
+     "listen 0.10s (waited 0.00s for the GPU)": -1.92,
+     "listen 0.12s (waited 0.00s for the GPU)": 0.38,
+     "clip-final": 0.38,
+     "transcribed": 0.38,
+     "model-start": 0.39,
+     "model-first-token": 1.21,
+     "first-phrase": 2.58,
+     "phrase": 2.98,
+     "voice-first-chunk": 3.08,
+     "speak": 3.09,
+     "model-done": 3.35,
+     "prompt": {
+      "tokens": 255,
+      "prefill_s": 0.82,
+      "out_tokens": 68,
+      "tok_per_s": 31.3
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, what's the weather going to be like tomorrow?",
+    "heard": "what's the weather going to be like to-morrow?",
+    "wer": 0.25,
+    "reply": "Tomorrow's overcast, high 62\u00b0F, low 47\u00b0F, no rain. Basically a repeat of today.",
+    "first_words": 3.44,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.18,
+     "listen 0.24s (waited 0.00s for the GPU)": 0.43,
+     "clip-final": 0.44,
+     "transcribed": 0.44,
+     "model-start": 0.6,
+     "model-first-token": 2.41,
+     "first-phrase": 2.8,
+     "voice-first-chunk": 3.43,
+     "speak": 3.44,
+     "phrase": 3.53,
+     "model-done": 4.08,
+     "prompt": {
+      "tokens": 257,
+      "prefill_s": 0.81,
+      "out_tokens": 44,
+      "tok_per_s": 24.5
+     }
+    }
+   },
+   {
+    "say": "Hey BITCH, tell us a really short joke.",
+    "heard": "tell us a really short joke.",
+    "wer": 0.0,
+    "reply": "Why did the robot go to therapy? It had too many unresolved issues in its hard drive.",
+    "first_words": 4.28,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.2,
+     "listen 0.22s (waited 0.00s for the GPU)": 0.42,
+     "clip-final": 0.43,
+     "transcribed": 0.43,
+     "model-start": 0.43,
+     "model-first-token": 3.02,
+     "first-phrase": 3.62,
+     "phrase": 4.11,
+     "voice-first-chunk": 4.27,
+     "speak": 4.28,
+     "model-done": 4.57,
+     "prompt": {
+      "tokens": 143,
+      "prefill_s": 0.59,
+      "out_tokens": 43,
+      "tok_per_s": 27.1
+     }
+    }
+   },
+   {
+    "say": "Okay, it's your turn to do the dishes.",
+    "heard": "Okay, it's your turn to do the dishes.",
+    "reply": "",
+    "quiet_ok": true,
+    "first_words": null,
+    "gaps": [],
+    "stalls": [],
+    "self_interrupted": 0,
+    "wer": null,
+    "stages": {
+     "clip-preview": 0.25,
+     "listen 0.23s (waited 0.00s for the GPU)": 0.48,
+     "clip-final": 0.5,
+     "transcribed": 0.5,
+     "model-start": 0.5,
+     "model-first-token": 3.45,
+     "speak": 3.72,
+     "prompt": {
+      "tokens": 143,
+      "prefill_s": 0.59,
+      "out_tokens": 43,
+      "tok_per_s": 27.1
+     }
+    }
+   },
+   {
+    "say": "Thanks BITCH, that's all for now.",
+    "heard": "Thanks. That's all for now.",
+    "wer": 0.0,
+    "reply": "You're welcome. Enjoy the rest of the evening.",
+    "first_words": 1.75,
+    "gaps": [],
+    "cues": 0,
+    "self_interrupted": 0,
+    "stalls": [],
+    "stages": {
+     "clip-preview": 0.17,
+     "listen 0.10s (waited 0.00s for the GPU)": 0.28,
+     "clip-final": 0.3,
+     "transcribed": 0.3,
+     "model-start": 0.3,
+     "model-first-token": 0.92,
+     "first-phrase": 1.21,
+     "phrase": 1.5,
+     "voice-first-chunk": 1.74,
+     "speak": 1.75,
+     "model-done": 1.75,
+     "prompt": {
+      "tokens": 157,
+      "prefill_s": 0.61,
+      "out_tokens": 23,
+      "tok_per_s": 26.5
+     }
+    }
+   }
+  ]
+ }
+]

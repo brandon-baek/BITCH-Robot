@@ -1,0 +1,18 @@
+ok  them  0.0s  'Mom, do you want to come with us?' -> ''
+ok  me   13.2s  'What about tomorrow?' -> 'Tomorrow looks like rain.'
+ok  them  0.0s  'Dad, can you check the oven?' -> ''
+ok  me    7.8s  'Actually make it twelve.' -> 'Twelve minutes, set.'
+ok  me    8.2s  'Wait, is that true?' -> 'Yes, that is correct. Octopuses have three hearts.'
+BAD them 15.0s  'Emma, did you know that?' -> 'They are pretty weird animals. Their circulatory system is definitely something else.'
+ok  them  0.0s  'I think we watched that one last month, right honey?' -> ''
+ok  me   12.6s  "We've seen it. Something else?" -> "Try Arrival. It's smart and not too loud."
+BAD them  8.8s  'Can you pass me the salt?' -> "I don't have hands to pass it."
+ok  me   12.1s  'And soft-boiled?' -> 'Soft-boiled is usually three to four minutes.'
+ok  me   11.6s  'Yeah, go ahead.' -> 'I can check that for you.'
+ok  them  0.0s  'Honey, I told you it was the Warriors.' -> ''
+ok  me    8.6s  'Haha, that was terrible.' -> "It was a classic dad joke. I'll try harder next time."
+BAD them 11.5s  "Okay, it's your turn to do the dishes." -> "I can't do dishes. I'm made of cardboard."
+ok  them  0.0s  "Thanks. Mom, dinner's ready." -> ''
+ok  me    6.5s  'And divided by four?' -> 'Forty-five.'
+
+13/16 correct; median 8.6s

@@ -1,0 +1,18 @@
+ok  them  0.0s  'Mom, do you want to come with us?' -> ''
+ok  me    6.2s  'What about tomorrow?' -> 'Tomorrow’s forecast is a mild 48 degrees, mostly clear. A light jacket should do.'
+ok  them  0.0s  'Dad, can you check the oven?' -> ''
+ok  me    2.7s  'Actually make it twelve.' -> 'Timer set for twelve minutes.'
+ok  me    3.8s  'Wait, is that true?' -> 'Yes, it’s true. Octopuses really do have three hearts and blue blood.'
+BAD them  1.8s  'Emma, did you know that?' -> 'Did you know that the Eiffel Tower was originally intended to be a temporary structure?'
+ok  them  0.0s  'I think we watched that one last month, right honey?' -> ''
+ok  me    4.0s  "We've seen it. Something else?" -> 'How about "The Grand Budapest Hotel"? It’s quirky, visually stunning, and the plot is tight.'
+BAD them  3.5s  'Can you pass me the salt?' -> 'Sure, here you go.'
+ok  me    1.6s  'And soft-boiled?' -> 'Soft-boiled takes about six minutes.'
+ok  me    2.9s  'Yeah, go ahead.' -> 'I checked the score, it was Team A.'
+ok  them  0.0s  'Honey, I told you it was the Warriors.' -> ''
+ok  me    2.4s  'Haha, that was terrible.' -> 'Glad you liked it, Brandon.'
+BAD them 12.0s  "Okay, it's your turn to do the dishes." -> "Sure thing, Brandon. I'll start now."
+ok  them  0.0s  "Thanks. Mom, dinner's ready." -> ''
+ok  me    4.1s  'And divided by four?' -> 'Forty‑five.'
+
+13/16 correct; median 2.7s

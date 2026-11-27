@@ -131,6 +131,7 @@ def start_server(wait=240):
                    '--cache-ram', '1024']
         if projector:
             command += ['--mmproj', str(projector)]
+        command += os.environ.get('BITCH_LLM_ARGS', '').split()   # extra server flags, for trying models
         log = open(config.HOME / 'llm-server.log', 'ab')
         server = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
         server_model = model

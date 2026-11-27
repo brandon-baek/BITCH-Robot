@@ -1,0 +1,34 @@
+ok   4.3s [timer       ] 'Set a timer for ten minutes for the pasta.'
+      -> 'Timer set for ten minutes for the pasta.'
+ok  12.3s [check_timers] 'How much time is left on that?'
+      -> 'There are nine minutes and fifty-six seconds left.'
+ok   4.7s [cancel_timer] 'Cancel the pasta timer.'
+      -> 'The pasta timer is cancelled.'
+ok   3.7s [timer       ] 'Set a timer for ninety seconds.'
+      -> 'Timer set for ninety seconds.'
+ok   5.3s [list_add    ] "We're out of milk. Add milk and eggs to the shopping list."
+      -> 'Milk and eggs are on the shopping list.'
+ok  12.6s [list_read   ] "What's on the shopping list?"
+      -> 'Milk and eggs are on the list.'
+ok   5.8s [list_remove ] 'Take eggs off the list.'
+      -> 'Eggs have been taken off the list.'
+ok   5.9s [weather     ] "What's the weather like?"
+      -> 'What city are you in?'
+ok   9.8s [set_home    ] 'I live in San Jose, California.'
+      -> 'It is currently partly cloudy in San Jose.'
+ok   9.3s [-           ] 'Do I need an umbrella tomorrow?'
+      -> 'No, the rain chance is zero tomorrow.'
+ok  15.9s [weather     ] "What's the weather in Tokyo right now?"
+      -> 'It is 12 degrees Celsius and clear in Tokyo.'
+ok  13.6s [volume      ] 'You are way too loud.'
+      -> "I'll turn it down."
+ok   3.9s [music       ] 'Pause the music.'
+      -> 'Music is paused.'
+ok   9.1s [-           ] "What's fifteen percent of eighty?"
+      -> 'It is twelve.'
+ok  11.3s [-           ] 'How are you doing today?'
+      -> 'I am functioning correctly. Nothing much changes around here.'
+ok  10.5s [-           ] 'I feel cold today.'
+      -> 'You sound chilly.'
+
+16/16 passed

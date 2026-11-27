@@ -1,0 +1,6 @@
+BAD 40.4s [-           ] 'Set a timer for ten minutes for the pasta.'
+      -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|>…'
+      notes: []
+BAD 30.4s [-           ] 'How much time is left on that?'
+      -> '<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|><|content_thinking|>…'
+      notes: []

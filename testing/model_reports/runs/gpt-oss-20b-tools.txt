@@ -1,0 +1,37 @@
+ok   7.3s [timer       ] 'Set a timer for ten minutes for the pasta.'
+      -> 'Timer set for ten minutes.'
+BAD 15.3s [-           ] 'How much time is left on that?'
+      -> 'I lost my train of thought. Say that again?'
+      notes: []
+ok   3.6s [cancel_timer] 'Cancel the pasta timer.'
+      -> 'Timer for pasta canceled.'
+ok   6.1s [timer       ] 'Set a timer for ninety seconds.'
+      -> "Timer set for ninety seconds, labeled 'pasta'."
+ok   3.6s [list_add    ] "We're out of milk. Add milk and eggs to the shopping list."
+      -> 'Milk and eggs added to shopping list.'
+BAD 11.1s [list_read   ] "What's on the shopping list?"
+      -> 'The shopping list is currently empty.'
+      notes: ['list_read: The milk, eggs list is empty.']
+ok   3.5s [list_remove ] 'Take eggs off the list.'
+      -> 'Eggs removed from the list.'
+BAD 25.9s [weather     ] "What's the weather like?"
+      -> 'I lost my train of thought. Say that again?'
+      notes: ["weather: FAILED: could not find a place called Brandon's city."]
+ok   4.2s [set_home    ] 'I live in San Jose, California.'
+      -> 'Home set to San Jose, California.'
+ok   8.8s [-           ] 'Do I need an umbrella tomorrow?'
+      -> 'No umbrella needed tomorrow—just a light day with no rain forecast.'
+ok  10.2s [weather     ] "What's the weather in Tokyo right now?"
+      -> 'The current weather in Tokyo is 12°C, feels like 10°C, clear skies, wind 2 km/h. Rain chance for the next 12 hours is low. Today’s high is 16°C, low 6°C, with a 9% chance of rain.'
+ok   3.4s [volume      ] 'You are way too loud.'
+      -> 'Got it, I’ll dial it down to a more comfortable level.'
+ok   2.6s [music       ] 'Pause the music.'
+      -> 'Music paused.'
+ok   8.7s [-           ] "What's fifteen percent of eighty?"
+      -> 'Fifteen percent of eighty is twelve.'
+ok   6.1s [-           ] 'How are you doing today?'
+      -> 'Doing well, thanks for asking.'
+ok   8.6s [-           ] 'I feel cold today.'
+      -> 'You’re right, it’s chilly. I’ll keep the thermostat up a bit.'
+
+13/16 passed
