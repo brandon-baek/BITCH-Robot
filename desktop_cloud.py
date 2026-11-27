@@ -711,6 +711,21 @@ class CloudProvider:
                 if not self._ensure_ready(tab, wait=15.):
                     raise RuntimeError(f'{self.name} composer not ready')
                 self._ensure_fast_mode(tab)
+            # If the previous turn was interrupted/hushed mid-stream, stop any leftover generation before sending.
+            try:
+                tab.eval(f'''(async () => {{
+                    {self.helpers}
+                    const s = stopBtn();
+                    if (!s) return false;
+                    s.click();
+                    const end = performance.now() + 2500;
+                    while (performance.now() < end && stopBtn()) {{
+                        await new Promise(r => setTimeout(r, 80));
+                    }}
+                    return true;
+                }})()''', timeout=4.)
+            except Exception:
+                pass
             if image_b64:
                 att = self._attach_image(tab, image_b64)
                 if not att or not att.get('ok'):
