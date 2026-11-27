@@ -51,7 +51,9 @@ def fake_osascript(script):
 
 def main():
     config.update({'llm_server': True, 'volume': 100, 'home_place': None})
-    if not llm.start_server():
+    if os.environ.get('BITCH_MODEL'):
+        config.update({'chat_model': os.environ['BITCH_MODEL']})
+    if not llm.start_server(wait=600):
         sys.exit('Could not start the model server.')
     room = Mock(in_view=Mock(return_value={'names': ['Brandon'], 'others': 0}),
                 current_scene=Mock(return_value=(None, None)), face_to_learn=Mock(return_value=None))

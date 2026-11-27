@@ -195,7 +195,7 @@ WMO = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fo
        96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
 
 
-def fetch(url, timeout=3.5):
+def fetch(url, timeout=5):
     with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'desk-robot'}), timeout=timeout) as r:
         return json.load(r)
 

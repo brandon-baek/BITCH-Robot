@@ -16,6 +16,7 @@ from .people import people
 SR = 16000
 FRAME = 512
 WHISPER = 'mlx-community/whisper-large-v3-turbo'
+WHISPER_IDLE = 300   # seconds without a Whisper fallback before it is unloaded
 # Parakeet reads a sentence in about 0.1 s, Whisper in about 0.66 s, at the same accuracy (testing/asr_eval: 8.1% word
 # errors each over close, noisy and far-field speech). Whisper with the name hint is better at catching "BITCH" from
 # across the room (8/9 against 5/9), so it gets a second listen only when the name is needed and Parakeet missed it.
@@ -401,14 +402,11 @@ class Hearing:
     def _transcribe(self):
         try:
             import mlx_whisper
-
-            voice.limit_mlx_cache()
-            warmup = warmup_speech()
-            with voice.MLX:
-                mlx_whisper.transcribe(warmup, path_or_hf_repo=WHISPER, language='en', initial_prompt=WAKE_HINT)
         except Exception as error:
             hub.note('hearing', f'Whisper unavailable: {error}')
             return
+        voice.limit_mlx_cache()
+        warmup = warmup_speech()
         try:
             from parakeet_mlx import from_pretrained
 
@@ -420,6 +418,17 @@ class Hearing:
         except Exception as error:
             self.parakeet = None
             hub.note('hearing', f'Fast recognizer unavailable, using Whisper only: {error}')
+        if self.parakeet is None:
+            try:
+                with voice.MLX:
+                    mlx_whisper.transcribe(warmup, path_or_hf_repo=WHISPER, language='en', initial_prompt=WAKE_HINT)
+            except Exception as error:
+                hub.note('hearing', f'Whisper unavailable: {error}')
+                return
+        else:
+            # Whisper (1.6 GB) only backs Parakeet up when the name was missed: load it when that happens, and let it
+            # go again after a few quiet minutes. Memory is what keeps the brain model fast on this Mac.
+            threading.Thread(target=self.release_whisper, daemon=True).start()
         # The voice model loads on the same GPU; a turn that lands mid-load waits seconds, so let it finish first.
         if voice.warming:
             voice.warmed.wait(120)
@@ -553,8 +562,26 @@ class Hearing:
                     return second
         return text
 
+    whisper_used = 0.
+
+    @staticmethod
+    def release_whisper():
+        from mlx_whisper.transcribe import ModelHolder
+
+        while True:
+            time.sleep(30)
+            if ModelHolder.model is not None and time.monotonic() - Hearing.whisper_used > WHISPER_IDLE:
+                with voice.MLX:
+                    ModelHolder.model = ModelHolder.model_path = None
+                    try:
+                        import mlx.core as mx
+                        mx.clear_cache()
+                    except Exception:
+                        pass
+
     @staticmethod
     def transcribe(engine, audio, *, prompt=True):
+        Hearing.whisper_used = time.monotonic()
         # Bring distant, quiet speech up to a steady level (at most 8x, so noise stays noise).
         frames = audio[:len(audio) // 320 * 320].reshape(-1, 320)
         if len(frames):

@@ -71,9 +71,11 @@ def model_files(name):
 def model_files_in(folder, name):
     repo, _, tag = name.partition(':')
     parts = repo.split('/')
+    # "hf.co/owner/repo:Q4_K_M" lives under manifests/hf.co/..., everything else under registry.ollama.ai.
+    registry = parts.pop(0) if len(parts) > 1 and '.' in parts[0] else 'registry.ollama.ai'
     if len(parts) == 1:
         parts = ['library'] + parts
-    manifest = folder / 'manifests' / 'registry.ollama.ai' / Path(*parts) / (tag or 'latest')
+    manifest = folder / 'manifests' / registry / Path(*parts) / (tag or 'latest')
     try:
         layers = json.loads(manifest.read_text())['layers']
     except (OSError, ValueError, KeyError):
@@ -185,7 +187,8 @@ def server_chat(messages, max_tokens, schema, timeout, on_delta, stop, temperatu
     global last_stats
     payload = {'messages': openai_messages(messages), 'max_tokens': max_tokens, 'temperature': temperature,
                'stream': on_delta is not None, 'cache_prompt': True, 'id_slot': slot,
-               'chat_template_kwargs': {'enable_thinking': False}}
+               # No thinking out loud before answering: Qwen-style switch, and gpt-oss's lowest reasoning effort.
+               'chat_template_kwargs': {'enable_thinking': False, 'reasoning_effort': 'low'}}
     if schema is not None:
         payload['response_format'] = {'type': 'json_schema', 'json_schema': {'name': 'reply', 'schema': schema}}
     with request('/v1/chat/completions', payload, timeout, base=SERVER_URL) as response:
@@ -232,7 +235,16 @@ def chat(messages, max_tokens=160, *, model=None, schema=None, timeout=None, on_
         except (OSError, ValueError, KeyError, urllib.error.URLError):
             if stop is not None and stop.is_set():
                 return ''
-            # Fall through to Ollama for this call; the server may be restarting.
+            # Never fall back to Ollama for the same model: that loads a second full copy (two 20 GB brains is
+            # how the Mac ran out of memory and crashed). Restart our own server if it died, and fail this turn.
+            if server is not None and server.poll() is not None:
+                threading.Thread(target=start_server, daemon=True).start()
+            raise
+    if (model is None or model == config.get('chat_model')) and config.get('llm_server') and server_binary() \
+            and model_files(config.get('chat_model'))[0]:
+        # The chat model belongs to BITCH's own server, which isn't up (yet): don't load it a second time in Ollama.
+        threading.Thread(target=start_server, daemon=True).start()
+        raise OSError('the model server is starting')
     return ollama_chat(messages, max_tokens, model, schema, timeout, on_delta, stop, temperature)
 
 

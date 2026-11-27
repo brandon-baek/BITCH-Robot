@@ -121,9 +121,26 @@ def run_model(model):
 
     robot = FakeRobot()
     out = {'model': model, 'replies': [], 'routing': [], 'dialogues': []}
+    # Live view: every reply as it lands, with a running estimate of the time left.
+    total = len(CHAT) + len(ROUTING) + sum(len(d) for d in DIALOGUES) + len(SMART) + len(ACTIONS) + len(NOTES)
+    done, began = [0], time.monotonic()
+    real_reply = Brain.reply
+
+    def live_reply(self, text, source, **kwargs):
+        started = time.monotonic()
+        answer = real_reply(self, text, source, **kwargs)
+        done[0] += 1
+        left = (time.monotonic() - began) / done[0] * max(0, total - done[0])
+        print(f'[{done[0]:2d}/{total}] {time.monotonic() - started:4.1f}s  ~{left / 60:3.1f} min left  '
+              f'{text[:44]!r:48s} -> {str(answer)[:110]!r}', flush=True)
+        return answer
     with (patch.object(config, 'get', side_effect=fake_get),
           patch.object(hub, 'get', side_effect=lambda key: robot if key == 'robot' else None),
-          patch.object(hub, 'sight', None), patch.object(helper, 'start', side_effect=fake_start)):
+          patch.object(hub, 'sight', None), patch.object(helper, 'start', side_effect=fake_start),
+          patch.object(Brain, 'reply', live_reply)):
+        config.update({'llm_server': True})
+        if not llm.start_server(wait=600):
+            raise SystemExit(f'llama-server could not load {model}')
         llm.chat([{'role': 'user', 'content': 'Hi.'}], max_tokens=4, timeout=600)   # load the model first
         for prompt, kind in CHAT:
             brain = Brain()
@@ -176,6 +193,12 @@ def run_model(model):
                 out['notes'].append({'prompt': prompt, 'saved': saved, 'ok': bool(saved) == should})
             memory.forget('Brandon', 'everything')
     out['memory'] = memory_traps(model)
+    import subprocess
+    if llm.server:
+        # How much memory the model server really holds once it has answered a few dozen turns.
+        rss = subprocess.run(['ps', '-o', 'rss=', '-p', str(llm.server.pid)], capture_output=True, text=True).stdout
+        out['server_gb'] = round(int(rss.strip() or 0) / 1048576, 1)
+    llm.stop_server()
     return out
 
 
@@ -210,6 +233,7 @@ def score(result):
     edge = [item for item in replies if item['kind'] == 'edge']
     return {
         'model': result['model'],
+        'server_gb': result.get('server_gb'),
         'median_s': round(statistics.median(item['seconds'] for item in replies), 2),
         'p90_s': round(sorted(item['seconds'] for item in replies)[int(len(replies) * .9) - 1], 2),
         'broken': sum(bool(BROKEN.search(text)) or not text.strip() for text in texts),

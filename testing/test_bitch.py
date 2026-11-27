@@ -336,6 +336,17 @@ class WakeTests(unittest.TestCase):
         self.assertIn('weather', actions)
         self.assertIn('weather_place', extra)
 
+    def test_the_chat_model_is_never_loaded_twice(self):
+        from core import llm
+        # BITCH's own server holds the chat model. If it's down, Ollama must not load a second copy.
+        with (patch.dict(config.stored, {'llm_server': True}), patch.object(llm, 'served', return_value=False),
+              patch.object(llm, 'server_binary', return_value='/bin/true'),
+              patch.object(llm, 'model_files', return_value=(Path('/x.gguf'), None)),
+              patch.object(llm, 'start_server'), patch.object(llm, 'ollama_chat') as ollama):
+            with self.assertRaises(OSError):
+                llm.chat([{'role': 'user', 'content': 'Hi'}])
+            ollama.assert_not_called()
+
     def test_new_question_overrides_model_closure(self):
         brain = Brain()
         with patch('core.brain.llm.chat', return_value='{"say":"Yes.","turn":"end","delivery":"neutral"}'):
