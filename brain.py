@@ -1112,6 +1112,8 @@ def listen(motion_enabled=True):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         threading.Thread(target=body.ambient_audio, daemon=True).start()
         threading.Thread(target=macros.send_worker, daemon=True).start()
+        # Pre-warm ChatGPT Instant in Temporary Chat mode so the first spoken turn is fast (no 20 s reload).
+        threading.Thread(target=lambda: desktop_cloud.get_provider('chatgpt').warm(), daemon=True).start()
         try:
             body.run()
         except KeyboardInterrupt:

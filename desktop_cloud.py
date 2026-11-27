@@ -44,7 +44,7 @@ const replies = () => first(['[data-response-body]', '[data-markdown-text-style=
 const textOf = (el) => {
   if (!el) return '';
   const body = el.querySelector('.markdown') || el;
-  return (body.innerText || '').trim();
+  return (body.textContent || '').trim();
 };
 const isStreaming = () => {
   if (stopBtn()) return true;
@@ -74,7 +74,7 @@ const replies = () => {
   }
   return [];
 };
-const textOf = (el) => (el ? (el.innerText || '').trim() : '');
+const textOf = (el) => (el ? (el.textContent || '').trim() : '');
 const isStreaming = () => {
   if (stopBtn()) return true;
   return !!document.querySelector('model-response[aria-busy="true"], .loading-indicator, mat-progress-bar');
@@ -162,22 +162,24 @@ class CloudProvider:
         self.primed = False
         self.mode_checked = False
 
-    def _connect(self):
+    def _connect(self, *, close_others=False):
         if self.tab is not None:
-            try:
-                self.tab.eval('1', timeout=2.)
-                return self.tab
-            except Exception:
-                self._close()
+            return self.tab
         err = cdp.start_browser()
         if err:
             raise RuntimeError(err)
         pages = [p for p in cdp.devtools('/json/list') if p.get('type') == 'page']
         matches = [p for p in pages if urlsplit(p.get('url', '')).hostname == self.host]
         page = matches[0] if matches else None
+        if close_others:
+            for other in pages:
+                if page is None or other['id'] != page['id']:
+                    try:
+                        cdp.devtools('/json/close/' + other['id'], timeout=1.5)
+                    except Exception:
+                        pass
         if page is None:
             page = cdp.devtools('/json/new?' + self.url, method='PUT', timeout=5.)
-            # Wait for initial load if newly created.
             time.sleep(2.)
         self.tab_id = page['id']
         try:
@@ -352,16 +354,30 @@ class CloudProvider:
             self.turns = 0
             self.primed = False
 
+    def warm(self):
+        """Pre-load a fresh Temporary Chat in the background so Turn 1 never waits 20s for page hydration."""
+        with self.lock:
+            try:
+                tab = self._connect(close_others=True)
+                self._ensure_ready(tab, wait=25.)
+                self._ensure_temp_chat(tab)
+                self._ensure_ready(tab, wait=25.)
+                self._ensure_fast_mode(tab)
+                self.turns = 0
+                self.primed = False
+                return True
+            except Exception:
+                self._close()
+                return False
+
     def stream(self, prompt, *, reset=False, timeout=90., stop_event=None):
         """Send `prompt` and yield incremental dicts: {'text': full_so_far, 'delta': new_chars, 'done': bool, 'timing': ...}."""
         with self.lock:
             t0 = time.monotonic()
             tab = self._connect()
-            try:
-                cdp.devtools('/json/activate/' + self.tab_id, timeout=1.5)
-            except Exception:
-                pass
-            if reset or (self.turns >= MAX_TURNS_PER_CHAT) or (self.last_used and time.monotonic() - self.last_used > IDLE_RESET_SECONDS):
+            need_reset = (reset or (self.turns >= MAX_TURNS_PER_CHAT)
+                          or (self.last_used and time.monotonic() - self.last_used > IDLE_RESET_SECONDS))
+            if need_reset:
                 if self.name == 'gemini':
                     clicked = tab.eval(
                         '(() => { const b = Array.from(document.querySelectorAll("a, button"))'
@@ -377,30 +393,29 @@ class CloudProvider:
                     self._ensure_temp_chat(tab)
                 else:
                     temp_flag = 'true' if TEMP_CHAT else 'false'
-                    already_fresh_temp = tab.eval(
-                        f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
-                        f'&& (!{temp_flag} || location.search.includes("temporary-chat=true") '
-                        f'|| /temporary chat/i.test(document.body.innerText.slice(0, 600))); }})()',
-                        timeout=4.,
-                    )
+                    try:
+                        already_fresh_temp = tab.eval(
+                            f'(() => {{ {self.helpers} return location.pathname === "/" && replies().length === 0 && !!composer() '
+                            f'&& (!{temp_flag} || location.search.includes("temporary-chat=true") '
+                            f'|| /temporary chat/i.test((document.body.textContent || "").slice(0, 800))); }})()',
+                            timeout=4.,
+                        )
+                    except Exception:
+                        self._close()
+                        tab = self._connect()
+                        already_fresh_temp = False
                     if not already_fresh_temp:
-                        if TEMP_CHAT:
-                            # Direct navigation to ?temporary-chat=true starts a clean Temporary Chat every time
-                            # without saving anything to Brandon's ChatGPT history.
+                        # Prefer fast in-SPA "New chat" click + Temporary Chat toggle (~0.6 s) over full reload (~20 s).
+                        in_spa = tab.eval(
+                            '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
+                            '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
+                            ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
+                            'if (b) { b.click(); return true; } return false; })()',
+                            timeout=4.,
+                        )
+                        if not in_spa:
                             tab.call('Page.enable')
-                            tab.call('Page.navigate', {'url': CHATGPT_URL})
-                        else:
-                            clicked = tab.eval(
-                                '(() => { const b = Array.from(document.querySelectorAll("[data-testid=create-new-chat-button], a, button"))'
-                                '.find(e => e.offsetParent && ((e.getAttribute("aria-label") || "").trim() === "New chat"'
-                                ' || (e.innerText || "").trim() === "New chat" || e.matches("[data-testid=create-new-chat-button]")));'
-                                'if (b) { b.click(); return true; } return false; })()',
-                                timeout=4.,
-                            )
-                            if not clicked:
-                                tab.call('Page.enable')
-                                tab.call('Page.navigate', {'url': self.url})
-                        # Wait until the old conversation clears so beforeCount is guaranteed 0.
+                            tab.call('Page.navigate', {'url': CHATGPT_URL if TEMP_CHAT else self.url})
                         end_reset = time.monotonic() + 12.
                         while time.monotonic() < end_reset:
                             try:
@@ -409,21 +424,24 @@ class CloudProvider:
                             except Exception:
                                 pass
                             time.sleep(.15)
+                        if in_spa and TEMP_CHAT:
+                            self._ensure_temp_chat(tab)
                 self.turns = 0
                 self.primed = False
             elif self.turns == 0:
                 self._ensure_temp_chat(tab)
-            if not self._ensure_ready(tab, wait=15.):
-                raise RuntimeError(f'{self.name} composer not ready')
-            self._ensure_fast_mode(tab)
+            if not self.mode_checked:
+                if not self._ensure_ready(tab, wait=15.):
+                    raise RuntimeError(f'{self.name} composer not ready')
+                self._ensure_fast_mode(tab)
             t_ready = time.monotonic()
 
-            # Zero-thrashing send: focus + clear + atomic paste (on ChatGPT) in 1 eval, then Enter directly.
+            # Single-roundtrip send + observer setup: paste prompt, click Send (or fallback to Enter), and install 45 ms textContent ticker.
             tab.drain()
             one_line = ' '.join(line.strip() for line in prompt.splitlines() if line.strip())
             prompt_js = json.dumps(one_line)
             use_paste = 'true' if self.name == 'chatgpt' else 'false'
-            prep_script = f'''(() => {{
+            go_script = f'''(() => {{
                 {self.helpers}
                 if (window.__bitchObs) {{ try {{ window.__bitchObs.disconnect(); }} catch (e) {{}} window.__bitchObs = null; }}
                 if (window.__bitchTimer) {{ clearInterval(window.__bitchTimer); window.__bitchTimer = null; }}
@@ -440,31 +458,16 @@ class CloudProvider:
                         const dt = new DataTransfer();
                         dt.setData('text/plain', {prompt_js});
                         box.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true, cancelable: true}}));
-                        pasted = !!(box.value ?? box.innerText ?? '').trim();
+                        pasted = !!(box.value ?? box.textContent ?? '').trim();
                     }} catch (e) {{ pasted = false; }}
+                }} else {{
+                    pasted = document.execCommand('insertText', false, {prompt_js}) && !!(box.textContent || '').trim();
                 }}
-                return {{ok: true, beforeCount, prevText, pasted}};
-            }})()'''
-            prep_res = tab.eval(prep_script, timeout=6.)
-            if not prep_res or not prep_res.get('ok'):
-                raise RuntimeError(f'{self.name} prep failed: {prep_res}')
-            before_count = int(prep_res['beforeCount'])
-            prev_text = prep_res.get('prevText') or ''
-            if not prep_res.get('pasted'):
-                tab.call('Input.insertText', {'text': one_line}, timeout=6.)
-            time.sleep(.03)
-            for kind in ('keyDown', 'keyUp'):
-                tab.call('Input.dispatchKeyEvent', {
-                    'type': kind, 'key': 'Enter', 'code': 'Enter',
-                    'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
-                }, timeout=4.)
-            t_sent = time.monotonic()
-
-            # Lightweight 70 ms in-page timer pushes ONLY when the last reply text changes or completes.
-            watch_script = f'''(() => {{
-                {self.helpers}
-                const beforeCount = {before_count};
-                const prevText = {json.dumps(prev_text)};
+                let clicked = false;
+                if (pasted) {{
+                    const b = sendBtn();
+                    if (b && !b.disabled) {{ b.click(); clicked = true; }}
+                }}
                 let lastSent = '';
                 let stableTicks = 0;
                 let sawStreaming = false;
@@ -475,8 +478,7 @@ class CloudProvider:
                     if (finished) return;
                     const rs = replies();
                     if (rs.length <= beforeCount) {{
-                        // If Enter didn't submit after 450 ms, click Send button once as backup.
-                        if (!nudged && performance.now() - started > 450) {{
+                        if (!nudged && performance.now() - started > 300) {{
                             nudged = true;
                             const b = sendBtn();
                             if (b && !b.disabled) b.click();
@@ -497,7 +499,7 @@ class CloudProvider:
                     }} else {{
                         stableTicks = 0;
                     }}
-                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 5) || stableTicks >= 16));
+                    const doneNow = Boolean(txt && !busy && (complete || (sawStreaming && stableTicks >= 5) || stableTicks >= 18));
                     if (doneNow) {{
                         finished = true;
                         clearInterval(window.__bitchTimer);
@@ -505,10 +507,28 @@ class CloudProvider:
                         window.__bitchStream(JSON.stringify({{text: txt, done: true}}));
                     }}
                 }};
-                window.__bitchTimer = setInterval(tick, 70);
-                return true;
+                window.__bitchTimer = setInterval(tick, 45);
+                return {{ok: true, pasted, clicked}};
             }})()'''
-            tab.eval(watch_script, timeout=4.)
+            try:
+                res = tab.eval(go_script, timeout=6.)
+            except Exception:
+                # Reconnect once if the WebSocket dropped.
+                self._close()
+                tab = self._connect()
+                res = tab.eval(go_script, timeout=6.)
+            if not res or not res.get('ok'):
+                raise RuntimeError(f'{self.name} send failed: {res}')
+            if not res.get('pasted'):
+                tab.call('Input.insertText', {'text': one_line}, timeout=6.)
+                time.sleep(.02)
+            if not res.get('clicked'):
+                for kind in ('keyDown', 'keyUp'):
+                    tab.call('Input.dispatchKeyEvent', {
+                        'type': kind, 'key': 'Enter', 'code': 'Enter',
+                        'windowsVirtualKeyCode': 13, 'text': '\r' if kind == 'keyDown' else '',
+                    }, timeout=4.)
+            t_sent = time.monotonic()
 
             full_text = ''
             ttft = None

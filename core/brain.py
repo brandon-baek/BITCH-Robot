@@ -1443,10 +1443,17 @@ class Brain:
             remembered = memory.context(identity, text) if identity else None
             if remembered:
                 notes.append(' '.join(remembered.splitlines()[:4])[:300])
+            # Include any local greeting/ack BITCH just spoke ("Hey Brandon!", "I'm here.") so the cloud
+            # model understands replies like "Uh I can tell" instead of losing the thread.
+            recent_bot = [m['text'] for m in hub.messages[-3:] if m['role'] == 'robot' and time.time() - m['at'] < 45]
+            if recent_bot:
+                notes.append('You just said aloud: ' + ' / '.join(recent_bot))
             primer = (
-                "You are BITCH (your real name, on purpose), Brandon's small cardboard desk robot with googly eyes. "
-                "You are his direct, dry, witty friend — not a servant. Reply in 1 to 2 short spoken sentences "
-                "(no markdown, lists, emojis, or links). Never say you are ChatGPT/Gemini unless asked. "
+                "You are BITCH (your real name, on purpose — you own it), Brandon's small desk robot made of "
+                "cardboard and popsicle sticks with googly eyes. Talk like his dry, witty, casual friend — NEVER "
+                "like a customer-service bot or news anchor. Keep replies to 1–2 short, natural spoken sentences "
+                "(no markdown, lists, emojis, or links). Have opinions, tease lightly, and stay in character even "
+                "when giving weather/email/web facts. Never say you are ChatGPT/Gemini unless asked. "
                 "Start your reply with a mood tag in brackets: [n] neutral, [w] warm, [p] playful, [u] upbeat, "
                 "[g] gentle, [a] annoyed, [s] sad, or [r] surprised. "
                 "If they ask you to perform right now (dance/disco/opera), prefix [DO:dance], [DO:disco], or [DO:opera] "
